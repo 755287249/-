@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.30
+// @version      1.11.33
 // @description  Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.30' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.33' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -4791,7 +4791,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.30', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.33', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -5240,7 +5240,7 @@ button{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;ju
 button:hover{background:var(--raised);color:var(--fg)}button:focus-visible{outline:2px solid var(--fg);outline-offset:1px}
 svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var(--line);background:var(--bg);border-radius:12px;padding:4px 8px;box-shadow:0 1px 4px #0001}
 :host([data-collapsed]) .bar{display:none}:host([data-collapsed]) .pill{display:inline-flex;gap:6px}
-:host([data-mini]) .tools{display:none}:host([data-mini]) .bar{cursor:pointer}:host([data-mini]) .it{border-left:0;padding:0 8px}:host([data-mini]) .it:first-child{padding-left:0}:host([data-mini]) .meter{width:44px}`;
+.detail{display:none;flex:none;margin-left:6px;height:18px;padding:0 8px;border-radius:9px;border:1px solid var(--line);color:var(--fg);font-size:11px}:host([data-mini]) .detail{display:inline-flex}:host([data-mini]) .bar{padding-right:6px}:host([data-mini]) .tools{display:none}:host([data-mini]) .bar{cursor:default}:host([data-mini]) .it[data-key=usd]{cursor:pointer}:host([data-mini]) .it{border-left:0;padding:0 8px}:host([data-mini]) .it:first-child{padding-left:0}:host([data-mini]) .meter{width:44px}`;
     let sheet;try{sheet=new CSSStyleSheet();sheet.replaceSync(barCss);root.adoptedStyleSheets=[sheet];}catch{el('style','',barCss,root);}
     const wrap=el('div','bar',null,root),items=el('div','items',null,wrap),tools=el('div','tools',null,wrap);
     // 悬浮美金额度：圆环饼图（余额 / 已用）+ 总额度与余额，替代原来的文字提示。
@@ -5261,7 +5261,10 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       requestAnimationFrame(()=>{const a=tip.querySelector('.arc');if(a)a.setAttribute('stroke-dasharray',(C*pct/100).toFixed(1)+' '+C.toFixed(1));});
     }
     const hideTip=()=>{clearTimeout(tipTimer);tipTimer=setTimeout(()=>tip.removeAttribute('data-show'),120);};
-    wrap.onclick=e=>{if(miniBar()&&!e.target.closest?.('.it.click'))ui?.toggle();};
+    // 手机（窄屏）：点美金只弹出金额卡片；右侧“详细”按钮才打开模型信息
+    wrap.onclick=e=>{if(!miniBar())return;const it=e.target.closest?.('.it[data-key=usd]');if(it){e.stopPropagation();if(tip.hasAttribute('data-show'))tip.removeAttribute('data-show');else showTip(it);}};
+    const detailBtn=el('button','detail','详细',wrap);detailBtn.title='打开模型信息';detailBtn.onclick=e=>{e.stopPropagation();tip.removeAttribute('data-show');ui?.toggle();};
+    document.addEventListener('pointerdown',e=>{if(tip.hasAttribute('data-show')&&!e.composedPath().includes(host))tip.removeAttribute('data-show');},true);
     const pill=el('button','pill','',root);pill.title='展开底部信息栏';pill.onclick=()=>{prefs.barCollapsed=false;savePrefs();sync();};
     const refreshBtn=el('button','','',tools);refreshBtn.title='立即刷新额度、Pulse 与余额';refreshBtn.setAttribute('aria-label',refreshBtn.title);
     refreshBtn.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>';
@@ -5281,7 +5284,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       if(usd){const pct=usd.allowanceUsd>0?usd.balanceRemainingUsd/usd.allowanceUsd*100:null,state=usd.overLimit||usd.balanceRemainingUsd<0?'low':pct===null?'':pct>=50?'good':pct>=20?'warn':'low';
         out.push(item('usd',state,[['meter',pct===null?0:Math.max(0,Math.min(100,pct))],['t','美金 '],['b',fmtUsd(usd.balanceRemainingUsd)],['t',' / '+fmtUsd(usd.allowanceUsd)],['p',pct!==null?' · '+Math.round(pct)+'%':''],['t',usd.overLimit?' · 已超限':'']],
           '美元额度（来自 Trace spend.recorded，最新一轮最后一条已结算记录）\n剩余 '+exactUsd(usd.balanceRemainingUsd)+'\n总额度 '+exactUsd(usd.allowanceUsd)+(usd.chargedUserTotalUsd!==null?'\n窗口内已计费 '+exactUsd(usd.chargedUserTotalUsd):'')+(usd.allowanceTier?'\n档位 '+usd.allowanceTier:'')+(usd.allowanceSource?'\n来源 '+usd.allowanceSource:'')+(usd.windowStartAtMs?'\n窗口开始 '+new Date(usd.windowStartAtMs).toLocaleString('zh-CN',{hour12:false}):'')+(usd.chargedUsd!==null?'\n该条计费 '+exactUsd(usd.chargedUsd):'')+'\n记录于 '+new Date(usd.at).toLocaleString('zh-CN',{hour12:false})+'（'+ago(usd.at)+'）\n每次对话结束后自动更新；这是服务端快照，不是实时余额',miniBar()?()=>ui?.toggle():null));
-      }else out.push(item('usd','',[['t','美金 '],['b','—']],'尚无美元额度快照：完成一轮对话后，从该轮 Trace 的计费记录读取',miniBar()?()=>ui?.toggle():null));
+      }else out.push(item('usd','',[['t','美金 '],['b','—']],'尚无美元额度快照：完成一轮对话后，从该轮 Trace 的计费记录读取',null));
       const mini=miniBar();
       // Pulse（GET /api/me/pulse，0–100 的整数）是 Arena 的独立指标，并非美元余额；两者数值相同时并入美金一项，不再重复显示。
       const usdPct=usd&&usd.allowanceUsd>0?Math.round(usd.balanceRemainingUsd/usd.allowanceUsd*100):null;
@@ -5307,7 +5310,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       return out;
     }
     function sync(){
-      const eligible=prefs.showBar&&location.origin==='https://arena.ai';host.hidden=!eligible;host.toggleAttribute('data-collapsed',!!prefs.barCollapsed);
+      const eligible=prefs.showBar&&location.origin==='https://arena.ai';host.hidden=!eligible;document.documentElement.style.setProperty('--amp-bar-h',eligible&&!prefs.barCollapsed?BAR_H+'px':'0px');host.toggleAttribute('data-collapsed',!!prefs.barCollapsed);
       const offset=eligible&&!prefs.barCollapsed&&prefs.barOffset;document.documentElement.toggleAttribute('data-amp-bar-offset',offset);
       if(!offset)document.documentElement.removeAttribute('data-amp-bar-overlap');
       else{const m=document.querySelector('main');if(m){const b=m.getBoundingClientRect().bottom;if(b>innerHeight-BAR_H+1&&!document.documentElement.hasAttribute('data-amp-bar-overlap'))document.documentElement.setAttribute('data-amp-bar-overlap','');}}
@@ -5317,7 +5320,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       pill.textContent=usd?'美金 '+fmtUsd(usd.balanceRemainingUsd):'信息栏';
       if(key===stamp)return;stamp=key;
       items.replaceChildren(...list.map(x=>{const s=el('span','it'+(x.onclick?' click':''));s.dataset.key=x.key;if(x.state)s.dataset.state=x.state;
-        if(x.key==='usd'){s.onmouseenter=()=>showTip(s);s.onmouseleave=hideTip;s.onfocus=()=>showTip(s);s.onblur=hideTip;s.setAttribute('aria-label',x.parts.map(p=>p[0]==='meter'?'':p[1]).join(''));}else s.title=x.title;
+        if(x.key==='usd'){s.onpointerenter=e=>{if(e.pointerType==='mouse'&&!miniBar())showTip(s);};s.onpointerleave=e=>{if(e.pointerType==='mouse'&&!miniBar())hideTip();};s.onfocus=()=>{if(!miniBar())showTip(s);};s.onblur=()=>{if(!miniBar())hideTip();};s.setAttribute('aria-label',x.parts.map(p=>p[0]==='meter'?'':p[1]).join(''));}else s.title=x.title;
         for(const [k,v] of x.parts){if(k==='meter'){const m=el('span','meter',null,s);el('i',null,null,m).style.width=v+'%';}else if(k==='b')el('b','',v,s);else if(k==='p'){if(v)el('b','pct',v,s);}else if(v)s.append(v);}
         if(x.onclick){s.tabIndex=0;s.setAttribute('role','button');s.onclick=x.onclick;s.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();x.onclick();}};}
         return s;}));
@@ -5640,6 +5643,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
   }
   async function readBranch(reader,ctx,signal){
     const parser=new Lines(f=>frameSeen(f,ctx),(text,e)=>log('warn','解析',text,e,ctx));readers.add(reader);
+    let lastData=Date.now(),bytes=0;
     try{
       while(!stopped){
         let chunk;
@@ -5647,11 +5651,14 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
         catch(e){
           if(enabled&&!stopped){
             if(e.name==='AbortError'||signal?.aborted)log('debug','读流','页面取消了这条流',null,ctx);
-            else log('warn','读流','网络流断开',e,ctx);
+            // 空闲的长连接（会话实时通道）约每 30 秒被服务器/代理重置一次，Arena 会自动重连，不影响对话：降为调试日志
+            else if(Date.now()-lastData>8000||bytes<2048)log('debug','读流','空闲连接被服务器重置（Arena 会自动重连，不影响对话）',e,ctx);
+            else log('warn','读流','网络流断开（回复传输中）',e,ctx);
           }
           break;
         }
         if(chunk.done)break;
+        lastData=Date.now();bytes+=chunk.value?.byteLength||0;
         if(enabled){try{parser.feed(chunk.value);}catch(e){parser.buffer='';parser.pending='';log('warn','解码','当前分块解码失败，跳过该块',e,ctx);}}
       }
       if(enabled){try{parser.end();}catch(e){log('warn','解析','尾帧处理失败',e,ctx);}}
@@ -5826,11 +5833,11 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
 .group-title{font-size:11px;color:var(--secondary);margin:16px 0 2px}.group-title:first-child{margin-top:0}.entry{padding:10px 0;border-top:1px solid var(--line);font-size:12px}.entry-top{display:flex;justify-content:space-between;gap:8px}.entry-source{font-size:10px;color:var(--secondary);flex:none}.entry code{display:block;margin-top:4px;font-size:11px;color:var(--secondary)}.legend{font-size:10px;line-height:1.7;color:var(--secondary);margin-top:12px;padding-top:8px;border-top:1px solid var(--line)}.legend code{font-size:10px}
 .history-item{width:100%;display:block;text-align:left;padding:11px 8px;border-bottom:1px solid var(--line);border-radius:4px;font-size:12px}.history-item[data-open]{background:var(--raised)}.history-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono)}.history-meta{display:flex;justify-content:space-between;gap:8px;font-size:10px;color:var(--secondary);margin-top:4px}.turn-list{margin:4px 0 10px 6px;border-left:1px solid var(--edge);padding-left:6px}.turn-item{width:100%;display:block;text-align:left;padding:8px;border-radius:4px;font-size:12px}.turn-item[data-current]{outline:1px solid var(--edge)}.turn-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.turn-meta{display:flex;justify-content:space-between;gap:8px;font-size:10px;color:var(--secondary);margin-top:3px;font-family:var(--mono)}.clear{font-size:11px;color:var(--secondary);margin-top:12px}
 .logline{border-top:1px solid var(--line);padding:10px 0;font-size:12px;overflow-wrap:anywhere}.log-meta{display:flex;justify-content:space-between;color:var(--secondary);font-size:10px;margin-bottom:4px}.logline.warn{color:var(--warn)}.logline.error{color:hsl(var(--interactive-negative,2 63% 54%))}.log-origin{margin-top:4px}.log-origin summary{font-size:10px}.log-origin code{display:block;font-size:10px;word-break:break-all;color:var(--secondary)}
-.footer{padding:8px 10px;display:flex;align-items:center;gap:2px;border-top:1px solid var(--line);flex:none}.footer button{font-size:11px;color:var(--secondary);gap:5px}.footer svg{width:13px;height:13px}.footer-note{margin-left:auto;font:10px var(--mono);color:var(--secondary);padding-right:3px}.toast{font-size:11px;text-align:center;color:var(--secondary);padding:6px 12px;border-top:1px solid var(--line);flex:none}
+.footer{padding:8px 10px;display:flex;align-items:center;gap:2px;border-top:1px solid var(--line);flex:none}.footer button{font-size:11px;color:var(--secondary);gap:5px}.footer svg{width:13px;height:13px}.upd{cursor:pointer;border:0;background:none;border-radius:6px;padding:3px 6px!important}.upd:hover{background:var(--line)}.upd[data-new='1']{color:#fff!important;background:#6a5e54}.footer-note{margin-left:auto;font:10px var(--mono);color:var(--secondary);padding-right:3px}.toast{font-size:11px;text-align:center;color:var(--secondary);padding:6px 12px;border-top:1px solid var(--line);flex:none}
 .raw-controls{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px}.raw-controls .selector{flex:1;min-width:110px}.raw-controls button{font-size:11px;border:1px solid var(--edge);padding:4px 7px}.event-row{display:grid;grid-template-columns:54px minmax(0,1fr) auto;gap:8px;padding:5px 0;border-top:1px solid var(--line);font-size:11px;align-items:baseline;width:100%;text-align:left;border-radius:0;color:var(--fg)}.event-row[data-kind=stream]{color:var(--heading)}.event-row[data-kind=marker]{color:var(--warn)}.event-row[data-active]{background:var(--raised)}.event-row time{font-family:var(--mono);font-size:10px;color:var(--secondary)}.event-msg{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.event-extra{font-family:var(--mono);font-size:10px;color:var(--secondary);white-space:nowrap}pre.json{margin:8px 0 0;padding:10px;border:1px solid var(--edge);border-radius:6px;background:var(--raised);font:11px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;max-height:60vh;overflow:auto;color:var(--fg)}
 .theme-toggle{width:32px;max-width:32px;padding:0;justify-content:center}.theme-toggle .trigger-label,.theme-toggle .trigger-mini{display:none!important}.theme-toggle svg{transition:transform .4s cubic-bezier(.34,1.6,.5,1)}.theme-toggle:hover svg{transform:rotate(-20deg) scale(1.1)}@media(max-width:767px){.trigger{width:32px;max-width:32px;padding:0;justify-content:center}.trigger-label,.trigger-mini,.trigger>.chevron{display:none}.usage-value{font-size:17px}:host{margin-inline-end:4px}}@media(prefers-reduced-motion:reduce){button{transition:none}}
 :host([data-entry]){display:inline-flex;vertical-align:top;margin-inline-end:6px;flex:none}
-:host([data-dock]){display:block;flex:0 0 var(--amp-width,340px);width:var(--amp-width,340px);min-width:0;height:100dvh;align-self:stretch;margin:0;z-index:1;position:relative}
+:host([data-dock]){display:block;flex:0 0 var(--amp-width,340px);width:var(--amp-width,340px);min-width:0;height:calc(100dvh - var(--amp-bar-h,0px));align-self:stretch;margin:0;z-index:1;position:relative}
 .panel{display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;background:var(--bg);border-left:1px solid var(--edge);position:relative}.resizer{position:absolute;top:0;bottom:0;left:-3px;width:7px;cursor:col-resize;z-index:5;touch-action:none}.resizer:hover,.resizer[data-active]{background:var(--edge)}.drag-shield{position:fixed;inset:0;z-index:2147483000;cursor:col-resize;user-select:none}
 .head{min-height:52px;padding:10px 14px}.head>.grow{gap:9px}.head .icon-button{margin-left:auto}.local-number{font-size:11px;color:var(--secondary)}.body{flex:1;padding:14px;min-height:0}.name{font-size:16px}.section+.section{margin-top:17px}.tabs{padding:0 14px}.config-row{padding:9px 10px}.config-label{font-size:12px}.row{grid-template-columns:76px minmax(0,1fr);gap:8px}.footer{padding:8px 9px}.cache-banner{display:flex;align-items:center;gap:8px;padding:5px 14px 9px;font-size:10px;color:var(--secondary)}.compact-bar{display:none}.log-controls{display:flex;align-items:center;gap:12px;margin-bottom:8px}.log-controls .selector{margin-left:auto;flex:none;width:100px}.log-actions{display:flex;gap:6px;flex-wrap:wrap}.log-actions button{font-size:11px;border:1px solid var(--edge);padding:4px 7px}
 :host([data-compact]){width:100%;height:auto;flex:0 0 auto;margin:0;max-height:55dvh}.panel .compact-top{display:flex;align-items:center;gap:9px}.compact-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.compact-toggle{font-size:11px;color:var(--secondary);padding:4px 8px;flex:none}.compact-info{font-size:11px;color:var(--secondary);margin-top:3px}:host([data-compact]) .panel{height:auto;max-height:55dvh;border-left:0;border-top:1px solid var(--edge)}:host([data-compact]) .resizer{display:none}:host([data-compact]) .compact-bar{display:block;padding:8px 12px;flex:none}:host([data-compact]) .head{display:none}:host([data-compact]:not([data-expanded])) .tabs,:host([data-compact]:not([data-expanded])) .cache-banner,:host([data-compact]:not([data-expanded])) .pickers,:host([data-compact]:not([data-expanded])) .body,:host([data-compact]:not([data-expanded])) .footer,:host([data-compact]:not([data-expanded])) .toast{display:none}:host([data-compact]) .body{max-height:calc(55dvh - 145px)}
@@ -5908,7 +5915,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     const actions=el('div','log-actions',null,logBar),read=button(actions,'重读记录','重新读取当前运行记录',refresh);const clearLogs=button(actions,'清理日志','清理全部本地日志（不影响编号与缓存）',async()=>{if(!confirmLogClear){confirmLogClear=true;render();return;}await catalog.clearLogs();confirmLogClear=false;logKey='';bodyStamp=[];render();}),cancelClear=button(actions,'取消','取消清理日志',()=>{confirmLogClear=false;render();});
     const body=el('div','body',null,panel);body.setAttribute('role','tabpanel');
     const toast=el('div','toast','',panel);toast.hidden=true;toast.setAttribute('role','status');
-    const footer=el('footer','footer',null,panel),exportButton=button(footer,'','导出当前视图的记录、原始数据和日志',async()=>{if(tab==='hunt'){download(gacha.state()||{},'arena-gacha-'+Date.now()+'.json');return;}if(tab==='detector'){download(legacyDisplay.snapshot(),'arena-independent-detector-'+Date.now()+'.json');return;}const data=exported();data.logs=await catalog.readLogs(data.sid);download(data,'amp-lite-'+(data.sid||'export').slice(0,8)+'-'+Date.now()+'.json');});icon('download',exportButton);el('span','','导出记录',exportButton);el('span','footer-note','v'+VERSION,footer);
+    const footer=el('footer','footer',null,panel),exportButton=button(footer,'','导出当前视图的记录、原始数据和日志',async()=>{if(tab==='hunt'){download(gacha.state()||{},'arena-gacha-'+Date.now()+'.json');return;}if(tab==='detector'){download(legacyDisplay.snapshot(),'arena-independent-detector-'+Date.now()+'.json');return;}const data=exported();data.logs=await catalog.readLogs(data.sid);download(data,'amp-lite-'+(data.sid||'export').slice(0,8)+'-'+Date.now()+'.json');});icon('download',exportButton);el('span','','导出记录',exportButton);(()=>{const RAW='https://raw.githubusercontent.com/755287249/-/main/Arena-Native-Suite.user.js';const cur=String(VERSION).replace(/^native-/,'');const cmp=(x,y)=>{const p=String(x).split('.').map(Number),q=String(y).split('.').map(Number);for(let i=0;i<Math.max(p.length,q.length);i++){const d=(p[i]||0)-(q[i]||0);if(d)return d>0?1:-1;}return 0;};let latest=null,busy=false;const ub=el('button','footer-note upd','v'+cur+' · 检查更新',footer);ub.type='button';ub.title='从 GitHub 检查脚本新版本';ub.onclick=async()=>{if(busy)return;if(latest&&cmp(latest,cur)>0){window.open(RAW,'_blank');ub.textContent='v'+cur+' · 请在新标签页确认安装';return;}busy=true;ub.textContent='v'+cur+' · 检查中…';try{const r=await (window.__ampNativeFetch||fetch).call(window,RAW+'?t='+Date.now(),{cache:'no-store',credentials:'omit'});if(!r.ok)throw new Error('HTTP '+r.status);const m=(await r.text()).match(/\/\/\s*@version\s+([\d.]+)/);if(!m)throw new Error('未找到版本号');latest=m[1];ub.textContent=cmp(latest,cur)>0?'有新版本 v'+latest+' · 点击更新':'v'+cur+' · 已是最新';ub.dataset.new=cmp(latest,cur)>0?'1':'';}catch(e){ub.textContent='v'+cur+' · 检查失败，点击重试';ub.title=String(e&&e.message||e);}finally{busy=false;}};})();
     const fmt=v=>v===null||v===undefined?'—':Number(v).toLocaleString('zh-CN');
     const clock=v=>{const t=typeof v==='number'?v:Date.parse(v||'');return Number.isFinite(t)?new Date(t).toLocaleTimeString('zh-CN',{hour12:false}):'--:--:--';};
     const seqLabel=sid=>{const e=catalog.entries.get(sid);return e?(e.temporary?'临时 ':'')+'#'+e.seq:'';};
