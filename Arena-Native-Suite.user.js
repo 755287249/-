@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.26
+// @version      1.11.29
 // @description  Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.26' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.29' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -4615,6 +4615,87 @@ const gachaUi = (() => {
       anchor = b || launcher; priorFocus = document.activeElement; load(); message = ''; collapse(); panel.classList.add('open'); anchor.setAttribute('aria-expanded', 'true'); render(); position(); $('[data-ui="quantity"]').focus({ preventScroll: true });
     };
     const SEL = 'button[aria-label="Send message"],button[aria-label="发送消息"],button[aria-label="Stop generating"],button[aria-label="Stop response"],button[aria-label="停止生成"]';
+    // ---------------- 长按厂商按钮：左轮式竖向选择器 ----------------
+    // 按住约 0.35 秒（或按住直接上推）弹出一列竖向卡片，像左轮弹巢一样滚动；上下推动切换，松开即选中中间那项。
+    const REV_H = 46;
+    let revCssOn = false;
+    function revCss() {
+      if (revCssOn) return; revCssOn = true;
+      const st = document.createElement('style'); st.id = 'amp-revolver-css';
+      st.textContent = '[data-amp-revolver]{position:fixed;z-index:2147483646;pointer-events:none;width:200px;height:' + (REV_H * 5) + 'px;perspective:520px;opacity:0;transform:translateY(10px) scale(.96);transition:opacity .18s ease,transform .28s cubic-bezier(.22,1,.36,1);font:500 14px/1 var(--font-basel-grotesk,var(--font-inter,system-ui)),"PingFang SC","Microsoft YaHei",sans-serif}'
+        + '[data-amp-revolver].on{opacity:1;transform:none}[data-amp-revolver].out{opacity:0;transform:translateY(6px) scale(.97);transition:opacity .22s ease .08s,transform .3s ease .08s}'
+        + '[data-amp-revolver] .rv-win{position:absolute;left:-6px;right:-6px;top:50%;height:' + (REV_H + 6) + 'px;margin-top:-' + ((REV_H + 6) / 2) + 'px;border-radius:14px;background:var(--rv-win);box-shadow:0 10px 30px rgba(0,0,0,.26),0 0 0 3px color-mix(in srgb,var(--rv-acc) 18%,transparent),inset 0 0 0 2px var(--rv-acc)}'
+        + '[data-amp-revolver] .rv-drum{position:absolute;inset:0;transform-style:preserve-3d}'
+        + '[data-amp-revolver] .rv-it{position:absolute;left:0;right:0;top:50%;height:' + (REV_H - 6) + 'px;margin-top:-' + ((REV_H - 6) / 2) + 'px;display:flex;align-items:center;gap:10px;padding:0 14px;box-sizing:border-box;border-radius:12px;background:var(--rv-card);color:var(--rv-fg);box-shadow:0 4px 14px rgba(0,0,0,.14),inset 0 0 0 1px var(--rv-line);backface-visibility:hidden;will-change:transform,opacity}'
+        + '[data-amp-revolver] .rv-it.sel{background:transparent;box-shadow:none;font-weight:700;color:var(--rv-acc)}[data-amp-revolver] .rv-it.sel .rv-ic{color:var(--rv-fg)}[data-amp-revolver] .rv-it .rv-ic{display:inline-flex;width:18px;height:18px;align-items:center;justify-content:center;flex:none}[data-amp-revolver] .rv-it .rv-ic svg{width:16px;height:16px}'
+        + '[data-amp-revolver] .rv-it .rv-nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}[data-amp-revolver] .rv-it .rv-ck{opacity:0;font-size:12px;color:var(--rv-acc)}[data-amp-revolver] .rv-it.cur .rv-ck{opacity:1}'
+        + '[data-amp-revolver] .rv-hint{position:absolute;left:0;right:0;top:4px;text-align:center;font-size:11px;font-weight:400;color:var(--rv-mut)}'
+        + '[data-amp-native-gacha="1"]{touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}[data-amp-native-gacha="1"][data-amp-rv]{transform:scale(.94)!important}';
+      (document.head || document.documentElement).append(st);
+    }
+    function revItems() {
+      const s = gacha.settings(), out = [{ id: '', name: '不限', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><path d="M8 12h8"/></svg>' }];
+      for (const v of gacha.VENDORS) out.push({ id: v.id, name: v.name, icon: vendorIcon(v.id, 16) });
+      if (s.customKeyword) out.push({ id: 'custom', kw: s.customKeyword, name: s.customKeyword, icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h10M4 17h7"/></svg>' });
+      return out;
+    }
+    function attachRevolver(b) {
+      if (b.dataset.ampRvBound) return; b.dataset.ampRvBound = '1';
+      b.addEventListener('contextmenu', e => { if (b.hasAttribute('data-amp-rv') || b._ampRvT) e.preventDefault(); });
+      b.addEventListener('pointerdown', e => {
+        if (e.button !== 0 || b._ampRv) return;
+        const st = gacha.state(); if (st && ['running', 'stopping'].includes(st.status)) return; // 抽卡中不允许换厂商
+        const x0 = e.clientX, y0 = e.clientY, pid = e.pointerId;
+        try { b.setPointerCapture(pid); } catch {}
+        const cancel = () => { clearTimeout(b._ampRvT); b._ampRvT = 0; b.removeEventListener('pointermove', early); b.removeEventListener('pointerup', cancel); b.removeEventListener('pointercancel', cancel); };
+        const early = ev => { if (ev.pointerId !== pid) return; if (y0 - ev.clientY > 12) { cancel(); open(ev); } else if (Math.abs(ev.clientX - x0) > 14 || ev.clientY - y0 > 14) cancel(); };
+        b._ampRvT = setTimeout(() => { cancel(); open(e); }, 350);
+        b.addEventListener('pointermove', early); b.addEventListener('pointerup', cancel); b.addEventListener('pointercancel', cancel);
+        function open(ev0) {
+          revCss(); try { b.setPointerCapture(pid); } catch {}
+          const items = revItems(), s = gacha.settings(), curId = s.vendor || '';
+          let cur = Math.max(0, items.findIndex(it => it.id === curId)), pos = cur, shown = -1, startY = ev0.clientY, startPos = pos, done = false;
+          const dark = document.documentElement.classList.contains('dark');
+          const root = document.createElement('div'); root.dataset.ampRevolver = '1';
+          root.style.cssText = dark ? '--rv-card:#34322e;--rv-win:#4b4740;--rv-fg:#ecebe7;--rv-line:#ffffff14;--rv-acc:#d8d3ca;--rv-mut:#a9a59d' : '--rv-card:#fffdf9;--rv-win:#e6ddd0;--rv-fg:#262522;--rv-line:#0000000f;--rv-acc:#6a5e54;--rv-mut:#7a746b';
+          root.innerHTML = '<div class="rv-win"></div><div class="rv-drum"></div><div class="rv-hint">上下推动 · 松开选中</div>';
+          const drum = root.querySelector('.rv-drum');
+          const els = items.map((it, i) => { const d = document.createElement('div'); d.className = 'rv-it' + (i === cur ? ' cur' : ''); d.innerHTML = '<span class="rv-ic">' + it.icon + '</span><span class="rv-nm"></span><span class="rv-ck">当前</span>'; d.querySelector('.rv-nm').textContent = it.name; drum.append(d); return d; });
+          document.body.append(root);
+          const r = b.getBoundingClientRect(), W = 200, H = REV_H * 5;
+          root.style.left = Math.max(8, Math.min(innerWidth - W - 8, r.left + r.width / 2 - W / 2)) + 'px';
+          root.style.top = Math.max(8, r.top - H - 14) + 'px';
+          b.setAttribute('data-amp-rv', ''); b._ampRv = true;
+          const wrap = k => ((k % items.length) + items.length) % items.length;
+          const paint = () => {
+            els.forEach((d, i) => {
+              const n = els.length, off = ((((i - pos) % n) + n + n / 2) % n) - n / 2, a = Math.abs(off);
+              // 弹巢：卡片绕水平轴排成圆柱，离中心越远越倾斜、越小、越淡
+              d.style.transform = 'translateY(' + (off * REV_H * 0.92) + 'px) rotateX(' + (-off * 24) + 'deg) translateZ(' + (-a * a * 6) + 'px) scale(' + Math.max(.72, 1 - a * .07) + ')';
+              d.style.opacity = String(Math.max(0, 1 - a * .3)); d.style.zIndex = String(100 - Math.round(a * 10));
+            });
+            const k = wrap(Math.round(pos)); if (k !== shown) { if (shown >= 0) try { navigator.vibrate?.(6); } catch {} shown = k; els.forEach((d, i) => d.classList.toggle('sel', i === k)); }
+          };
+          paint(); requestAnimationFrame(() => root.classList.add('on'));
+          // 循环滚动：不分首尾，最后一项之后接第一项
+          const clampPos = p => p;
+          const move = ev => { if (ev.pointerId !== pid || done) return; ev.preventDefault(); pos = clampPos(startPos + (startY - ev.clientY) / (REV_H * .92)); paint(); };
+          const finish = (ev, pick) => {
+            if (ev && ev.pointerId !== pid) return; if (done) return; done = true;
+            b.removeEventListener('pointermove', move); b.removeEventListener('pointerup', up); b.removeEventListener('pointercancel', cc); removeEventListener('keydown', esc, true);
+            try { b.releasePointerCapture(pid); } catch {}
+            const kr = Math.round(pos), k = wrap(kr);
+            // 吸附到选中项再淡出
+            const from = pos, t0 = performance.now(); const snap = t => { const p = Math.min(1, (t - t0) / 160); pos = from + (kr - from) * (1 - Math.pow(1 - p, 3)); paint(); if (p < 1) requestAnimationFrame(snap); }; requestAnimationFrame(snap);
+            root.classList.add('out'); setTimeout(() => root.remove(), 420);
+            b.removeAttribute('data-amp-rv'); b._ampRv = false; b._ampRvSkip = Date.now();
+            if (pick) { const it = items[k]; if (it.id !== curId || it.id === 'custom') { if (it.id === 'custom') gacha.setVendor('custom', it.kw); else gacha.setVendor(it.id); try { window.dispatchEvent(new CustomEvent('amp-native-gacha')); } catch {} } }
+          };
+          const up = ev => finish(ev, true), cc = ev => finish(ev, false), esc = ev => { if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); finish(null, false); } };
+          b.addEventListener('pointermove', move); b.addEventListener('pointerup', up); b.addEventListener('pointercancel', cc); addEventListener('keydown', esc, true);
+        }
+      });
+    }
     function install() {
       let inserted = false;
       for (const action of [...document.querySelectorAll(SEL)].filter(visible)) {
@@ -4631,7 +4712,7 @@ const gachaUi = (() => {
         b.className = peer?.className || '';
         b.innerHTML = '<span data-amp-icon hidden></span><span data-amp-name></span><span data-amp-progress hidden></span>' + chevron + '<i data-amp-progress-bar hidden></i><i data-amp-dot hidden></i>';
         if (textPeer) { const cs = getComputedStyle(textPeer); for (const k of ['fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'fontFamily']) if (cs[k]) b.style[k] = cs[k]; }
-        b.onclick = e => { e.preventDefault(); e.stopPropagation(); toggle(b); };
+        b.onclick = e => { e.preventDefault(); e.stopPropagation(); if (b._ampRvSkip && Date.now() - b._ampRvSkip < 500) return; toggle(b); }; attachRevolver(b);
         toolbar.insertBefore(b, action); inserted = true; lastAnchorRect = b.getBoundingClientRect();
         if (panel.classList.contains('open')) anchor = b;
       }
@@ -4700,7 +4781,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.26', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.29', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
