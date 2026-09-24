@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arena 账号切换（Arena Native Suite 配套）
 // @namespace    local.amp.native.accounts
-// @version      1.0.14
+// @version      1.0.16
 // @description  在 Arena 个人卡片里一键切换已保存的账号；显示各账号最近记录的额度
 // @match        https://arena.ai/*
 // @include      https://arena.ai/*
@@ -20,7 +20,7 @@
 
 (function arenaAccountSwitch() {
   'use strict';
-  const VERSION = '1.0.14';
+  const VERSION = '1.0.16';
   const ORIGIN = 'https://' + location.host;
   const AUTH_RE = /^arena-auth-prod-v1(\.\d+)?$/;
   const STORE = 'accounts.v2', OLD_STORE = 'accounts.v1'; // v2：按邮箱去重；旧版本标签页只会写 v1，不再污染
@@ -647,7 +647,13 @@
 [data-amp-switcher] .sw-it.go .sw-av::after{content:"";position:absolute;inset:-2px;border-radius:50%;border:3px solid transparent;border-top-color:#fff;border-right-color:rgba(255,255,255,.5);animation:swspin .8s linear infinite}
 @keyframes swgo{0%{transform:scale(1)}30%{transform:scale(.9)}100%{transform:scale(1.04)}}
 @keyframes swspin{to{transform:rotate(360deg)}}
-[data-amp-switcher] .sw-mcard{display:none}
+[data-amp-switcher] .sw-mcard,[data-amp-switcher] .sw-mside{display:none}
+[data-amp-switcher] .sw-addb{position:absolute;left:50%;top:calc(47% + 250px);transform:translateX(-50%);display:flex;align-items:center;gap:6px;border:0;border-radius:999px;padding:9px 18px 9px 14px;cursor:pointer;font:inherit;font-size:13px;color:rgba(243,241,236,.85);background:rgba(255,255,255,.1);box-shadow:inset 0 0 0 1px rgba(255,255,255,.14);transition:background .2s,transform .2s cubic-bezier(.22,1,.36,1),opacity .4s ease;z-index:3}
+[data-amp-switcher] .sw-addb:hover{background:rgba(255,255,255,.2);color:#fff;transform:translateX(-50%) scale(1.05)}
+[data-amp-switcher] .sw-addb:active{transform:translateX(-50%) scale(.95)}
+[data-amp-switcher] .sw-addb.solo{top:47%;margin-top:-20px}
+[data-amp-switcher] .sw-hint{left:auto!important;right:22px;bottom:18px!important;text-align:right}
+[data-amp-switcher] .sw-warn{bottom:auto;top:138px}
 [data-amp-switcher].vert .sw-top{top:max(14px,4vh)}
 [data-amp-switcher].vert .sw-title{font-size:18px}
 [data-amp-switcher].vert .sw-sub{display:none}
@@ -659,11 +665,24 @@
 [data-amp-switcher].vert .sw-bar{margin-top:10px}
 [data-amp-switcher].vert .sw-mcard{display:block;position:absolute;left:50%;bottom:calc(max(12px,3vh) + 34px);transform:translateX(-50%);width:min(320px,calc(100vw - 40px));padding:12px 14px;box-sizing:border-box;border-radius:14px;
   background:rgba(255,255,255,.08);box-shadow:inset 0 0 0 1px rgba(255,255,255,.1);text-align:center;transition:opacity .25s ease}
-[data-amp-switcher].vert .sw-mcard .sw-em{max-width:none}
-[data-amp-switcher].vert .sw-arrow{left:auto!important;right:10px!important;width:40px;height:40px;margin-top:-20px}
+[data-amp-switcher].vert .sw-mcard .sw-em{max-width:none;font-size:12px;opacity:.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+[data-amp-switcher].vert .sw-mcard{padding:8px 10px!important;border-radius:12px!important;width:min(300px,calc(100vw - 48px))!important}
+[data-amp-switcher].vert .sw-mcard .sw-memo{margin-top:5px;gap:4px}
+[data-amp-switcher].vert .sw-mcard .sw-rm{margin:0;padding:3px 8px;border-radius:7px;font-size:11px;background:rgba(255,255,255,.06)}
+[data-amp-switcher].vert .sw-mcard .sw-bad{font-size:11px;margin-top:3px}
+[data-amp-switcher].vert .sw-mside{display:flex;flex-direction:column;align-items:flex-end;justify-content:center;gap:2px;position:absolute;top:42%;right:calc(50% + 72px);transform:translateY(-50%);width:calc(50% - 84px);max-width:150px;text-align:right;pointer-events:none;transition:opacity .25s ease}
+[data-amp-switcher].vert .sw-mside[hidden]{display:none}
+[data-amp-switcher].vert .sw-mside .sw-q0{margin:0;font-size:12px;font-weight:600}
+[data-amp-switcher].vert .sw-mside .sw-q1{margin:2px 0 0;font-size:18px;line-height:1.15;font-weight:700;white-space:nowrap}[data-amp-switcher].vert .sw-mside .sw-q1 small{display:block;font-size:11px;font-weight:500;opacity:.6}
+[data-amp-switcher].vert .sw-mside .sw-q2{font-size:11px}
+[data-amp-switcher].vert .sw-mside .sw-q3{font-size:10px;margin-top:2px}
+[data-amp-switcher].vert .sw-arrow{display:none!important;left:auto!important;right:10px!important;width:40px;height:40px;margin-top:-20px}
 [data-amp-switcher].vert .sw-arrow.l{top:calc(42% - 30px)}[data-amp-switcher].vert .sw-arrow.r{top:calc(42% + 30px)}
 [data-amp-switcher].vert .sw-arrow svg{transform:rotate(90deg)}
-[data-amp-switcher].vert .sw-hint{bottom:max(10px,2vh)}
+[data-amp-switcher].vert .sw-hint{right:12px;bottom:max(10px,2vh)!important;font-size:11px}
+[data-amp-switcher].vert .sw-addb{left:auto;right:10px;top:42%;transform:translateY(-50%);flex-direction:column;gap:3px;padding:10px 8px;border-radius:16px;font-size:10.5px;margin:0}
+[data-amp-switcher].vert .sw-addb:hover{transform:translateY(-50%) scale(1.05)}[data-amp-switcher].vert .sw-addb:active{transform:translateY(-50%) scale(.95)}
+[data-amp-switcher].vert .sw-addb.solo{right:auto;left:50%;transform:translate(-50%,-50%);flex-direction:row;padding:10px 18px;font-size:13px}
 [data-amp-switcher].vert .sw-warn{bottom:auto;top:calc(max(14px,4vh) + 56px);width:calc(100vw - 40px)}
 [data-amp-switcher].vert .sw-close{right:12px;top:12px}
 [data-amp-switcher].leaving{opacity:0}
@@ -685,12 +704,12 @@
     document.querySelector('[data-amp-switcher]')?.remove();
     if (!document.getElementById('amp-switcher-css')) { const st = el('style', null, SW_CSS, document.head || document.documentElement); st.id = 'amp-switcher-css'; }
     const list = [...accounts].sort((a, b) => (keyOf(b) === currentId) - (keyOf(a) === currentId) || (a.addedAt || 0) - (b.addedAt || 0));
-    const items = [...list.map(a => ({ a })), { add: true }];
+    const items = list.map(a => ({ a }));
     let sel = 0, busy = false, wheelAt = 0;
     const root = el('div', null, null, document.body); root.dataset.ampSwitcher = '1'; root.tabIndex = -1;
     const top = el('div', null, null, root); top.className = 'sw-top';
     el('div', null, currentId ? '切换账号' : '选择账号登录', top).className = 'sw-title';
-    el('div', null, list.length + ' 个已保存账号 · 点头像或按 Enter 切换', top).className = 'sw-sub';
+    el('div', null, list.length ? list.length + ' 个已保存账号 · 点头像或按 Enter 切换' : '还没有保存的账号', top).className = 'sw-sub';
     const memoB = el('button', null, '备忘录', root); memoB.className = 'sw-memob'; memoB.type = 'button'; memoB.title = '查看所有账号和备忘密码'; memoB.onclick = e => { e.stopPropagation(); closeSwitcher(); openMemo(); };
     const close = el('button', null, '×', root); close.className = 'sw-close'; close.type = 'button'; close.title = '关闭 (Esc)';
     const stage = el('div', null, null, root); stage.className = 'sw-stage';
@@ -698,6 +717,9 @@
     const L = el('button', null, null, root); L.className = 'sw-arrow l'; L.type = 'button'; L.title = '上一个 (←)'; L.innerHTML = arrowSvg('M15 18l-6-6 6-6');
     const R = el('button', null, null, root); R.className = 'sw-arrow r'; R.type = 'button'; R.title = '下一个 (→)'; R.innerHTML = arrowSvg('M9 6l6 6-6 6');
     const hint = el('div', null, null, root); hint.className = 'sw-hint';
+    const addB = el('button', null, null, root); addB.className = 'sw-addb'; addB.type = 'button'; addB.title = currentId ? '添加账号：输入邮箱密码，登录后自动保存并切换' : '输入邮箱密码登录其他账号';
+    addB.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span>' + (currentId ? '添加账号' : '其他账号') + '</span>';
+    addB.onclick = e => { e.stopPropagation(); if (busy) return; closeSwitcher(); void addAccount(); };
     hint.innerHTML = '<kbd>←</kbd><kbd>→</kbd> 切换 &nbsp;·&nbsp; <kbd>Enter</kbd> 确认 &nbsp;·&nbsp; <kbd>Esc</kbd> 关闭';
     if (cookieMode !== 'gm') {
       const w = el('div', null, (cookieMode === 'gm-error' ? '读取 Cookie 出错：' + lastError + '。' : cookieMode === 'hidden' ? '页面已登录，但读不到登录 Cookie（HttpOnly）。' : '当前无法通过扩展读取登录 Cookie。') + '需要 Tampermonkey 支持 HttpOnly Cookie 的版本，并在 设置 → 安全 →“允许脚本访问 Cookie”选“全部”。', root);
@@ -750,7 +772,7 @@
           const v = prompt((a.pw ? '修改' : '记录') + ' ' + (a.email || '该账号') + ' 的密码（仅保存在本机 Tampermonkey；留空并确定可删除）', a.pw || '');
           if (v === null) return; const key = keyOf(a);
           mutate(l => { const x = l.find(y => keyOf(y) === key); if (x) { if (v) x.pw = v; else delete x.pw; } });
-          a.pw = v || undefined; const outer = inn.querySelector('.sw-det'); paint(outer); if (box !== outer) paint(box);
+          a.pw = v || undefined; const outer = inn.querySelector('.sw-det'); paint(outer); if (box !== outer) { if (box === mcard) vertInto(); else paint(box); }
           toast(v ? '已保存密码备忘' : '已删除密码备忘');
         });
         if (!isCur) {
@@ -769,6 +791,9 @@
     const X = [0, 175, 300, 400, 480], S = [1, .68, .5, .4, .34], O = [1, .88, .62, .38, 0];
     const Y = [0, 150, 250, 330, 400], OV = [1, .78, 0, 0, 0];
     const mcard = el('div', null, null, root); mcard.className = 'sw-mcard';
+    // 竖屏：额度信息放在中间头像左侧，底部卡片只留邮箱和操作按钮
+    const mside = el('div', null, null, root); mside.className = 'sw-mside';
+    const vertInto = () => { const d = nodes[sel]; if (!d) return; d.into(mcard); mside.textContent = ''; for (const c of [...mcard.querySelectorAll('.sw-q0,.sw-q1,.sw-q2,.sw-q3')]) mside.append(c); const q1 = mside.querySelector('.sw-q1'); if (q1 && q1.textContent.includes(' / ')) { const [m, t] = q1.textContent.split(' / '); q1.textContent = m; const sm = document.createElement('small'); sm.textContent = '/ ' + t; q1.append(sm); } mside.hidden = !mside.children.length; const rm = mcard.querySelector('.sw-rm'), memo = mcard.querySelector('.sw-memo'); if (rm && memo) memo.append(rm); };
     let vert = false;
     const isVert = () => innerWidth < 640 || innerHeight > innerWidth * 1.15;
     function applyMode() {
@@ -787,7 +812,8 @@
         d.n.classList.toggle('sel', off === 0);
       });
       L.style.visibility = R.style.visibility = N > 1 ? 'visible' : 'hidden';
-      if (vert) nodes[sel]?.into(mcard);
+      if (vert) vertInto();
+      addB.classList.toggle('solo', !N);
     }
     const move = dir => { if (busy || N < 2) return; sel = (sel + dir + N) % N; clearNear(); layout(); };
     function clearNear() { for (const d of nodes) { d.inn.style.setProperty('--hv', '1'); d.n.classList.remove('near'); } }
@@ -824,7 +850,7 @@
       const nm = d.inn.querySelector('.sw-nm'); if (nm) nm.textContent = '切换中…';
       await new Promise(r => setTimeout(r, 380));
       const went = await switchTo(d.it.a);
-      if (!went && root.isConnected) { busy = false; d.n.classList.remove('go'); const k = keyOf(d.it.a); d.it.a = load().find(a => keyOf(a) === k) || d.it.a; d.n.classList.toggle('bad', !!d.it.a.invalid); d.paint(vert && nodes[sel] === d ? mcard : null); if (nm) nm.textContent = d.it.a.name || (d.it.a.email || '').split('@')[0]; return; }
+      if (!went && root.isConnected) { busy = false; d.n.classList.remove('go'); const k = keyOf(d.it.a); d.it.a = load().find(a => keyOf(a) === k) || d.it.a; d.n.classList.toggle('bad', !!d.it.a.invalid); (d.paint(null), vert && nodes[sel] === d && vertInto()); if (nm) nm.textContent = d.it.a.name || (d.it.a.email || '').split('@')[0]; return; }
       setTimeout(() => { if (root.isConnected && busy) { busy = false; d.n.classList.remove('go'); d.paint(); if (nm) nm.textContent = d.it.a.name || (d.it.a.email || '').split('@')[0]; } }, 4000);
     }
     const onKey = e => {
@@ -843,7 +869,7 @@
     const curA = accounts.find(a => keyOf(a) === currentId);
     if (curA) {
       const live = await liveCredits();
-      if (live) { const key = keyOf(curA); mutate(l => { const x = l.find(y => keyOf(y) === key); if (x) x.quota = { ...(x.quota || {}), ...quotaFromCache(), ...live }; }); const d = nodes.find(z => z.it.a && keyOf(z.it.a) === key); if (d) { d.it.a.quota = find(key)?.quota || d.it.a.quota; d.paint(vert && nodes[sel] === d ? mcard : null); } }
+      if (live) { const key = keyOf(curA); mutate(l => { const x = l.find(y => keyOf(y) === key); if (x) x.quota = { ...(x.quota || {}), ...quotaFromCache(), ...live }; }); const d = nodes.find(z => z.it.a && keyOf(z.it.a) === key); if (d) { d.it.a.quota = find(key)?.quota || d.it.a.quota; (d.paint(null), vert && nodes[sel] === d && vertInto()); } }
     }
   }
 
