@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.29
+// @version      1.11.30
 // @description  Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.29' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.30' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -3756,7 +3756,17 @@ const gacha = (() => {
     const res = await (core?.rawFetch || fetch)(location.origin + url, { credentials: 'same-origin', cache: 'no-store', ...init });
     if (!res.ok) { const e = new Error('HTTP ' + res.status); e.status = res.status; throw e; } return res;
   }
-  async function rename(sid, title) { await api('/api/history/agentic/' + encodeURIComponent(sid), { method: 'PATCH', headers: { 'content-type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ title: title.slice(0, 100) }) }); }
+  // 改名会让 Arena 重新拉取会话列表/标题；对话正在生成时改名可能打断回复。所以先等页面空闲（最多 15 分钟），再多等 1.5 秒。
+  async function waitIdle(max = 900000) {
+    const end = Date.now() + max; let quiet = 0;
+    while (Date.now() < end) {
+      let busy = false; try { busy = !!page.view().generating; } catch {}
+      if (busy) quiet = 0; else if (++quiet >= 3) return true;
+      await nap(busy ? 800 : 500);
+    }
+    return false;
+  }
+  async function rename(sid, title) { if (!(await waitIdle())) throw Object.assign(new Error('对话一直在生成，暂缓改名'), { status: 0 }); if (renameWant.get(sid) && renameWant.get(sid) !== title) return; await api('/api/history/agentic/' + encodeURIComponent(sid), { method: 'PATCH', headers: { 'content-type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ title: title.slice(0, 100) }) }); }
   // Titles owned by the gacha. Other writers (Lite local overlay / cloud sync) must skip these sids.
   const OWN = 'amp.native.gacha.titles.v1';
   const owned = new Map(Object.entries(readJSON(localStorage, OWN, {}) || {}).slice(-300));
@@ -4089,7 +4099,7 @@ const gacha = (() => {
   // v8.1 detector reloads the page on sidebar New Chat clicks; gacha clicks set a short-lived flag to bypass it.
   const reloadSuppressed = () => now() < suppressReloadUntil || (run?.status === 'running');
   return {
-    QUANTITIES, DEFAULTS, REASONS, settings, saveSettings, saveOk: () => saveOk, VENDORS, vendorFromText, setVendor, noteChatId, ownsTitle: sid => owned.has(sid), pendingTitle: sid => { const t = renameWant.get(sid); return t && Date.now() - (renameAt.get(sid) || 0) < 90000 ? t : null; }, followModel, start, stop, reset, bindCore, notePost, reloadSuppressed, archiveQueued: () => archiveQueued(true), running: () => run?.status === 'running',
+    QUANTITIES, DEFAULTS, REASONS, settings, saveSettings, saveOk: () => saveOk, VENDORS, vendorFromText, setVendor, noteChatId, ownsTitle: sid => owned.has(sid), waitIdle, pendingTitle: sid => { const t = renameWant.get(sid); return t && Date.now() - (renameAt.get(sid) || 0) < 600000 ? t : null; }, followModel, start, stop, reset, bindCore, notePost, reloadSuppressed, archiveQueued: () => archiveQueued(true), running: () => run?.status === 'running',
     state: () => run ? JSON.parse(JSON.stringify(run)) : null, setPaint(fn) { paintFn = fn; }, get revision() { return rev; },
     running: () => !!run && ['running', 'stopping'].includes(run.status),
     _test: { identify, classify, validName, titleOf, page, T, pace }
@@ -4781,7 +4791,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.29', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.30', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -5794,6 +5804,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     const want=(prefs.cloudFormat==='name'?entry.name.name:entry.title).slice(0,100);
     if(entry.cloud?.title===want||!manual&&!(entry.name.locked||!entry.partial))return false;
     const st=cloudState.get(entry.sid)||{at:0,fails:0},now=Date.now();if(!manual&&(now-st.at<60000||st.fails>=3))return false;st.at=now;cloudState.set(entry.sid,st);
+    if(!manual){await gacha.waitIdle();if(stopped||entry.cloud?.title===want)return false;}
     try{const res=await rawFetch(location.origin+'/api/history/agentic/'+encodeURIComponent(entry.sid),{method:'PATCH',headers:{'content-type':'application/json',Accept:'application/json'},credentials:'same-origin',cache:'no-store',body:JSON.stringify({title:want})});
       if(!res.ok){st.fails++;log('warn','云端标题','PATCH HTTP '+res.status+(res.status===401||res.status===403?' · 需要登录':''),null,{sid:entry.sid});return false;}
       st.fails=0;await catalog.setCloud(entry.sid,{title:want,at:new Date().toISOString()});log('info','云端标题','已同步 '+want,null,{sid:entry.sid});paint();return true;
