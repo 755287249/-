@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arena 账号切换（Arena Native Suite 配套）
 // @namespace    local.amp.native.accounts
-// @version      1.0.19
+// @version      1.0.20
 // @description  在 Arena 个人卡片里一键切换已保存的账号；显示各账号最近记录的额度
 // @match        https://arena.ai/*
 // @include      https://arena.ai/*
@@ -20,7 +20,7 @@
 
 (function arenaAccountSwitch() {
   'use strict';
-  const VERSION = '1.0.19';
+  const VERSION = '1.0.20';
   try { document.documentElement.dataset.ampSwitchVer = VERSION; } catch {}
   const ORIGIN = 'https://' + location.host;
   const AUTH_RE = /^arena-auth-prod-v1(\.\d+)?$/;
@@ -57,6 +57,80 @@
   function mutate(fn) { accounts = load(); const r = fn(accounts); accounts = sanitize(accounts); save(accounts); return r; }
   const find = key => accounts.find(a => emailKey(a) === key) || null;
   try { GM_addValueChangeListener(STORE, (name, oldV, newV, remote) => { if (remote) accounts = sanitize(newV); }); } catch {}
+
+  // ---------------- 快捷键（存 Tampermonkey，本机所有标签页共用） ----------------
+  // 格式：修饰键 + 物理按键码，如 "Alt+Shift+KeyS"、"Alt+Shift+Digit1"、"F2"。按物理键匹配，Mac 上按 ⌥ 也不会变成特殊字符
+  const HK_STORE = 'hotkeys.v1', HK_PANEL_DEFAULT = 'Alt+Shift+KeyS';
+  function loadHk() {
+    let v = null; try { v = GM_getValue(HK_STORE, null); } catch {}
+    const acc = {};
+    if (v && v.accounts && typeof v.accounts === 'object') for (const [k, c] of Object.entries(v.accounts)) if (typeof c === 'string' && c) acc[k] = c;
+    return { panel: v && typeof v.panel === 'string' ? v.panel : HK_PANEL_DEFAULT, accounts: acc };
+  }
+  let hotkeys = loadHk();
+  const saveHk = () => { try { GM_setValue(HK_STORE, hotkeys); } catch (e) { log('快捷键保存失败', e); } };
+  try { GM_addValueChangeListener(HK_STORE, (n, o, v, remote) => { if (remote) hotkeys = loadHk(); }); } catch {}
+  const IS_MAC = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '');
+  const KEY_NAME = { Backquote: '`', Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']', Backslash: '\\', Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/', Space: '空格', Escape: 'Esc', ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓', PageUp: 'PgUp', PageDown: 'PgDn', Insert: 'Ins', Delete: 'Del' };
+  function comboOf(e) {
+    const code = e.code || '';
+    if (!code || /^(Control|Shift|Alt|Meta|OS)(Left|Right)?$/.test(code) || /^(Control|Shift|Alt|Meta|AltGraph|OS|Fn|CapsLock)$/.test(e.key || '')) return null;
+    return [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Meta', code].filter(Boolean).join('+');
+  }
+  function comboLabel(c) {
+    if (!c) return '';
+    const mods = { Ctrl: IS_MAC ? '⌃' : 'Ctrl', Alt: IS_MAC ? '⌥' : 'Alt', Shift: IS_MAC ? '⇧' : 'Shift', Meta: IS_MAC ? '⌘' : 'Win' };
+    return c.split('+').map(x => mods[x] || KEY_NAME[x] || x.replace(/^Key/, '').replace(/^Digit/, '').replace(/^Numpad(\d)$/, '小键盘$1')).join(IS_MAC ? ' ' : '+');
+  }
+  // 必须带 Ctrl / Alt / ⌘（或单独的 F1–F12），打字时不会误触；浏览器和编辑常用的组合不允许占用
+  const HK_RESERVED = /^((Ctrl|Meta)\+(Key[ACFLNPQRSTVWXYZ]|Enter|Tab|Digit\d|Minus|Equal|Backspace)|Alt\+(ArrowLeft|ArrowRight|F4|Tab|Home)|F5|F11|F12|(Ctrl|Meta)\+Shift\+(Tab|KeyT|KeyN|KeyI|KeyJ|KeyC|KeyV|KeyZ|Delete)|Ctrl\+Alt\+Delete|Alt\+Meta\+KeyI)$/;
+  function comboProblem(c) {
+    if (!c) return '请按下包含字母、数字或功能键的组合';
+    if (!/(^|\+)(Ctrl|Alt|Meta)\+/.test(c) && !/^F([1-9]|1[0-2])$/.test(c)) return '需要同时按住 Ctrl、' + (IS_MAC ? '⌥ 或 ⌘' : 'Alt 或 Win') + '，或者单独使用 F1–F12';
+    if (HK_RESERVED.test(c)) return comboLabel(c) + ' 是浏览器或编辑常用快捷键，请换一个';
+    return '';
+  }
+
+  // ---------------- 切换账号时保留套件设置（抽卡目标厂商等） ----------------
+  // 登录身份一变，Arena 可能清掉页面 localStorage，套件设置会回到默认（目标厂商变成“不限”）。
+  // 切换前先存进 Tampermonkey；旧页面离开前、新页面加载后再补回去。
+  const CARRY = 'carry.v1', GACHA_KEY = 'amp.native.gacha.settings.v1';
+  const CARRY_KEYS = [GACHA_KEY, 'amp.lite.v2.prefs', 'amp.lite.v2.ui'];
+  function carryOut() {
+    const m = {};
+    for (const k of CARRY_KEYS) { try { const v = W.localStorage.getItem(k); if (v !== null) m[k] = v; } catch {} }
+    try { GM_setValue(CARRY, { at: Date.now(), m }); } catch {}
+    return m;
+  }
+  function carryLast() { try { const c = GM_getValue(CARRY, null); if (c && c.m && Date.now() - (c.at || 0) < 180000) return c.m; } catch {} return null; }
+  const parseJ = s => { try { return JSON.parse(s); } catch { return null; } };
+  // 只补“被清掉 / 被重置”的部分：缺失的键整条写回；抽卡设置里目标厂商变空时补回厂商，其余项保留新页面上的值
+  function carryApply(m) {
+    let n = 0;
+    for (const [k, v] of Object.entries(m || {})) {
+      try {
+        const cur = W.localStorage.getItem(k);
+        if (cur === v) continue;
+        if (cur === null) { W.localStorage.setItem(k, v); n++; continue; }
+        if (k === GACHA_KEY) {
+          const a = parseJ(cur), b = parseJ(v);
+          if (!a || !b || !b.vendor || a.vendor) continue;
+          a.vendor = b.vendor; if (b.customKeyword) a.customKeyword = b.customKeyword;
+          W.localStorage.setItem(k, JSON.stringify(a)); n++;
+        }
+      } catch {}
+    }
+    if (n) { try { window.dispatchEvent(new CustomEvent('amp-native-gacha')); } catch {} }
+    return n;
+  }
+  const carryArm = m => { if (m) window.addEventListener('pagehide', () => carryApply(m), { once: true }); };
+  // 本次页面是由切换账号刷新而来：分几次补回（Arena 可能在页面加载后才清存储）
+  function carryRestoreIfPending() {
+    let pd = null; try { pd = JSON.parse(sessionStorage.getItem(PENDING) || 'null'); } catch {}
+    if (!pd || Date.now() - (pd.at || 0) > 120000) return;
+    const m = carryLast(); if (!m) return;
+    for (const t of [0, 1200, 3000, 6000, 10000]) setTimeout(() => { const n = carryApply(m); if (n) log('已补回切换前的设置（' + n + ' 项）'); }, t);
+  }
 
   // ---------------- Cookie ----------------
   const gmCookie = typeof GM_cookie !== 'undefined' ? GM_cookie : null;
@@ -234,8 +308,8 @@
     const v2 = judge(await meNow());
     return v2 === null ? v : v2;
   }
-  async function switchTo(target) {
-    const cur = await syncCurrent(); mirrorOut(cur);
+  async function switchTo0(target) {
+    const cur = await syncCurrent(); mirrorOut(cur); const carried = carryOut();
     target = load().find(a => keyOf(a) === keyOf(target)) || target;
     if (!target.cookies?.length) { toast('这个账号没有保存登录凭据，请点 + 重新登录'); return; }
     const now = authOf(await listCookies());
@@ -254,7 +328,7 @@
       const r = await signInEmail(target.email, target.pw, { remember: true });
       if (r.rec) {
         mirrorIn({ ...target, ...r.rec }); markDirty();
-        window.addEventListener('pagehide', () => mirrorIn({ ...target, ...r.rec }), { once: true });
+        window.addEventListener('pagehide', () => mirrorIn({ ...target, ...r.rec }), { once: true }); carryArm(carried);
         try { sessionStorage.setItem(PENDING, JSON.stringify({ key: keyOf(r.rec), prev: cur ? keyOf(cur) : null, at: Date.now() })); } catch {}
         toast('已重新登录 ' + target.email + '，正在切换…');
         setTimeout(() => { if (/^\/agent\/?$/.test(location.pathname)) location.reload(); else location.href = ORIGIN + '/agent'; }, 350);
@@ -278,11 +352,19 @@
     }
     mirrorIn(target); markDirty();
     // 主脚本在 pagehide 时会把旧账号的记录写回，所以离开页面时再覆盖一次（本监听注册更晚，后执行）
-    window.addEventListener('pagehide', () => mirrorIn(target), { once: true });
+    window.addEventListener('pagehide', () => mirrorIn(target), { once: true }); carryArm(carried);
     try { sessionStorage.setItem(PENDING, JSON.stringify({ key: keyOf(target), prev: cur ? keyOf(cur) : null, at: Date.now() })); } catch {}
     toast('正在切换到 ' + (target.email || target.name || '账号') + ' …');
     setTimeout(() => { if (/^\/agent\/?$/.test(location.pathname)) location.reload(); else location.href = ORIGIN + '/agent'; }, 250);
     return true;
+  }
+  // 同一时间只允许一次切换（快捷键连按、轮播里同时点击都不会并发写 Cookie）
+  let switchingNow = false;
+  async function switchTo(target) {
+    if (switchingNow) { toast('正在切换账号，请稍候…'); return false; }
+    switchingNow = true;
+    try { const r = await switchTo0(target); if (r === true) setTimeout(() => { switchingNow = false; }, 8000); else switchingNow = false; return r; }
+    catch (e) { switchingNow = false; throw e; }
   }
   // ---------------- 添加账号：弹出邮箱密码表单，直接登录并切换 ----------------
   // 与 Arena 登录页相同的接口：POST /nextjs-api/sign-in/email，成功后服务端用 Set-Cookie 写入新账号的 arena-auth-prod-v1
@@ -297,11 +379,12 @@
       const b = nativeLoginButtons()[0]; if (b) b.click(); else location.href = ORIGIN + '/agent';
       return;
     }
+    const carried = carryOut();
     const now = authOf(await listCookies());
     for (const c of now) await delCookie(c);
     if (authOf(await listCookies()).length) { toast('无法清除登录 Cookie（需要 Tampermonkey 的 Cookie 权限）'); return; }
     mirrorIn(null); markDirty();
-    window.addEventListener('pagehide', () => mirrorIn(null), { once: true });
+    window.addEventListener('pagehide', () => mirrorIn(null), { once: true }); carryArm(carried);
     try { sessionStorage.setItem(PENDING, JSON.stringify({ key: '__new__', at: Date.now() })); } catch {}
     location.href = ORIGIN + '/agent';
   }
@@ -431,12 +514,13 @@
       if (!pw) { fail('请输入密码'); pwd.focus(); return; }
       if (cur && keyOf({ email: em }) === keyOf(cur)) { fail('这就是当前账号'); return; }
       msg.textContent = ''; setBusy(true);
+      const carried = carryOut();
       const r = await signInEmail(em, pw, { remember: remember.checked, stage: l => setBusy(true, l) });
       if (r.error) { setBusy(false); fail(r.error); return; }
       const rec = r.rec;
       msg.className = 'lf-msg ok'; msg.textContent = '已登录 ' + rec.email + '，正在切换…'; setBusy(true, '正在切换…');
       mirrorIn(rec); markDirty();
-      window.addEventListener('pagehide', () => mirrorIn(rec), { once: true });
+      window.addEventListener('pagehide', () => mirrorIn(rec), { once: true }); carryArm(carried);
       try { sessionStorage.setItem(PENDING, JSON.stringify({ key: keyOf(rec), at: Date.now() })); } catch {}
       setTimeout(() => { if (/^\/agent\/?$/.test(location.pathname)) location.reload(); else location.href = ORIGIN + '/agent'; }, 450);
     };
@@ -477,6 +561,151 @@
     root.addEventListener('mousedown', e => { if (e.target === root) close(); });
     requestAnimationFrame(() => requestAnimationFrame(() => root.classList.add('on')));
   }
+  // ---------------- 快捷键：配置界面 ----------------
+  const HK_CSS = `
+[data-amp-login-form] .hk-card{width:min(470px,calc(100vw - 24px))}
+[data-amp-login-form] .hk-list{max-height:min(52vh,440px);margin-top:2px}
+[data-amp-login-form] .hk-sec{margin:12px 2px 2px;font-size:11px;color:rgba(243,241,236,.45);letter-spacing:.5px}
+[data-amp-login-form] .hk-row{display:flex;align-items:center;gap:10px;padding:8px 4px;border-top:1px solid rgba(255,255,255,.07)}
+[data-amp-login-form] .hk-sec+.hk-row{border-top:0}
+[data-amp-login-form] .hk-av{width:30px;height:30px;flex:none;border-radius:50%;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#3a3834;color:#d8d3ca;font-size:13px;font-weight:600}
+[data-amp-login-form] .hk-av img{width:100%;height:100%;object-fit:cover;display:block}
+[data-amp-login-form] .hk-l{flex:1;min-width:0}
+[data-amp-login-form] .hk-n{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+[data-amp-login-form] .hk-n.cur::after{content:"当前";margin-left:6px;padding:0 6px;border-radius:6px;font-size:10px;background:#d8d3ca;color:#262522}
+[data-amp-login-form] .hk-e{font-size:11px;color:rgba(243,241,236,.5);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+[data-amp-login-form] .hk-key{flex:none;min-width:108px;height:30px;padding:0 10px;border:0;border-radius:8px;cursor:pointer;font:12px ui-monospace,Consolas,monospace;color:#f3f1ec;background:rgba(255,255,255,.08);box-shadow:inset 0 0 0 1px rgba(255,255,255,.14);transition:background .15s}
+[data-amp-login-form] .hk-key:hover{background:rgba(255,255,255,.14)}
+[data-amp-login-form] .hk-key.none{font-family:inherit;color:rgba(243,241,236,.4)}
+[data-amp-login-form] .hk-key.rec{font-family:inherit;color:#262522;background:#d8d3ca;box-shadow:none;animation:hkp 1.2s ease-in-out infinite}
+@keyframes hkp{50%{opacity:.62}}
+[data-amp-login-form] .hk-x{flex:none;width:26px;height:26px;border:0;border-radius:7px;cursor:pointer;background:transparent;color:rgba(243,241,236,.45);font-size:16px;line-height:26px;padding:0}
+[data-amp-login-form] .hk-x:hover{background:rgba(255,255,255,.08);color:#f2a39b}
+[data-amp-login-form] .hk-msg{min-height:18px;margin:4px 2px 0}
+[data-amp-login-form] .hk-tip{font-size:11px;line-height:1.6;color:rgba(243,241,236,.45);margin-top:10px}
+`;
+  let recording = null; // 配置界面正在录制组合键时的处理函数（优先于一切快捷键）
+  function openHotkeys() {
+    document.querySelector('[data-amp-login-form]')?.remove();
+    for (const [id, css] of [['amp-login-css', LOGIN_CSS], ['amp-hk-css', HK_CSS]]) if (!document.getElementById(id)) { const st = el('style', null, css, document.head || document.documentElement); st.id = id; }
+    const all = load().sort((a, b) => (a.addedAt || 0) - (b.addedAt || 0));
+    const alive = new Set(all.map(keyOf)); let stale = false;
+    for (const k of Object.keys(hotkeys.accounts)) if (!alive.has(k)) { delete hotkeys.accounts[k]; stale = true; }
+    if (stale) saveHk();
+    const root = el('div', null, null, document.body); root.dataset.ampLoginForm = '1'; root.dataset.ampHotkeys = '1';
+    const card = el('div', null, null, root); card.className = 'lf-card hk-card';
+    el('div', null, '账号快捷键', card).className = 'lf-t';
+    el('div', null, '点右侧按钮，再按下想用的组合键；Backspace 清除，Esc 取消', card).className = 'lf-s';
+    const body = el('div', null, null, card); body.className = 'lf-list hk-list';
+    const msg = el('div', null, '', card); msg.className = 'lf-msg hk-msg';
+    const say = (t, ok) => { msg.textContent = t || ''; msg.className = 'lf-msg hk-msg' + (ok ? ' ok' : ''); };
+    let rec = null; // { kb, paint }
+    const stopRec = () => { recording = null; if (rec) { rec.kb.classList.remove('rec'); rec.paint(); rec = null; } };
+    const getC = id => id === '__panel__' ? hotkeys.panel : hotkeys.accounts[id] || '';
+    const setC = (id, c) => { if (id === '__panel__') hotkeys.panel = c || ''; else if (c) hotkeys.accounts[id] = c; else delete hotkeys.accounts[id]; };
+    const nameOf = a => a.name || (a.email || '').split('@')[0] || '账号';
+    const owner = c => {
+      if (!c) return null;
+      if (hotkeys.panel === c) return { id: '__panel__', label: '打开 / 关闭切换界面' };
+      const k = Object.keys(hotkeys.accounts).find(x => hotkeys.accounts[x] === c); if (!k) return null;
+      const a = all.find(x => keyOf(x) === k); return { id: k, label: a ? nameOf(a) : k };
+    };
+    function row(id, title, sub, avatar, isCur) {
+      const r = el('div', null, null, body); r.className = 'hk-row';
+      if (avatar !== undefined) {
+        const av = el('div', null, null, r); av.className = 'hk-av'; const ch = (title || '?')[0].toUpperCase();
+        if (avatar) { const img = el('img', null, null, av); img.src = avatar; img.referrerPolicy = 'no-referrer'; img.draggable = false; img.onerror = () => { img.remove(); av.textContent = ch; }; } else av.textContent = ch;
+      }
+      const l = el('div', null, null, r); l.className = 'hk-l';
+      el('div', null, title, l).className = 'hk-n' + (isCur ? ' cur' : '');
+      if (sub) el('div', null, sub, l).className = 'hk-e';
+      const kb = el('button', null, null, r); kb.type = 'button'; kb.className = 'hk-key';
+      const x = el('button', null, '×', r); x.type = 'button'; x.className = 'hk-x'; x.title = '清除快捷键';
+      const paint = () => { const c = getC(id); kb.textContent = c ? comboLabel(c) : '未设置'; kb.classList.toggle('none', !c); kb.title = c ? '点击后按下新的组合键' : '点击设置快捷键'; x.style.visibility = c ? 'visible' : 'hidden'; };
+      paint();
+      x.onclick = e => { e.stopPropagation(); stopRec(); setC(id, ''); saveHk(); paint(); say('已清除「' + title + '」的快捷键', true); };
+      kb.onclick = e => {
+        e.stopPropagation();
+        if (rec && rec.kb === kb) { stopRec(); say(''); return; }
+        stopRec(); rec = { kb, paint }; kb.classList.add('rec'); kb.classList.remove('none'); kb.textContent = '请按组合键…'; say('');
+        recording = ev => {
+          if (ev.type !== 'keydown') return;
+          ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation();
+          const noMod = !ev.ctrlKey && !ev.altKey && !ev.metaKey && !ev.shiftKey;
+          if (ev.key === 'Escape' && noMod) { stopRec(); say(''); return; }
+          if ((ev.key === 'Backspace' || ev.key === 'Delete') && noMod) { stopRec(); setC(id, ''); saveHk(); paint(); say('已清除「' + title + '」的快捷键', true); return; }
+          const c = comboOf(ev);
+          if (!c) { const held = [ev.ctrlKey && 'Ctrl', ev.altKey && 'Alt', ev.shiftKey && 'Shift', ev.metaKey && 'Meta'].filter(Boolean); kb.textContent = held.length ? comboLabel(held.join('+')) + (IS_MAC ? ' …' : '+…') : '请按组合键…'; return; }
+          const bad = comboProblem(c); if (bad) { say(bad); kb.textContent = '请按组合键…'; return; }
+          const o = owner(c); let moved = '';
+          if (o && o.id !== id) { setC(o.id, ''); moved = '（已从「' + o.label + '」移到这里）'; }
+          setC(id, c); saveHk(); recording = null; rec = null; renderRows();
+          say('「' + title + '」→ ' + comboLabel(c) + moved, true);
+        };
+      };
+    }
+    function renderRows() {
+      recording = null; rec = null; body.textContent = '';
+      el('div', null, '通用', body).className = 'hk-sec';
+      row('__panel__', '打开 / 关闭切换界面', '在 Arena 任意页面呼出账号轮播');
+      el('div', null, '账号（' + all.length + '）· 按下直接切换到该账号', body).className = 'hk-sec';
+      if (!all.length) el('div', null, '还没有保存的账号', body).className = 'lf-s';
+      for (const a of all) row(keyOf(a), nameOf(a), a.email || '', a.avatar || '', keyOf(a) === currentId);
+    }
+    renderRows();
+    el('div', null, '切换会刷新页面，抽卡的目标厂商等设置在切换后保持不变。焦点在内嵌框（如工作区预览）里时快捷键不生效，点一下页面空白处即可。', card).className = 'hk-tip';
+    const foot = el('div', null, null, card); foot.className = 'lf-row';
+    const auto = el('button', null, '给未设置的账号分配 ' + comboLabel('Alt+Shift+Digit1').replace(/1$/, '1~9'), foot); auto.type = 'button'; auto.className = 'lf-link';
+    auto.onclick = e => {
+      e.stopPropagation(); stopRec(); let n = 0, d = 1;
+      const used = new Set([hotkeys.panel, ...Object.values(hotkeys.accounts)]);
+      for (const a of all) {
+        const k = keyOf(a); if (hotkeys.accounts[k]) continue;
+        while (d <= 9 && used.has('Alt+Shift+Digit' + d)) d++;
+        if (d > 9) break;
+        hotkeys.accounts[k] = 'Alt+Shift+Digit' + d; used.add(hotkeys.accounts[k]); d++; n++;
+      }
+      saveHk(); renderRows(); say(n ? '已为 ' + n + ' 个账号分配快捷键' : '所有账号都已经有快捷键了', true);
+    };
+    const closeB = el('button', null, '完成', foot); closeB.type = 'button'; closeB.className = 'lf-link';
+    const close = () => { stopRec(); removeEventListener('keydown', onKey, true); root.classList.remove('on'); setTimeout(() => root.remove(), 260); };
+    closeB.onclick = e => { e.stopPropagation(); close(); };
+    const onKey = e => { if (!root.isConnected) return; if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
+    addEventListener('keydown', onKey, true);
+    for (const t of ['keyup', 'keypress']) root.addEventListener(t, e => e.stopPropagation());
+    root.addEventListener('mousedown', e => { if (rec && !rec.kb.contains(e.target)) { stopRec(); say(''); } if (e.target === root) close(); });
+    requestAnimationFrame(() => requestAnimationFrame(() => root.classList.add('on')));
+  }
+  // ---------------- 快捷键：全局监听 ----------------
+  let hkBusy = false;
+  function onHotkey(e) {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (recording) { recording(e); return; }
+    const c = comboOf(e); if (!c) return;
+    const isPanel = !!hotkeys.panel && c === hotkeys.panel;
+    const accKey = isPanel ? null : Object.keys(hotkeys.accounts).find(k => hotkeys.accounts[k] === c);
+    if (!isPanel && !accKey) return;
+    if (document.querySelector('[data-amp-login-form]')) return; // 登录框 / 备忘录 / 快捷键设置打开时不拦截
+    e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+    if (e.repeat) return;
+    if (isPanel) { if (document.querySelector('[data-amp-switcher]')) closeSwitcher(); else void openPanel(null); return; }
+    void hotSwitch(accKey);
+  }
+  async function hotSwitch(key) {
+    if (hkBusy) return;
+    const a = load().find(x => keyOf(x) === key);
+    if (!a) { delete hotkeys.accounts[key]; saveHk(); toast('这个快捷键对应的账号已被移除'); return; }
+    hkBusy = true;
+    try {
+      await syncCurrent();
+      if (key === currentId) { toast('已经是当前账号：' + (a.email || a.name || '')); return; }
+      closeSwitcher();
+      if (a.invalid && !a.pw) { openLoginForm(accounts.find(x => keyOf(x) === currentId) || null, { email: a.email, note: '该账号登录已失效，请重新输入密码' }); return; }
+      const went = await switchTo(a);
+      if (went === true) await new Promise(r => setTimeout(r, 6000));
+    } catch (err) { toast('切换失败：' + (err?.message || err)); }
+    finally { hkBusy = false; }
+  }
   async function checkPending() {
     let p = null; try { p = JSON.parse(sessionStorage.getItem(PENDING) || 'null'); } catch {}
     if (!p || Date.now() - p.at > 120000) return;
@@ -494,7 +723,7 @@
         for (const c of authOf(await listCookies())) await delCookie(c);
         for (const c of prev.cookies) await setCookie(c);
         mirrorIn(prev); markDirty();
-        window.addEventListener('pagehide', () => mirrorIn(prev), { once: true });
+        window.addEventListener('pagehide', () => mirrorIn(prev), { once: true }); carryArm(carryLast());
         try { sessionStorage.setItem(PENDING, JSON.stringify({ key: p.prev, at: Date.now(), rb: 1 })); } catch {}
         toast('切换失败：' + (t.email || '该账号') + ' 的登录已失效，正在切回 ' + (prev.email || '原账号') + ' …');
         setTimeout(() => location.reload(), 1200);
@@ -547,7 +776,7 @@
     const pillBox = pill.closest('button,span,div') || pill, cs = getComputedStyle(pillBox);
     const b = el('button', 'display:inline-flex;align-items:center;gap:5px;height:' + Math.max(26, pillBox.getBoundingClientRect().height || 30) + 'px;padding:0 12px;margin-left:8px;border:0;border-radius:999px;cursor:pointer;font:inherit;font-size:13px;white-space:nowrap;flex-shrink:0;'
       + 'background:' + (cs.backgroundColor && cs.backgroundColor !== 'rgba(0, 0, 0, 0)' ? cs.backgroundColor : (dark() ? 'rgba(255,255,255,.08)' : '#e9e5de')) + ';color:inherit');
-    b.type = 'button'; b.dataset.ampSwitch = '1'; b.title = '切换到已保存的账号，或添加新账号';
+    b.type = 'button'; b.dataset.ampSwitch = '1'; b.title = '切换到已保存的账号，或添加新账号' + (hotkeys.panel ? '（快捷键 ' + comboLabel(hotkeys.panel) + '）' : '');
     b.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3l4 4-4 4"/><path d="M20 7H9"/><path d="M8 21l-4-4 4-4"/><path d="M4 17h11"/></svg><span>切换账号</span>';
     b.onclick = e => { e.preventDefault(); e.stopPropagation(); void openPanel(dlg); };
     // 做成与 “Reset Password” 同款的整行按钮（手机 / 放不下时用），不会把卡片撑宽
@@ -689,6 +918,10 @@
 [data-amp-switcher].vert .sw-warn{bottom:auto;top:calc(max(14px,4vh) + 56px);width:calc(100vw - 40px)}
 [data-amp-switcher].vert .sw-close{right:12px;top:12px}
 [data-amp-switcher].leaving{opacity:0}
+[data-amp-switcher] .sw-tl{position:absolute;left:18px;top:18px;display:flex;gap:8px;z-index:3}
+[data-amp-switcher] .sw-tl .sw-memob{position:static}
+[data-amp-switcher].vert .sw-tl{left:12px;top:12px}
+[data-amp-switcher] .sw-hk{margin-top:4px;padding:1px 7px;border-radius:6px;font:11px/16px ui-monospace,Consolas,monospace;color:rgba(243,241,236,.8);background:rgba(255,255,255,.1);white-space:nowrap}
 [data-amp-switcher].leaving .sw-stage{transform:scale(.96)}
 `;
   function ratioOf(q) {
@@ -713,7 +946,9 @@
     const top = el('div', null, null, root); top.className = 'sw-top';
     el('div', null, currentId ? '切换账号' : '选择账号登录', top).className = 'sw-title';
     el('div', null, list.length ? list.length + ' 个已保存账号 · 点头像或按 Enter 切换' : '还没有保存的账号', top).className = 'sw-sub';
-    const memoB = el('button', null, '备忘录', root); memoB.className = 'sw-memob'; memoB.type = 'button'; memoB.title = '查看所有账号和备忘密码'; memoB.onclick = e => { e.stopPropagation(); closeSwitcher(); openMemo(); };
+    const tl = el('div', null, null, root); tl.className = 'sw-tl';
+    const hkB = el('button', null, '快捷键', tl); hkB.className = 'sw-memob'; hkB.type = 'button'; hkB.title = '给每个账号设置专属快捷键，以及呼出这个界面的快捷键'; hkB.onclick = e => { e.stopPropagation(); closeSwitcher(); openHotkeys(); };
+    const memoB = el('button', null, '备忘录', tl); memoB.className = 'sw-memob'; memoB.type = 'button'; memoB.title = '查看所有账号和备忘密码'; memoB.onclick = e => { e.stopPropagation(); closeSwitcher(); openMemo(); };
     const close = el('button', null, '×', root); close.className = 'sw-close'; close.type = 'button'; close.title = '关闭 (Esc)';
     const stage = el('div', null, null, root); stage.className = 'sw-stage';
     const arrowSvg = d => '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="' + d + '"/></svg>';
@@ -743,6 +978,7 @@
       const bar = el('div', null, null, inn); bar.className = 'sw-bar'; const fill = el('i', null, null, bar);
       if (it.add) bar.style.visibility = 'hidden';
       el('div', null, it.add ? (currentId ? '添加账号' : '其他账号') : (a.name || (a.email || '').split('@')[0] || '账号'), inn).className = 'sw-nm';
+      if (!it.add && hotkeys.accounts[keyOf(a)]) { const hk = el('div', null, comboLabel(hotkeys.accounts[keyOf(a)]), inn); hk.className = 'sw-hk'; hk.title = '在任意页面按下即可直接切换到这个账号'; }
       const det = el('div', null, null, inn); det.className = 'sw-det';
       const paint = (box = det) => {
         box.textContent = ''; const det = box;
@@ -780,7 +1016,7 @@
         });
         if (!isCur) {
           const rm = el('button', null, '移除记录', det); rm.className = 'sw-rm'; rm.type = 'button';
-          rm.onclick = e => { e.stopPropagation(); if (!confirm('移除 ' + (a.email || '该账号') + ' 的本地记录？')) return; const key = keyOf(a); mutate(l => { const k = l.findIndex(y => keyOf(y) === key); if (k >= 0) l.splice(k, 1); }); void openPanel(null); };
+          rm.onclick = e => { e.stopPropagation(); if (!confirm('移除 ' + (a.email || '该账号') + ' 的本地记录？')) return; const key = keyOf(a); mutate(l => { const k = l.findIndex(y => keyOf(y) === key); if (k >= 0) l.splice(k, 1); }); if (hotkeys.accounts[key]) { delete hotkeys.accounts[key]; saveHk(); } void openPanel(null); };
         }
       };
       paint();
@@ -801,7 +1037,7 @@
     const isVert = () => innerWidth < 640 || innerHeight > innerWidth * 1.15;
     function applyMode() {
       vert = isVert(); root.classList.toggle('vert', vert);
-      hint.innerHTML = vert ? '上下滑动切换 &nbsp;·&nbsp; 点中间头像确认' : '<kbd>←</kbd><kbd>→</kbd> 切换 &nbsp;·&nbsp; <kbd>Enter</kbd> 确认 &nbsp;·&nbsp; <kbd>Esc</kbd> 关闭';
+      hint.innerHTML = vert ? '上下滑动切换 &nbsp;·&nbsp; 点中间头像确认' : '<kbd>←</kbd><kbd>→</kbd> 切换 &nbsp;·&nbsp; <kbd>Enter</kbd> 确认 &nbsp;·&nbsp; <kbd>Esc</kbd> 关闭' + (hotkeys.panel ? ' &nbsp;·&nbsp; <kbd>' + comboLabel(hotkeys.panel).replace(/[<>&"]/g, '') + '</kbd> 呼出 / 关闭' : '');
       L.title = vert ? '上一个' : '上一个 (←)'; R.title = vert ? '下一个' : '下一个 (→)';
     }
     applyMode();
@@ -911,11 +1147,13 @@
   }
 
   // ---------------- 启动 ----------------
-  try { GM_registerMenuCommand('Arena 账号切换', () => void openPanel(null)); GM_registerMenuCommand('账号密码备忘录', () => openMemo()); } catch {}
+  try { GM_registerMenuCommand('Arena 账号切换', () => void openPanel(null)); GM_registerMenuCommand('账号密码备忘录', () => openMemo()); GM_registerMenuCommand('账号快捷键设置', () => openHotkeys()); } catch {}
+  window.addEventListener('keydown', onHotkey, true);
   let scanQueued = false;
   const scan = () => { scanQueued = false; const d = profileDialog(); if (d) { injectButton(d); } replaceLogin(); };
   new MutationObserver(recs => { if (scanQueued) return; if (!recs.some(r => { const e = r.target.nodeType === 1 ? r.target : r.target.parentElement; return e && !e.closest('[role="log"]'); })) return; scanQueued = true; requestAnimationFrame(scan); }).observe(document.documentElement, { childList: true, subtree: true });
   (async () => {
+    carryRestoreIfPending();
     await checkPending();
     await syncCurrent();
     lastSeen = currentId;

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.55
+// @version      1.11.58
 // @description  Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.55' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.58' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -4150,6 +4150,154 @@ const gacha = (() => {
 })();
 
 // ====================================================================================
+// 出错自动刷新：对话里出现 “Something went wrong. Please try again.” 时倒计时 5 秒后刷新当前对话。
+// 整页刷新（手动 F5 或自动刷新）后滚到最新消息一次——只在加载阶段滚，之后不锁定，可随意往上翻看历史。
+// 不自动刷新的情况：输入框有未发送内容、抽卡运行/停止中/暂停、页面显示限流提示、页面加载时就已存在的错误、刷新次数超限。
+// ====================================================================================
+const errReload = (() => {
+  const CONV = /^\/agent\/([0-9a-f-]{36})\/?$/i;
+  const LOG_KEY = 'amp.native.errReload', JUST_KEY = 'amp.native.errReload.just';
+  const WAIT = 5, PER_SID_GAP = 60e3, WINDOW = 10 * 60e3, MAX_IN_WINDOW = 3, BASELINE = 6000;
+  const PHRASE = /^(?:something went wrong[.!。]?(?:\s*please try again[.!。]?)?|出了点问题[，,。.]?(?:\s*请重试[。.!！]?)?|出错了[，,。.]?(?:\s*请重试[。.!！]?)?)$/i;
+  const SKIP = 'pre,code,blockquote,[contenteditable="true"],textarea,.prose,[class*="markdown"],[data-streamdown],[data-message-author-role],[data-user-message-layout]';
+  const sidNow = () => (CONV.exec(location.pathname) || [])[1] || null;
+  const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
+  const visible = el => !!el?.isConnected && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+  const read = (k, d) => { try { const v = JSON.parse(sessionStorage.getItem(k) || 'null'); return v ?? d; } catch { return d; } };
+  const write = (k, v) => { try { sessionStorage.setItem(k, JSON.stringify(v)); } catch {} };
+  const mainEl = () => document.querySelector('main');
+  const logEl = () => { const m = mainEl(); return m && [...m.querySelectorAll('[role="log"]')].find(visible) || null; };
+
+  // 只认“整段文字就是这句话”的提示元素；消息正文、代码、输入框里出现同样的句子不算
+  function findError() {
+    const m = mainEl(); if (!m) return null;
+    let snap; try { snap = document.evaluate(".//*[contains(text(),'Something went wrong') or contains(text(),'something went wrong') or contains(text(),'出了点问题') or contains(text(),'出错了')]", m, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null); } catch { return null; }
+    for (let i = snap.snapshotLength - 1; i >= 0; i--) {
+      let el = snap.snapshotItem(i);
+      if (el.closest(SKIP)) continue;
+      for (let up = el.parentElement, n = 0; up && up !== m && n < 3; up = up.parentElement, n++) { if (PHRASE.test(norm(up.textContent))) el = up; else break; }
+      if (PHRASE.test(norm(el.textContent)) && visible(el)) return el;
+    }
+    return null;
+  }
+  function chatStatus() {
+    const sid = sidNow(), log = logEl(); if (!sid || !log) return null;
+    try { let f = log[Object.keys(log).find(k => k.startsWith('__reactFiber'))]; for (let n = 0; f && n < 100; n++, f = f.return) { const v = f.memoizedProps?.value; if (v && v.id === sid && Array.isArray(v.messages)) return String(v.status || ''); } } catch {}
+    return null;
+  }
+  const draft = () => [...document.querySelectorAll('main div[contenteditable="true"], main textarea')].filter(visible).some(e => norm(e.value ?? e.innerText ?? e.textContent).length > 0);
+  const gachaBusy = () => { try { const pk = gacha.peek(); return !!pk && ['running', 'stopping', 'paused'].includes(pk.status); } catch { return false; } };
+  const limited = () => { try { return [...document.querySelectorAll('[role="alert"]')].some(e => visible(e) && /too many requests|rate limit|try again later|quota exceeded|limit reached|429/i.test(e.textContent || '')); } catch { return false; } };
+  function budget(sid) { const now = Date.now(), list = read(LOG_KEY, []).filter(x => x && now - x.at < WINDOW); return { list, ok: !list.some(x => x.sid === sid && now - x.at < PER_SID_GAP) && list.length < MAX_IN_WINDOW, n: list.length }; }
+
+  // ---------- 提示条 ----------
+  let host = null, box = null, hideTimer = 0;
+  function ui() {
+    if (box?.isConnected) return box;
+    host = document.createElement('div'); host.id = 'amp-err-reload'; host.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;z-index:2147483000';
+    const root = host.attachShadow({ mode: 'open' }), st = document.createElement('style');
+    st.textContent = '.b{position:fixed;display:flex;align-items:center;gap:8px;max-width:min(580px,calc(100vw - 24px));padding:8px 8px 8px 14px;border-radius:12px;background:rgba(38,37,34,.95);color:#f3f1ec;font:13px/1.45 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.28);transform:translateX(-50%);animation:in .18s ease-out}.b[hidden]{display:none}.t{flex:1;min-width:0}.b button{flex:none;height:26px;padding:0 10px;border:0;border-radius:7px;cursor:pointer;font:inherit;font-size:12px;background:rgba(255,255,255,.12);color:#f3f1ec}.b button:hover{background:rgba(255,255,255,.2)}.b button.p{background:#d8d3ca;color:#262522}.b button.p:hover{background:#fff}.b button.x{width:26px;padding:0;font-size:15px;background:transparent;color:rgba(243,241,236,.6)}@keyframes in{from{opacity:0;transform:translate(-50%,6px)}}';
+    box = document.createElement('div'); box.className = 'b'; box.hidden = true; box.setAttribute('role', 'status');
+    root.append(st, box); (document.body || document.documentElement).append(host);
+    return box;
+  }
+  function place() {
+    if (!box) return;
+    const m = mainEl()?.getBoundingClientRect(), ed = [...document.querySelectorAll('main div[contenteditable="true"], main textarea')].find(visible), f = (ed?.closest('form') || ed)?.getBoundingClientRect();
+    box.style.left = Math.round(m && m.width ? m.left + m.width / 2 : innerWidth / 2) + 'px';
+    box.style.bottom = Math.round(f && f.height ? Math.max(12, innerHeight - f.top + 10) : 150) + 'px';
+  }
+  function show(text, actions = [], closable = false) {
+    const b = ui(); clearTimeout(hideTimer); b.textContent = '';
+    const t = document.createElement('span'); t.className = 't'; t.textContent = text; b.append(t);
+    actions.forEach(([label, fn], i) => { const x = document.createElement('button'); x.type = 'button'; x.textContent = label; if (!i) x.className = 'p'; x.onclick = fn; b.append(x); });
+    if (closable) { const x = document.createElement('button'); x.type = 'button'; x.className = 'x'; x.textContent = '×'; x.title = '关闭'; x.onclick = () => { stale = true; hide(); }; b.append(x); }
+    b.hidden = false; place();
+  }
+  function hide() { clearInterval(timer); timer = 0; errBar = false; if (box) box.hidden = true; }
+  function toast(text, ms = 3200) { show(text); hideTimer = setTimeout(hide, ms); }
+
+  // ---------- 检测与自动刷新 ----------
+  let timer = 0, busy = false, stale = false, baseSid = null, baseUntil = 0, errBar = false;
+  function reloadNow(sid, auto) {
+    sid = sid || sidNow();
+    if (auto) { const b = budget(sid); b.list.push({ sid, at: Date.now() }); write(LOG_KEY, b.list); }
+    write(JUST_KEY, { sid, at: Date.now(), auto: !!auto });
+    clearInterval(timer); timer = 0; show('正在刷新当前对话…');
+    location.reload();
+  }
+  function cancel() { stale = true; busy = false; hide(); }
+  function countdown(sid) {
+    let n = WAIT; busy = true;
+    const paint = () => show('检测到 “Something went wrong”，' + n + ' 秒后自动刷新当前对话', [['立即刷新', () => reloadNow(sid, false)], ['取消', cancel]]);
+    paint(); clearInterval(timer);
+    timer = setInterval(() => {
+      if (sidNow() !== sid || !findError()) { busy = false; hide(); return; } // 已恢复或已离开这个对话
+      if (draft()) { clearInterval(timer); timer = 0; busy = false; stale = true; show('输入框里有未发送的内容，已取消自动刷新；需要时手动刷新', [['刷新', () => reloadNow(sid, false)]], true); errBar = true; return; }
+      if (--n <= 0) { clearInterval(timer); timer = 0; reloadNow(sid, true); return; }
+      paint();
+    }, 1000);
+  }
+  function tick() {
+    const sid = sidNow();
+    if (!sid) { if (busy) { busy = false; hide(); } baseSid = null; return; }
+    if (sid !== baseSid) { baseSid = sid; baseUntil = 0; stale = false; busy = false; hide(); }
+    if (!baseUntil) { if (!logEl()) return; baseUntil = Date.now() + BASELINE; } // 对话渲染出来后的前几秒算“加载时就有”
+    if (busy) return;
+    const el = findError();
+    if (!el) { stale = false; if (errBar) hide(); return; }
+    if (Date.now() < baseUntil) { stale = true; return; }
+    if (stale) return;
+    const st = chatStatus(); if (st === 'submitted' || st === 'streaming') return;
+    if (gachaBusy() || limited()) return;
+    stale = true; // 这一次出错只处理一次；提示消失后再出现才会重新处理
+    if (draft()) { show('检测到 “Something went wrong”。输入框里有未发送的内容，没有自动刷新', [['刷新', () => reloadNow(sid, false)]], true); errBar = true; return; }
+    const b = budget(sid);
+    if (!b.ok) { show('近 10 分钟已自动刷新 ' + b.n + ' 次，暂停自动刷新；需要时手动刷新', [['刷新', () => reloadNow(sid, false)]], true); errBar = true; return; }
+    stale = false; countdown(sid);
+  }
+
+  // ---------- 刷新后滚到最新消息（一次，不锁定） ----------
+  function findScroller() {
+    const log = logEl(), cands = [];
+    if (log) { for (let e = log; e && e !== document.body; e = e.parentElement) cands.push(e); cands.push(...log.querySelectorAll(':scope > *, :scope > * > *')); }
+    let best = null, room = 0;
+    for (const e of cands) { const r = e.scrollHeight - e.clientHeight; if (r > room + 1) { const oy = getComputedStyle(e).overflowY; if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') { best = e; room = r; } } }
+    if (!best && log) { const se = document.scrollingElement; if (se && se.scrollHeight - se.clientHeight > 1) best = se; }
+    return best;
+  }
+  function bottomOnce(msg) {
+    const t0 = Date.now(); let done = false, lastH = -1, stableAt = Date.now(), sc = null, said = false;
+    const off = () => { if (done) return; done = true; clearInterval(iv); removeEventListener('wheel', off, true); removeEventListener('touchstart', off, true); removeEventListener('keydown', onKey, true); removeEventListener('mousedown', onDown, true); };
+    const onKey = e => { if (/^(PageUp|PageDown|Home|End|ArrowUp|ArrowDown)$/.test(e.key) || (e.key === ' ' && !e.target?.closest?.('[contenteditable="true"],textarea,input'))) off(); };
+    const onDown = e => { if (sc && (e.target === sc || sc.contains(e.target))) off(); };
+    addEventListener('wheel', off, { capture: true, passive: true }); addEventListener('touchstart', off, { capture: true, passive: true }); addEventListener('keydown', onKey, true); addEventListener('mousedown', onDown, true);
+    const iv = setInterval(() => {
+      if (done) return;
+      if (Date.now() - t0 > 15000) { off(); return; }
+      if (!sc || !sc.isConnected) sc = findScroller();
+      if (!sc) return;
+      const h = sc.scrollHeight, room = h - sc.clientHeight;
+      if (h !== lastH) { lastH = h; stableAt = Date.now(); }
+      if (room > 2 && sc.scrollTop < room - 2) sc.scrollTop = h;
+      if (msg && !said) { said = true; toast(msg); }
+      if (Date.now() - stableAt > 2500 && room > 2) off();
+    }, 200);
+  }
+  function afterLoad() {
+    const sid = sidNow(), j = read(JUST_KEY, null);
+    try { sessionStorage.removeItem(JUST_KEY); } catch {}
+    if (!sid) return;
+    let nav = ''; try { nav = performance.getEntriesByType('navigation')[0]?.type || ''; } catch {}
+    const ours = !!j && j.sid === sid && Date.now() - j.at < 60e3;
+    if (nav === 'reload' || ours) bottomOnce(ours && j.auto ? '已自动刷新，回到最新消息' : '');
+  }
+  function start() { afterLoad(); setInterval(() => { try { tick(); } catch {} }, 2000); addEventListener('resize', () => { if (box && !box.hidden) place(); }); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
+  return { tick, findError, bottomOnce };
+})();
+
+// ====================================================================================
 // VIP pin (request model clzui / dxzui), current-chat progress fill, model-change alert.
 // ====================================================================================
 const vip = (() => {
@@ -5157,7 +5305,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.55', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.58', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -6239,6 +6387,9 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
 .status{display:flex;flex-wrap:wrap;gap:4px 12px;padding:6px 14px 0;font-size:11px;color:var(--secondary);flex:none;min-height:0}.status[hidden]{display:none}.status strong{font-weight:400;color:var(--fg);font-family:var(--mono)}.status .blocked{color:hsl(var(--interactive-negative,2 63% 54%))}.status .low{color:var(--warn)}
 .setting{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid var(--line);font-size:12px}.setting:first-of-type{border-top:0}.setting .grow{display:flex;flex-direction:column;gap:2px}.setting .hint{font-size:10px;color:var(--secondary);line-height:1.5}.setting .selector{flex:none;width:112px}.switch{position:relative;width:34px;height:20px;border-radius:10px;background:var(--edge);flex:none;padding:0;transition:background .12s}.switch[aria-checked=true]{background:var(--green)}.switch::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--bg);transition:transform .12s}.switch[aria-checked=true]::after{transform:translateX(14px)}.switch:hover{background:var(--edge)}.switch[aria-checked=true]:hover{background:var(--green)}
 .stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}.stat{border:1px solid var(--edge);border-radius:6px;padding:8px 10px}.stat-label{font-size:10px;color:var(--secondary)}.stat-value{font:400 13px/1.5 var(--mono);color:var(--heading);overflow-wrap:anywhere}.bar{height:4px;border-radius:2px;background:var(--raised);overflow:hidden;margin-top:6px}.bar i{display:block;height:100%;background:var(--heading)}
+:host([data-fold]){display:block;position:fixed;top:0;left:0;width:0;height:0;z-index:45}.fold{position:fixed;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;width:22px;min-height:40px;padding:10px 0;border:1px solid var(--edge);border-right:0;border-radius:10px 0 0 10px;background:var(--bg);color:var(--secondary);box-shadow:-3px 2px 12px #00000014;font-size:11px;line-height:1.2}.fold:hover{background:var(--raised);color:var(--heading)}.fold svg{width:14px;height:14px;transform:rotate(180deg);transition:transform .2s}.fold[data-open] svg{transform:none}.fold-label{writing-mode:vertical-rl;letter-spacing:2px;font-weight:500}.fold[data-open] .fold-label{display:none}
+.head-fold{margin-left:auto;flex:none;height:28px;padding:0 6px 0 10px;gap:2px;font-size:12px;color:var(--secondary);border:1px solid var(--edge);border-radius:14px}.head-fold svg{width:14px;height:14px}
+.upd.chentry{opacity:.55}.upd.chentry:hover{opacity:1}.chform{display:flex;align-items:center;gap:4px;padding:2px 0 1px}.chform input{width:118px;height:22px;box-sizing:border-box;padding:0 7px;border:1px solid var(--edge);border-radius:6px;background:var(--bg);color:var(--fg);font:11px var(--mono);outline:0}.chform input:focus{border-color:var(--secondary)}.chform input[data-bad]{border-color:#c0584f;animation:chshake .28s}.chform button{height:22px;padding:0 8px!important;border:1px solid var(--edge);border-radius:6px}@keyframes chshake{25%{transform:translateX(-3px)}75%{transform:translateX(3px)}}
 `;
   function el(tag,cls,text,parent){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined&&text!==null)e.textContent=text;if(parent)parent.append(e);return e;}
   function button(parent,text,title,fn,cls=''){const b=el('button',cls,text,parent);b.type='button';b.title=title;b.setAttribute('aria-label',title);b.dataset.focus=title;b.onclick=fn;return b;}
@@ -6271,8 +6422,15 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     const entry=el('div');entry.id='amp-lite-panel';entry.setAttribute('data-entry','');document.body.append(entry);
     const host=el('aside');host.id='amp-lite-dock';host.setAttribute('data-dock','');host.setAttribute('aria-label','模型信息');document.body.append(host);host.style.setProperty('--amp-width',prefs.width+'px');
     const gripHost=el('div');gripHost.id='amp-lite-grip';gripHost.setAttribute('data-grip','');document.body.append(gripHost);
-    const entryRoot=entry.attachShadow({mode:'open'}),root=host.attachShadow({mode:'open'}),gripRoot=gripHost.attachShadow({mode:'open'});let sheet;
-    try{sheet=new CSSStyleSheet();sheet.replaceSync(css);entryRoot.adoptedStyleSheets=[sheet];root.adoptedStyleSheets=[sheet];gripRoot.adoptedStyleSheets=[sheet];}catch{el('style','',css,entryRoot);el('style','',css,root);el('style','',css,gripRoot);}
+    const foldHost=el('div');foldHost.id='amp-lite-fold';foldHost.setAttribute('data-fold','');foldHost.hidden=true;document.body.append(foldHost);
+    const entryRoot=entry.attachShadow({mode:'open'}),root=host.attachShadow({mode:'open'}),gripRoot=gripHost.attachShadow({mode:'open'}),foldRoot=foldHost.attachShadow({mode:'open'});let sheet;
+    try{sheet=new CSSStyleSheet();sheet.replaceSync(css);entryRoot.adoptedStyleSheets=[sheet];root.adoptedStyleSheets=[sheet];gripRoot.adoptedStyleSheets=[sheet];foldRoot.adoptedStyleSheets=[sheet];}catch{el('style','',css,entryRoot);el('style','',css,root);el('style','',css,gripRoot);el('style','',css,foldRoot);}
+    // 右侧“模型信息”的收起 / 展开把手：展开时贴在侧栏左边缘（›），收起后贴在屏幕右边缘（‹ 模型信息）
+    const fold=button(foldRoot,'','收起模型信息',()=>{pref.open=!pref.open;persist();render();},'fold');icon('chevron',fold);el('span','fold-label','模型信息',fold);const foldAt={on:false};
+    function placeFold(){const on=foldAt.on;foldHost.hidden=!on;if(!on)return;const open=!!pref.open&&!host.hidden;fold.toggleAttribute('data-open',open);const t=open?'收起模型信息':'展开模型信息';if(fold.title!==t){fold.title=t;fold.setAttribute('aria-label',t);}fold.setAttribute('aria-expanded',String(open));
+      const mr=document.querySelector('main')?.getBoundingClientRect();if(!mr)return;const w=22,h=fold.offsetHeight||44,vw=document.documentElement.clientWidth||innerWidth;let x=vw-w;if(open){const r=host.getBoundingClientRect();if(r.width>0)x=r.left-w;}
+      fold.style.left=Math.round(x)+'px';fold.style.top=Math.round(mr.top+Math.max(8,(mr.height-h)/2))+'px';}
+    try{new ResizeObserver(()=>placeFold()).observe(host);}catch{}
     const marks=new Map(),aliasCSS='[data-amp-local-title]{position:relative!important;color:transparent!important;display:block!important;flex:1 1 0%!important;min-width:0!important}[data-amp-local-title]>*{visibility:hidden!important}[data-amp-local-title]::after{content:attr(data-amp-short) / "";position:absolute;inset:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:hsl(var(--text-primary,24 6% 17%));pointer-events:none}[data-user-message-action][data-amp-sent]{display:flex!important;align-items:center;justify-content:flex-end;width:auto!important}[data-user-message-action][data-amp-sent]::before,[data-user-message-body-row][data-amp-sent]::after{content:attr(data-amp-sent);font-size:11px;line-height:1;font-family:inherit;font-variant-numeric:tabular-nums;color:hsl(var(--text-secondary,35 6% 45%));white-space:nowrap;pointer-events:none;opacity:.8}[data-user-message-action][data-amp-sent]::before{margin-right:6px}[data-user-message-body-row][data-amp-sent]::after{margin-top:2px}';
     let aliasSheet,aliasStyle;try{aliasSheet=new CSSStyleSheet();aliasSheet.replaceSync(aliasCSS);document.adoptedStyleSheets=[...document.adoptedStyleSheets,aliasSheet];}catch{aliasStyle=el('style','',aliasCSS,document.head||document.body);}
     let tab='overview',historyView=null,turnKey=null,selected=null,moreOpen=false,boundPath=location.pathname,compact=false,expanded=false,bodyStamp=[],pickerStamp='',turnStamp='',toastTimer=0,logItems=[],logKey='',logSerial=0,cacheLimit=50,openSid=null,confirmLogClear=false,lastLayout='',lastCooling=false,seenRevision=0,rawFilter='all',rawSpan=null,rawSerial=0,usageInfo=null,usageAt=0,confirmRawClear=false,settingsSerial=0,sentMarks=new Map(),sentPending=new Set(),sentStamp='';
@@ -6293,7 +6451,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     const compactBar=el('div','compact-bar',null,panel),compactTop=el('div','compact-top',null,compactBar),compactName=el('span','compact-name mono','模型信息',compactTop);
     const compactToggle=button(compactTop,'详情','展开或收起详情',()=>{expanded=!expanded;render();},'compact-toggle');const compactInfo=el('div','compact-info','',compactBar);
     const head=el('header','head',null,panel),heading=el('div','grow',null,head);el('h2','','模型信息',heading);const numberLabel=el('span','local-number mono','',heading);numberLabel.title='本地会话编号（同一浏览器内统一递增）';
-    iconButton(head,'chevron','折叠详情',()=>{pref.open=false;persist();render();});
+    {const hb=button(head,'','收起模型信息（收起后点屏幕右边缘的小按钮展开）',()=>{pref.open=false;persist();render();},'head-fold');el('span','','收起',hb);icon('chevron',hb);}
     const banner=el('div','cache-banner',null,panel),bannerText=el('span','grow','',banner);button(banner,'返回当前','返回当前会话的最新记录',()=>{historyView=null;turnKey=null;selected=null;rawSpan=null;tab=tab==='cache'?'overview':tab;render();},'return-live');
     const nav=el('div','tabs',null,panel);nav.setAttribute('role','tablist');nav.setAttribute('aria-label','模型信息视图');
     const tabs=[['overview','概览'],['detector','独立检测'],['hunt','抽卡'],['sources','来源'],['raw','原始'],['cache','缓存'],['logs','日志'],['settings','设置']];
@@ -6309,9 +6467,33 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     const toast=el('div','toast','',panel);toast.hidden=true;toast.setAttribute('role','status');
     const footer=el('footer','footer',null,panel),exportButton=button(footer,'','导出当前视图的记录、原始数据和日志',async()=>{if(tab==='hunt'){download(gacha.state()||{},'arena-gacha-'+Date.now()+'.json');return;}if(tab==='detector'){download(legacyDisplay.snapshot(),'arena-independent-detector-'+Date.now()+'.json');return;}const data=exported();data.logs=await catalog.readLogs(data.sid);download(data,'amp-lite-'+(data.sid||'export').slice(0,8)+'-'+Date.now()+'.json');});icon('download',exportButton);el('span','','导出记录',exportButton);(()=>{const cmp=(x,y)=>{const p=String(x).split('.').map(Number),q=String(y).split('.').map(Number);for(let i=0;i<Math.max(p.length,q.length);i++){const d=(p[i]||0)-(q[i]||0);if(d)return d>0?1:-1;}return 0;};const box=el('div','upds',null,footer);const BASE='https://raw.githubusercontent.com/755287249/-/main/';const mk=(label,file,getCur)=>{const RAW=BASE+file,CK='amp.native.upd.'+file;let latest=null,busy=false,fresh=null;const ub=el('button','footer-note upd','',box);ub.type='button';const paint=(msg)=>{const cur=getCur();ub.dataset.new=cur&&latest&&cmp(latest,cur)>0?'1':'';ub.dataset.miss=cur?'':'1';ub.title=(cur?label+' 当前 v'+cur:label+' 未检测到（未安装或未启用）')+(latest?'，GitHub 最新 v'+latest+(ub.dataset.src?'（'+ub.dataset.src+'）':''):'')+'。点击'+(ub.dataset.new||!cur?'打开安装页':'重新检查');const old=!cur&&file.includes('Switch')&&!!document.querySelector('[data-amp-switch],[data-amp-login],[data-amp-switcher],#amp-switcher-css');const ahead=cur&&latest&&cmp(cur,latest)>0;ub.textContent=label+' '+(msg||(!cur?(old?'旧版（≤1.0.17）· 安装 v'+(latest||'新版'):latest?'未检测到 · 安装 v'+latest:'未检测到 · 安装'):ub.dataset.new?'v'+cur+' → v'+latest+' · 更新':ahead?'v'+cur+' · GitHub 仍是 v'+latest:latest?'v'+cur+' · 已是最新':'v'+cur+' · 检查更新'));if(!cur&&!msg)ub.title=label+' 未检测到版本号：可能是 v1.0.17 及更早的版本（不会上报版本），或未安装/未启用。安装最新版后即可显示。'+(latest?'GitHub 最新 v'+latest+'。':'');if(ahead&&!msg)ub.title=label+' 本地 v'+cur+' 比 GitHub 上的 v'+latest+' 新，请把新版上传到 GitHub。';};const check=async(force)=>{if(busy)return;try{const c=JSON.parse(localStorage.getItem(CK)||'null');if(!force&&c&&Date.now()-c.at<5*60e3&&!(getCur()&&cmp(getCur(),c.v)>0)){latest=c.v;paint();return;}}catch{}busy=true;paint('检查中…');try{const F=window.__ampNativeFetch||fetch,vOf=t=>(String(t).match(/\/\/\s*@version\s+([\d.]+)/)||[])[1]||null,errs=[];let best=null,src='';const take=(v,from)=>{if(v&&(!best||cmp(v,best)>0)){best=v;src=from;}};
           // 1) GitHub API 查这个文件最新提交的 sha，再按 sha 取原文（路径唯一，不会被 CDN/镜像缓存）；2) 兜底直接取 main
-          try{const c=await F.call(window,'https://api.github.com/repos/755287249/-/commits?sha=main&per_page=1&path='+encodeURIComponent(file),{cache:'no-store',credentials:'omit'});if(!c.ok)throw new Error('API HTTP '+c.status);const sha=(await c.json())?.[0]?.sha;if(!sha)throw new Error('API 无提交');const r=await F.call(window,BASE.replace('/main/','/'+sha+'/')+file,{cache:'no-store',credentials:'omit',headers:{Range:'bytes=0-4095'}});if(!r.ok)throw new Error('sha HTTP '+r.status);take(vOf(await r.text()),'commit '+sha.slice(0,7));fresh=BASE.replace('/main/','/'+sha+'/')+file;}catch(e){errs.push(e.message||String(e));}
+          try{const c=await F.call(window,'https://api.github.com/repos/755287249/-/commits?sha=main&per_page=1&path='+encodeURIComponent((/\/test\/$/.test(BASE)?'test/':'')+file),{cache:'no-store',credentials:'omit'});if(!c.ok)throw new Error('API HTTP '+c.status);const sha=(await c.json())?.[0]?.sha;if(!sha)throw new Error('API 无提交');const r=await F.call(window,BASE.replace('/main/','/'+sha+'/')+file,{cache:'no-store',credentials:'omit',headers:{Range:'bytes=0-4095'}});if(!r.ok)throw new Error('sha HTTP '+r.status);take(vOf(await r.text()),'commit '+sha.slice(0,7));fresh=BASE.replace('/main/','/'+sha+'/')+file;}catch(e){errs.push(e.message||String(e));}
           try{const r=await F.call(window,RAW+'?t='+Date.now(),{cache:'no-store',credentials:'omit',headers:{Range:'bytes=0-4095'}});if(!r.ok)throw new Error('raw HTTP '+r.status);take(vOf(await r.text()),'raw');}catch(e){errs.push(e.message||String(e));}
-          if(!best)throw new Error(errs.join('；')||'未找到版本号');latest=best;ub.dataset.src=src;try{localStorage.setItem(CK,JSON.stringify({v:latest,at:Date.now()}));}catch{}busy=false;paint();const cu=getCur();if(cu&&cmp(cu,latest)>0&&(check.n=(check.n||0)+1)<=8)setTimeout(()=>void check(true),120e3);}catch(e){busy=false;paint('检查失败 · 重试');ub.title=String(e&&e.message||e);}};ub.onclick=()=>{if(busy)return;const cur=getCur();if(!cur||latest&&cmp(latest,cur)>0){window.open(fresh||RAW,'_blank');paint('请在新标签页确认安装');try{localStorage.removeItem(CK);}catch{}return;}void check(true);};paint();setTimeout(()=>void check(false),1500);return paint;};mk('套件','Arena-Native-Suite.user.js',()=>String(VERSION).replace(/^native-/,''));const sw=mk('账号切换','Arena-Account-Switch.user.js',()=>document.documentElement.dataset.ampSwitchVer||'');try{const mo=new MutationObserver(()=>sw());mo.observe(document.documentElement,{attributes:true,attributeFilter:['data-amp-switch-ver']});}catch{}})();
+          if(!best)throw new Error(errs.join('；')||'未找到版本号');latest=best;ub.dataset.src=src;try{localStorage.setItem(CK,JSON.stringify({v:latest,at:Date.now()}));}catch{}busy=false;paint();const cu=getCur();if(cu&&cmp(cu,latest)>0&&(check.n=(check.n||0)+1)<=8)setTimeout(()=>void check(true),120e3);}catch(e){busy=false;paint('检查失败 · 重试');ub.title=String(e&&e.message||e);}};ub.onclick=()=>{if(busy)return;const cur=getCur();if(!cur||latest&&cmp(latest,cur)>0){window.open(fresh||RAW,'_blank');paint('请在新标签页确认安装');try{localStorage.removeItem(CK);}catch{}return;}void check(true);};paint();setTimeout(()=>void check(false),1500);return paint;};mk('套件','Arena-Native-Suite.user.js',()=>String(VERSION).replace(/^native-/,''));const sw=mk('账号切换','Arena-Account-Switch.user.js',()=>document.documentElement.dataset.ampSwitchVer||'');      // 测试版入口：正式版里输入密码后显示测试版的安装 / 更新；测试版里显示“正式版入口”（切回正式版，无需密码）。
+      // 地址都由 BASE 推出来，发布时替换链接不会影响这里。脚本里只存密码的 SHA-256，不存明文。
+      const IS_TEST=/\/test\/$/.test(BASE),CH_BASE=IS_TEST?BASE.replace(/test\/$/,''):BASE+'test/',CH_NAME=IS_TEST?'正式版':'测试版',CH_KEY='amp.native.chan.unlock',CH_HASH='a17502877cfc09fdcfd1c868acc7fb61e1842bb02fd89ffca9451a507f9caa7c';
+      const chPaints=[];let chLines=[],chForm=null;
+      const chVer=t=>(String(t).match(/\/\/\s*@version\s+([\d.]+)/)||[])[1]||null;
+      const chLatest=async file=>{const F=window.__ampNativeFetch||fetch,path=(IS_TEST?'':'test/')+file,errs=[];let best=null,fresh=null;
+        try{const c=await F.call(window,'https://api.github.com/repos/755287249/-/commits?sha=main&per_page=1&path='+encodeURIComponent(path),{cache:'no-store',credentials:'omit'});if(!c.ok)throw new Error('API HTTP '+c.status);const sha=(await c.json())?.[0]?.sha;if(!sha)throw new Error('API 无提交');const u=CH_BASE.replace('/main/','/'+sha+'/')+file,r=await F.call(window,u,{cache:'no-store',credentials:'omit',headers:{Range:'bytes=0-4095'}});if(!r.ok)throw new Error('sha HTTP '+r.status);const v=chVer(await r.text());if(v){best=v;fresh=u;}}catch(e){errs.push(e.message||String(e));}
+        try{const r=await F.call(window,CH_BASE+file+'?t='+Date.now(),{cache:'no-store',credentials:'omit',headers:{Range:'bytes=0-4095'}});if(!r.ok)throw new Error('raw HTTP '+r.status);const v=chVer(await r.text());if(v&&(!best||cmp(v,best)>0)){best=v;fresh=null;}}catch(e){errs.push(e.message||String(e));}
+        if(!best)throw new Error(errs.join('；')||'未找到版本号');return {v:best,fresh};};
+      const chLine=(label,file,getCur)=>{let latest=null,fresh=null,busy=false;const b=el('button','footer-note upd',null,box);b.type='button';
+        const paint=msg=>{const cur=getCur(),newer=!!latest&&(!cur||cmp(latest,cur)>0),same=!!latest&&!!cur&&cmp(latest,cur)===0;b.dataset.new=newer&&!msg?'1':'';b.textContent=CH_NAME+' '+label+' '+(msg||(latest?'v'+latest+' · '+(newer?'安装':same?'版本相同':'安装（较旧）'):'检查中…'));if(!msg&&latest)b.title=CH_NAME+' '+label+' v'+latest+(cur?'（当前 v'+cur+'）':'')+'。点击打开安装页'+(same?'；版本号相同，安装后会改为跟随'+CH_NAME+'自动更新':'');};
+        const check=async()=>{if(busy)return;busy=true;paint('检查中…');try{const r=await chLatest(file);latest=r.v;fresh=r.fresh;busy=false;paint();}catch(e){busy=false;paint('检查失败 · 重试');b.title=String(e&&e.message||e);}};
+        b.onclick=()=>{if(busy)return;if(!latest){void check();return;}window.open(fresh||CH_BASE+file,'_blank');paint('请在新标签页确认安装');setTimeout(()=>{if(!busy)paint();},8000);};
+        chPaints.push(()=>{if(!busy)paint();});void check();return b;};
+      const chEntry=el('button','footer-note upd chentry','',box);chEntry.type='button';
+      const chHide=relock=>{for(const b of chLines)b.remove();chLines=[];chPaints.length=0;chForm?.remove();chForm=null;if(relock){try{localStorage.removeItem(CH_KEY);}catch{}}chEntry.textContent=CH_NAME+'入口';chEntry.title=IS_TEST?'显示正式版的安装入口（用于切回正式版）':'输入密码后可安装 / 更新测试版';};
+      const chShow=()=>{chHide(false);chLines=[chLine('套件','Arena-Native-Suite.user.js',()=>String(VERSION).replace(/^native-/,'')),chLine('账号切换','Arena-Account-Switch.user.js',()=>document.documentElement.dataset.ampSwitchVer||'')];box.append(chEntry);chEntry.textContent='收起'+CH_NAME;chEntry.title=IS_TEST?'隐藏正式版入口':'隐藏测试版入口（再次打开需要输入密码）';};
+      const chAsk=()=>{if(chForm){chForm.remove();chForm=null;return;}chForm=el('div','chform',null,box);const inp=el('input','',null,chForm);inp.type='password';inp.placeholder='测试版密码';inp.autocomplete='off';inp.spellcheck=false;
+        const submit=async()=>{const v=inp.value;if(!v){inp.focus();return;}let h='';try{const d=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(v));h=[...new Uint8Array(d)].map(x=>x.toString(16).padStart(2,'0')).join('');}catch{}if(h===CH_HASH){try{localStorage.setItem(CH_KEY,'1');}catch{}chShow();}else{inp.value='';inp.placeholder=h?'密码不对':'浏览器不支持验证';inp.removeAttribute('data-bad');void inp.offsetWidth;inp.setAttribute('data-bad','');inp.focus();}};
+        button(chForm,'确定','验证密码',()=>void submit());
+        for(const t of ['keydown','keyup','keypress','input'])inp.addEventListener(t,e=>{e.stopPropagation();if(t!=='keydown')return;if(e.key==='Enter'){e.preventDefault();void submit();}else if(e.key==='Escape'){e.preventDefault();chForm?.remove();chForm=null;}});
+        setTimeout(()=>inp.focus(),0);};
+      chEntry.onclick=()=>{if(chLines.length){chHide(!IS_TEST);return;}let ok=IS_TEST;try{ok=ok||localStorage.getItem(CH_KEY)==='1';}catch{}if(ok)chShow();else chAsk();};
+      chHide(false);try{if(!IS_TEST&&localStorage.getItem(CH_KEY)==='1')chShow();}catch{}
+      try{const mo=new MutationObserver(()=>{sw();chPaints.forEach(f=>f());});mo.observe(document.documentElement,{attributes:true,attributeFilter:['data-amp-switch-ver']});}catch{}})();
     const fmt=v=>v===null||v===undefined?'—':Number(v).toLocaleString('zh-CN');
     const clock=v=>{const t=typeof v==='number'?v:Date.parse(v||'');return Number.isFinite(t)?new Date(t).toLocaleTimeString('zh-CN',{hour12:false}):'--:--:--';};
     const seqLabel=sid=>{const e=catalog.entries.get(sid);return e?(e.temporary?'临时 ':'')+'#'+e.seq:'';};
@@ -6456,7 +6638,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
         else if(m.display.includes('flex')&&m.flexDirection==='column'){mode='compact';if(host.parentNode!==main||host!==main.lastChild)main.append(host);compact=true;}
       }
       if(mode!==lastLayout){lastLayout=mode;if(mode==='compact')expanded=false;bodyStamp=[];paint();}
-      host.toggleAttribute('data-compact',compact);host.toggleAttribute('data-expanded',expanded);host.hidden=!eligible||mode==='none'||!compact&&!pref.open||compact&&!expanded;
+      host.toggleAttribute('data-compact',compact);host.toggleAttribute('data-expanded',expanded);host.hidden=!eligible||mode==='none'||!compact&&!pref.open||compact&&!expanded;foldAt.on=eligible&&mode==='wide';placeFold();
       if(ready){placeGrip();localTitles();sentTimes();try{headerTitle();}catch{}try{docIcon();}catch{}if(!((attach.n=(attach.n||0)+1)%4))statusBar();}
     }
     function cacheTab(){
@@ -6684,7 +6866,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       if(need.length)void catalog.sentAt(need).then(()=>{for(const id of need)sentPending.delete(id);paint();});
       if(changed)log('debug','发送时间','标注 '+changed+' 条消息');
     }
-    ui={host,entry,attach,render,view,show(){if(compact)expanded=true;else pref.open=true;persist();render();},toggle(){if(compact)expanded=!expanded;else pref.open=!pref.open;persist();render();},destroy(){clearTimeout(toastTimer);try{clearHeader();}catch{}for(const [a,m]of marks)restoreMark(a,m);marks.clear();clearSent();if(aliasSheet)document.adoptedStyleSheets=document.adoptedStyleSheets.filter(s=>s!==aliasSheet);aliasStyle?.remove();applySidebar(null);entry.remove();host.remove();gripHost.remove();}};render();
+    ui={host,entry,attach,render,view,show(){if(compact)expanded=true;else pref.open=true;persist();render();},toggle(){if(compact)expanded=!expanded;else pref.open=!pref.open;persist();render();},destroy(){clearTimeout(toastTimer);try{clearHeader();}catch{}for(const [a,m]of marks)restoreMark(a,m);marks.clear();clearSent();if(aliasSheet)document.adoptedStyleSheets=document.adoptedStyleSheets.filter(s=>s!==aliasSheet);aliasStyle?.remove();applySidebar(null);entry.remove();host.remove();gripHost.remove();foldHost.remove();}};render();
   }
   const mountAll=()=>{mount();mountBar();gachaUi.mount();};
   if(document.body)mountAll();else{const observer=new MutationObserver(()=>{if(document.body){observer.disconnect();mountAll();}});observer.observe(document.documentElement||document,{childList:true,subtree:true});}
