@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arena 账号切换（Arena Native Suite 配套）
 // @namespace    local.amp.native.accounts
-// @version      1.0.12
+// @version      1.0.13
 // @description  在 Arena 个人卡片里一键切换已保存的账号；显示各账号最近记录的额度
 // @match        https://arena.ai/*
 // @include      https://arena.ai/*
@@ -14,13 +14,13 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_setClipboard
 // @noframes
-// @downloadURL  none
-// @updateURL    none
+// @downloadURL  https://raw.githubusercontent.com/755287249/-/main/Arena-Account-Switch.user.js
+// @updateURL    https://raw.githubusercontent.com/755287249/-/main/Arena-Account-Switch.user.js
 // ==/UserScript==
 
 (function arenaAccountSwitch() {
   'use strict';
-  const VERSION = '1.0.12';
+  const VERSION = '1.0.13';
   const ORIGIN = 'https://' + location.host;
   const AUTH_RE = /^arena-auth-prod-v1(\.\d+)?$/;
   const STORE = 'accounts.v2', OLD_STORE = 'accounts.v1'; // v2：按邮箱去重；旧版本标签页只会写 v1，不再污染
