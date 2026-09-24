@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.61
+// @version      1.11.62
 // @description  Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.61' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.62' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -4789,7 +4789,7 @@ const gachaUi = (() => {
       // 选了目标模型（或有 VIP）时：把所有日期分组（Today / Yesterday / Older）里命中的卡片统一置顶。
       // 仍然不移动 React 节点：把分组容器设为 display:contents，所有卡片成为同一个 flex 容器的子项，再用 order 排。
       const lists = [...groups.keys()], anyPin = [...groups.values()].some(rows => rows.some(r => r.vip || r.hit));
-      let P = null;
+      let P = null, flatPinned = null;
       if (lists.length > 1 && anyPin) { P = lists[0].parentElement; while (P && !lists.every(l => P.contains(l))) P = P.parentElement; if (P && !P.closest('aside,nav,[data-sidebar]')) P = null; }
       if (P !== flatP) unflat();
       if (P) {
@@ -4815,7 +4815,7 @@ const gachaUi = (() => {
           for (const l of L) { let n = l; while (n !== c) { for (const sib of n.parentElement.children) if (sib !== n && !lists.some(x => sib === x || sib.contains(x))) setO(sib, base, 'lab'); n = n.parentElement; } }
           for (const l of L) groups.get(l).filter(r => !(r.vip || r.hit)).sort(cmp).forEach((r, k) => setO(r.item, base + 1 + k, 'li'));
         }
-        all.filter(r => r.vip || r.hit).sort(cmp).forEach((r, k) => setO(r.item, (firstBase ?? 100000) - 5000 + k, 'li'));
+        flatPinned = all.filter(r => r.vip || r.hit).sort(cmp); flatPinned.forEach((r, k) => setO(r.item, (firstBase ?? 100000) - 5000 + k, 'li'));
       }
       for (const [list, rows] of groups) {
         const sortable = !P && /flex|grid/.test(getComputedStyle(list).display);
@@ -4827,7 +4827,8 @@ const gachaUi = (() => {
         if (!P) for (const r of rows) { r.g = r.vid || '~' + r.i; r.gs = best.get(r.g); }
         const sorted = rows.slice().sort((x, y) => (y.vip - x.vip) || (y.hit - x.hit) || (sortOn ? (x.gs - y.gs) || (x.g < y.g ? -1 : x.g > y.g ? 1 : 0) || ((y.ver ?? -1) - (x.ver ?? -1)) || (x.gf - y.gf) || (x.fam - y.fam) || (y.tier - x.tier) || (x.sc - y.sc) : 0) || (x.i - y.i));
         // Strength shading: the strongest pinned card gets 50% of the selected card's colour depth, the rest fade evenly.
-        const hits = sorted.filter(r => r.hit && !r.vip), vips = sorted.filter(r => r.vip);
+        // 平铺时（多个日期分组合成一列）按整列的最终顺序算深浅，否则每个分组各自从最深开始，跨分组时忽深忽浅
+        const pool = flatPinned || sorted, hits = pool.filter(r => r.hit && !r.vip), vips = pool.filter(r => r.vip);
         const tint = (arr, r) => { const n = arr.length, k = arr.indexOf(r); return k < 0 ? '' : (50 * (n - k) / n).toFixed(1) + '%'; };
         sorted.forEach((r, rank) => {
           if (P) {} else if (sortable && pinned) r.item.style.order = String(rank); else r.item.style.removeProperty('order');
@@ -5359,7 +5360,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.61', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.62', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
