@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.58
+// @version      1.11.59
 // @description  【测试版】Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.58' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.59' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -5305,7 +5305,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.58', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.59', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -5653,7 +5653,7 @@ const gachaUi = (() => {
   const load=(key,fallback)=>{try{return JSON.parse(localStorage.getItem(key))??fallback;}catch{return fallback;}};
   const store=(key,value)=>{try{return ampStore.set(key,JSON.stringify(value));}catch{return false;}};
   const clamp=(v,min,max,fallback)=>Number.isFinite(v)?Math.min(max,Math.max(min,Math.round(v))):fallback;
-  const stored=load(KEY+'.prefs',{}), prefs={width:clamp(stored.width,280,720,340),sidebarWidth:clamp(stored.sidebarWidth,200,560,null),cloudSync:stored.cloudSync===true,cloudFormat:stored.cloudFormat==='name'?'name':'prefix',rawBudget:BUDGET_OPTIONS.includes(stored.rawBudget)?stored.rawBudget:64,showSent:stored.showSent!==false,showQuota:stored.showQuota!==false,showCredits:stored.showCredits!==false,showBar:stored.showBar!==false,barCollapsed:stored.barCollapsed===true,barOffset:stored.barOffset!==false,showSeq:stored.showSeq===true,hideDocIcon:stored.hideDocIcon!==false,stopOnResample:stored.stopOnResample!==false,showQuotaReset:stored.showQuotaReset===true};
+  const stored=load(KEY+'.prefs',{}), prefs={width:clamp(stored.width,280,720,340),sidebarWidth:clamp(stored.sidebarWidth,200,560,null),cloudSync:stored.cloudSync===true,cloudFormat:stored.cloudFormat==='name'?'name':'prefix',rawBudget:BUDGET_OPTIONS.includes(stored.rawBudget)?stored.rawBudget:64,showSent:stored.showSent!==false,showQuota:stored.showQuota!==false,showCredits:stored.showCredits!==false,showBar:stored.showBar!==false,barCollapsed:stored.barCollapsed===true,barOffset:stored.barOffset!==false,showSeq:stored.showSeq===true,hideDocIcon:stored.hideDocIcon!==false,stopOnResample:stored.stopOnResample!==false,showQuotaReset:stored.showQuotaReset===true,spendUnit:stored.spendUnit==='usd'?'usd':'token'};
   // 手机/窄屏：底部只留一条余额栏，点击余额栏才展开模型信息
   const miniBar=()=>innerWidth<768||!!document.getElementById('amp-lite-dock')?.hasAttribute('data-compact');
   const savePrefs=()=>store(KEY+'.prefs',prefs);
@@ -6390,6 +6390,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
 :host([data-fold]){display:block;position:fixed;top:0;left:0;width:0;height:0;z-index:45}.fold{position:fixed;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;width:22px;min-height:40px;padding:10px 0;border:1px solid var(--edge);border-right:0;border-radius:10px 0 0 10px;background:var(--bg);color:var(--secondary);box-shadow:-3px 2px 12px #00000014;font-size:11px;line-height:1.2}.fold:hover{background:var(--raised);color:var(--heading)}.fold svg{width:14px;height:14px;transform:rotate(180deg);transition:transform .2s}.fold[data-open] svg{transform:none}.fold-label{writing-mode:vertical-rl;letter-spacing:2px;font-weight:500}.fold[data-open] .fold-label{display:none}
 .head-fold{margin-left:auto;flex:none;height:28px;padding:0 6px 0 10px;gap:2px;font-size:12px;color:var(--secondary);border:1px solid var(--edge);border-radius:14px}.head-fold svg{width:14px;height:14px}
 .upd.chentry{opacity:.55}.upd.chentry:hover{opacity:1}.chform{display:flex;align-items:center;gap:4px;padding:2px 0 1px}.chform input{width:118px;height:22px;box-sizing:border-box;padding:0 7px;border:1px solid var(--edge);border-radius:6px;background:var(--bg);color:var(--fg);font:11px var(--mono);outline:0}.chform input:focus{border-color:var(--secondary)}.chform input[data-bad]{border-color:#c0584f;animation:chshake .28s}.chform button{height:22px;padding:0 8px!important;border:1px solid var(--edge);border-radius:6px}@keyframes chshake{25%{transform:translateX(-3px)}75%{transform:translateX(3px)}}
+.section.spend{margin-top:0}.spend .section-heading{margin-bottom:8px}.unit{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--edge);border-radius:8px}.unit button{height:20px;padding:0 8px!important;border:0;border-radius:6px;font-size:11px;color:var(--secondary);background:none}.unit button[aria-pressed="true"],.unit button[aria-pressed="true"]:hover{background:var(--heading);color:var(--bg)}.spend-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.spend-cell{min-width:0;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--raised)}.spend-value{font:500 18px/1.35 var(--mono);letter-spacing:-.03em;color:var(--heading);margin:2px 0 1px;overflow-wrap:anywhere}.spend-sub{font-size:10.5px;line-height:1.45;color:var(--secondary);overflow-wrap:anywhere}.spend-sub span{display:inline-block}
 `;
   function el(tag,cls,text,parent){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined&&text!==null)e.textContent=text;if(parent)parent.append(e);return e;}
   function button(parent,text,title,fn,cls=''){const b=el('button',cls,text,parent);b.type='button';b.title=title;b.setAttribute('aria-label',title);b.dataset.focus=title;b.onclick=fn;return b;}
@@ -6685,7 +6686,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       pickers.hidden=turnPicker.hidden&&picker.hidden;
       if(tab==='logs'){const logSid=historyView?.sid||sid,key=(logSid||'')+':'+catalog.logRevision;if(logKey!==key){logKey=key;void catalog.readLogs(logSid).then(rows=>{if(logKey!==key)return;logItems=rows;logSerial++;paint();});}}
       if(tab==='settings'&&Date.now()-usageAt>5000){usageAt=Date.now();void catalog.usage().then(u=>{usageInfo=u;settingsSerial++;paint();});}
-      const next=[tab,tab==='detector'?legacyDisplay.revision:tab==='hunt'?gacha.revision:0,s,c,historical,moreOpen,tab==='cache'?catalog.revision:0,cacheLimit,openSid,tab==='logs'?logSerial:0,tab==='logs'?pref.level:null,!!r?.busy,Date.now()<cooldown,rawFilter,rawSpan,tab==='raw'?rawStore.get(s?.key)?.spans.size:0,tab==='settings'?settingsSerial:0,confirmRawClear,tab==='settings'?JSON.stringify(prefs):'',tab==='raw'?JSON.stringify(rawOf(s)?.probe&&Object.keys(rawOf(s).probe)):''];
+      const next=[tab,tab==='detector'?legacyDisplay.revision:tab==='hunt'?gacha.revision:0,s,c,historical,moreOpen,tab==='cache'?catalog.revision:0,cacheLimit,openSid,tab==='logs'?logSerial:0,tab==='logs'?pref.level:null,!!r?.busy,Date.now()<cooldown,rawFilter,rawSpan,tab==='raw'?rawStore.get(s?.key)?.spans.size:0,tab==='settings'?settingsSerial:0,confirmRawClear,tab==='settings'?JSON.stringify(prefs):'',tab==='raw'?JSON.stringify(rawOf(s)?.probe&&Object.keys(rawOf(s).probe)):'',tab==='overview'?spendSerial:0];
       if(next.some((x,i)=>x!==bodyStamp[i])||!bodyStamp.length){const scroll=body.scrollTop,sameTab=bodyStamp[0]===tab,focus=root.activeElement?.dataset.focus;bodyStamp=next;body.replaceChildren();if(tab==='hunt')huntTab();else if(tab==='detector')detectorTab();else if(tab==='cache')cacheTab();else if(tab==='logs')logTab();else if(tab==='settings')settingsTab();else if(!c)empty(turnKey?'正在读取此轮缓存':'尚无模型记录',turnKey?'如长时间无内容，说明此轮快照不可用。':'发送一条新消息后，型号与配置会自动填入。');else if(tab==='sources')sources(s,c);else if(tab==='raw')rawTab(s,c);else overview(s,c);body.scrollTop=sameTab?scroll:0;if(focus)[...body.querySelectorAll('[data-focus]')].find(e=>e.dataset.focus===focus)?.focus({preventScroll:true});}
     }
     // Display adapter only. The original detector engine is not rewritten or fed Probe data.
@@ -6707,7 +6708,58 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       if(data.at)el('p','note','显示更新时间：'+new Date(data.at).toLocaleString(),section);
       el('p','note','保留原脚本的 New Chat 自动刷新行为。两套检测分别请求数据，可能增加读取次数；本页不代表历史轮次结论。',section);
     }
+    // 概览第一行“消耗”卡片：当前对话总量 / 最近一次，Token ↔ 美金 切换（选择会记住）。
+    // 美金：Arena 费用接口的会话累计计费（含其他设备的消耗）与本轮计费；没有接口数据时用本机记录的每轮 credits 合计（标 ≈）。
+    // Token：按本机记录的每轮用量求和（优先 token.usage.recorded，其次各次调用），缺字段或调用数超过保留上限时标 ≈。
+    let spendSerial=0;const spendCache=new Map();
+    const spendNum=v=>typeof v==='number'&&Number.isFinite(v)?v:null;
+    const spendMoney=v=>v===null?'—':'$'+(Math.abs(v)>=100?v.toFixed(2):Math.abs(v)>=0.01||v===0?v.toFixed(4):v.toFixed(5));
+    const spendTok=n=>n>=1e7?(n/1e4).toFixed(n>=1e8?0:1)+' 万':fmt(n);
+    const spendShort=n=>n>=1e4?(n/1e4).toFixed(1).replace(/\.0$/,'')+'万':fmt(n);
+    function turnTokens(s){
+      if(!s)return null;const recs=(s.records||[]).filter(r=>r&&r.kind!=='cost'),calls=s.calls||[];
+      const one=(t,i,o,r)=>({t:spendNum(t)??(spendNum(i)!==null&&spendNum(o)!==null?i+o:null),i:spendNum(i),o:spendNum(o),r:spendNum(r)});
+      const src=recs.length?recs.map(r=>one(r.total,r.input,r.output,r.reasoning)):calls.map(c=>one(c.tokens?.total,c.tokens?.input,c.tokens?.output,c.reasoning?.value));
+      let total=0,input=0,output=0,reasoning=0,have=0,miss=0;
+      for(const x of src){if(x.t!==null){total+=x.t;have++;}else miss++;input+=x.i||0;output+=x.o||0;reasoning+=x.r||0;}
+      if(!have)return null;
+      const cut=recs.length?recs.length>=TURN_CALL_LIMIT:(s.count||0)>calls.length;
+      return {total,input,output,reasoning,approx:miss>0||cut};
+    }
+    const spendLatest=sid=>{const r=sid===sidOf(location.href)?selectedRun()?.data:null;return (r&&r.sid===sid?r:null)||catalog.snapshots.get(sid)||history.find(x=>x.sid===sid)||null;};
+    function sessionSpend(sid,latest){
+      const turns=catalog.turnsOf(sid),stamp=turns.map(t=>t.key+'@'+t.at).join('|');let hit=spendCache.get(sid);
+      if(!hit||hit.stamp!==stamp){
+        const h={stamp,byKey:hit?.byKey||null,loading:true};hit=h;spendCache.delete(sid);spendCache.set(sid,h);while(spendCache.size>8)spendCache.delete(spendCache.keys().next().value);
+        void catalog.rows('turns','sid',sid,'next',400).then(rows=>{const m=new Map();for(const row of rows){const d=row?.data;if(d?.key)m.set(d.key,{tok:turnTokens(d),credits:spendNum(row.credits??d.credits?.credits)});}h.byKey=m;h.loading=false;if(spendCache.get(sid)===h){spendSerial++;paint();}}).catch(()=>{h.loading=false;});
+      }
+      const all=new Map(hit.byKey||[]);if(latest?.key)all.set(latest.key,{tok:turnTokens(latest),credits:spendNum(latest.credits?.credits)});
+      let total=0,input=0,output=0,have=0,approx=false,credits=0,cHave=0;
+      for(const v of all.values()){if(v.tok){total+=v.tok.total;input+=v.tok.input;output+=v.tok.output;have++;if(v.tok.approx)approx=true;}else approx=true;if(v.credits!==null){credits+=v.credits;cHave++;}}
+      return {total:have?total:null,input,output,turns:all.size,approx,loading:hit.loading&&!hit.byKey,credits:cHave?credits:null,creditTurns:cHave};
+    }
+    function spendCard(s){
+      const sid=s.sid,latest=spendLatest(sid)||s,unit=prefs.spendUnit==='usd'?'usd':'token';
+      const sec=el('section','section spend',null,body),head=el('div','section-heading',null,sec);el('h3','','消耗',head);
+      const seg=el('div','unit',null,head);seg.setAttribute('role','group');seg.setAttribute('aria-label','显示单位');
+      for(const [k,t] of [['token','Token'],['usd','美金']]){const b=button(seg,t,k==='usd'?'按美金（计费）显示':'按 Token 数显示',()=>{if(prefs.spendUnit===k)return;prefs.spendUnit=k;savePrefs();spendSerial++;paint();});b.setAttribute('aria-pressed',String(unit===k));}
+      const grid=el('div','spend-grid',null,sec);
+      const cell=(label,value,sub,title)=>{const c=el('div','spend-cell',null,grid);el('div','usage-label',label,c);el('div','spend-value',value,c);if(sub){const d=el('div','spend-sub',null,c);String(sub).split(' · ').forEach((part,i)=>{if(i)d.append(' · ');el('span','',part,d);});}if(title)c.title=title;};
+      const tot=sessionSpend(sid,latest);
+      if(unit==='token'){
+        const lt=turnTokens(latest);
+        cell('当前对话',tot.total!==null?(tot.approx?'≈ ':'')+spendTok(tot.total):tot.loading?'读取中…':'—',tot.turns?'本机记录 '+tot.turns+' 轮'+(tot.approx?' · 部分为估算':''):'',tot.total!==null?'共 '+fmt(tot.total)+' tokens（输入 '+fmt(tot.input)+' · 输出 '+fmt(tot.output)+'）\n按这个浏览器记录到的每轮用量求和，其他设备上的轮次不在内':'');
+        cell('最近一次',lt?(lt.approx?'≈ ':'')+spendTok(lt.total):'—',lt?'输入 '+spendShort(lt.input)+' · 输出 '+spendShort(lt.output)+(lt.reasoning?' · 推理 '+spendShort(lt.reasoning):''):'暂无用量记录',lt?'总 '+fmt(lt.total)+' tokens'+(lt.approx?'（部分调用缺少用量或超过保留上限，为估算值）':''):'');
+      }else{
+        const st=costState.get(sid),a=latest.credits?.session||null,aAt=Date.parse(latest.credits?.at||'')||0,b=st?.latest?.summary?.session||null,sess=(b&&(st.latest.at||0)>aAt?b:a)||b||null;
+        const su=spendNum(sess?.chargedUsd),fb=tot.credits!==null?tot.credits/CREDITS_PER_USD:null,cr=latest.credits||null;
+        cell('当前对话',su!==null?spendMoney(su):fb!==null?'≈ '+spendMoney(fb):'—',su!==null?[spendNum(sess.messages)!==null?sess.messages+' 条消息':null,spendNum(sess.actualUsd)!==null?'实际成本 '+spendMoney(sess.actualUsd):null].filter(Boolean).join(' · '):fb!==null?'本机记录的 '+tot.creditTurns+' 轮合计':prefs.showCredits?'暂无费用数据':'费用读取已关闭（设置里开启“本轮消耗”）',su!==null?'Arena 费用接口的会话累计计费，包含其他设备上的消耗':fb!==null?'没有取得会话累计，按本机记录的每轮 credits 相加（1 美元 = 1000 credits）':'');
+        const lu=spendNum(cr?.usd)??(spendNum(cr?.credits)!==null?cr.credits/CREDITS_PER_USD:null);
+        cell('最近一次',lu!==null?spendMoney(lu):'—',lu!==null?[spendNum(cr?.credits)!==null?Math.round(cr.credits).toLocaleString('zh-CN')+' credits':null,spendNum(cr?.actualUsd)!==null?'实际 '+spendMoney(cr.actualUsd):null].filter(Boolean).join(' · '):prefs.showCredits?'等待费用接口（流结束后几秒读取）':'费用读取已关闭',lu!==null?'本轮计费（Arena 费用接口）':'');
+      }
+    }
     function overview(s,c){
+      spendCard(s);
       const model=el('section','section model',null,body),cap=el('div','section-heading',null,model);el('span','eyebrow',c.request?'请求型号':'Trace 模型标签',cap);el('span','eyebrow',turnLabel(s)+' · '+s.count+' 次调用'+(s.prior?'（此前 '+s.prior+' 次）':''),cap);
       const title=el('div','model-title',null,model);el('div','name',c.model,title);iconButton(title,'copy','复制型号',()=>copy(c.model));
       const internal=c.internal||(s.internalNames.length?s.internalNames.join(' / '):null), ir=row(model,'内部名称',internal);if(internal&&(c.internalScope==='turn'||!c.internal)&&s.count>1)el('span','pill','轮次级',ir.lastChild);
