@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.54
+// @version      1.11.55
 // @description  Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.54' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.55' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -3517,7 +3517,7 @@ const gacha = (() => {
   const T = { newChat: 20000, sendReady: 5000, postSeen: 15000, urlSeen: 45000, settle: 500, idleWait: 90000,
     resendNoRun: 15000, resendPending: 45000, resendDefault: 30000, maxResends: 5, genStall: 600000, skipNap: 800 };
   const REASONS = {
-    RATE_LIMIT: '消息请求 HTTP 429（网站限流），已暂停；不会自动重试或绕过限制',
+    RATE_LIMIT: '当前 IP 被限流（HTTP 429），已暂停；请切换 IP 后点「我已更换 IP」',
     AUTH: '登录状态失效（HTTP 401/403），请先登录 Arena 后再继续',
     HTTP: '发送请求失败，已暂停',
     LOGIN: '请先登录 Arena',
@@ -4073,7 +4073,31 @@ const gacha = (() => {
     token++;
     if (e instanceof Stop && e.kind === 'cancel') { run.status = 'paused'; run.reason = run.reason || '已手动停止'; }
     else { run.status = 'paused'; run.code = e?.code || 'ERROR'; run.reason = e?.message || String(e); log(run.reason, 'error'); }
-    run.phase = ''; changed();
+    run.phase = ''; run.ipOld = null;
+    if (ipLimited()) {
+      // 429 限流按 IP 计：提示切换 IP，并记下当前（Arena 看到的）IP，用来确认之后是否真的换了
+      run.reasonRaw = run.reason; run.reason = '当前 IP 被限流（HTTP 429），请切换 IP 后点「我已更换 IP」';
+      const id = run.id; void ipNow().then(ip => { if (run?.id === id && ipLimited() && ip) { run.ipOld = ip; run.reason += ' · 当前 IP ' + ip; changed(); } });
+    }
+    changed();
+  }
+  const ipLimited = () => !!run && run.status === 'paused' && (run.code === 'RATE_LIMIT' || run.code === 'ALERT_LIMIT' || (run.code === 'QUOTA' && /429|速率|限流/.test(run.reasonRaw || run.reason || '') && !/余额/.test(run.reasonRaw || run.reason || '')));
+  // Arena 实际看到的出口 IP：同域 Cloudflare trace；取不到再用 ipify
+  async function ipNow() {
+    try { const r = await fetch('/cdn-cgi/trace', { cache: 'no-store', credentials: 'omit' }); const m = /(?:^|\n)ip=([^\n]+)/.exec(await r.text()); if (m) return m[1].trim(); } catch {}
+    try { const r = await fetch('https://api.ipify.org?format=json', { cache: 'no-store', credentials: 'omit' }); const j = await r.json(); if (j?.ip) return String(j.ip); } catch {}
+    return null;
+  }
+  // 用户点“我已更换 IP”：确认 IP 变了、新 IP 访问 Arena 正常（非 429），清掉本地限流记录后继续抽卡
+  async function ipRetry() {
+    if (!ipLimited()) return { ok: false, error: '当前不是 IP 限流暂停' };
+    const old = run.ipOld || null, ip = await ipNow();
+    if (old && ip && ip === old) return { ok: false, error: 'IP 还是 ' + ip + '，没有变化，请确认已切换（切换后可能要等几秒）' };
+    try { const r = await fetch('/api/me', { cache: 'no-store', credentials: 'same-origin' }); if (r.status === 429) return { ok: false, error: '新 IP ' + (ip || '') + ' 仍被限流（HTTP 429），请再换一个' }; }
+    catch (e) { return { ok: false, error: '无法连接 Arena：' + (e?.message || e) }; }
+    try { core?.clearLimits?.(); } catch {}
+    const msg = 'IP 已从 ' + (old || '未知') + ' 更换为 ' + (ip || '未知') + '，检测正常，继续抽卡';
+    log(msg); const res = start(true); return res.ok ? { ok: true, msg } : res;
   }
   function finish(status, reason) { if (!run) return; token++; run.status = status; run.reason = reason; run.phase = ''; run.endedAt = now(); log(reason); changed(); }
   async function archiveQueued(manual) {
@@ -4118,7 +4142,7 @@ const gacha = (() => {
     return { id: run.id, status: run.status, reason: run.reason || '', completed: run.completed || 0, max: run.settings?.maxAttempts || 0, hits: (run.hits || []).length, no: a?.no || 0, phase: run.phase || '', sid: a?.sid || null, sent: !!a?.sentAt, done: !!a?.done, ok, verdict: a?.verdict || '', model: a?.model || '', tier: a?.tier || null, partial: validName(partial) ? partial : '', exact: validName(exact) ? exact : '' };
   }
   return {
-    QUANTITIES, DEFAULTS, REASONS, settings, saveSettings, saveOk: () => saveOk, VENDORS, vendorFromText, setVendor, noteChatId, ownsTitle: sid => owned.has(sid), waitIdle, pendingTitle: sid => { const t = renameWant.get(sid); return t && Date.now() - (renameAt.get(sid) || 0) < 600000 ? t : null; }, followModel, start, stop, reset, bindCore, notePost, reloadSuppressed, archiveQueued: () => archiveQueued(true), running: () => run?.status === 'running',
+    QUANTITIES, DEFAULTS, REASONS, settings, saveSettings, saveOk: () => saveOk, VENDORS, vendorFromText, setVendor, noteChatId, ownsTitle: sid => owned.has(sid), waitIdle, pendingTitle: sid => { const t = renameWant.get(sid); return t && Date.now() - (renameAt.get(sid) || 0) < 600000 ? t : null; }, followModel, start, stop, reset, bindCore, ipLimited, ipRetry, notePost, reloadSuppressed, archiveQueued: () => archiveQueued(true), running: () => run?.status === 'running',
     state: () => run ? JSON.parse(JSON.stringify(run)) : null, peek, setPaint(fn) { paintFn = fn; }, get revision() { return rev; },
     running: () => !!run && ['running', 'stopping'].includes(run.status),
     _test: { identify, classify, validName, titleOf, page, T, pace }
@@ -4658,6 +4682,7 @@ const gachaUi = (() => {
       + '.gachaPopover .gpRange input::-webkit-slider-thumb{width:24px;height:24px}.gachaPopover .gpRange input::-moz-range-thumb{width:23px;height:23px}.gachaPopover .gpDots i{background:#fff;opacity:.55}'
       + '.gachaPopover .gpGo{flex:none;min-width:56px;height:24px;min-height:24px;padding:0 10px;border-radius:12px;font-size:11px;font-weight:700;letter-spacing:.06em}'
       + '.gachaPopover .gpGo[data-a=start]{background:#6a5e54;color:#fff}.gachaPopover .gpGo[data-a=start]:hover{background:#5b5048}.gachaPopover .gpGo[data-a=stop]{background:var(--gp-danger);color:#fff}.gachaPopover .gpStatus{margin-top:6px;gap:5px}.gachaPopover .gpStatus span:first-child{flex:none}.gachaPopover .gpStatus .gpReset{margin-left:auto;font-size:10px;color:var(--gp-muted);padding:0 4px;border-radius:5px}'
+      + '.gachaPopover .gpIp{display:block;margin:7px 0 0;border:0;border-radius:8px;padding:6px 14px;background:#6a5e54;color:#fff;font:inherit;font-size:12px;font-weight:600;cursor:pointer}.gachaPopover .gpIp:hover{background:#5b5048}.gachaPopover .gpIp[disabled]{opacity:.6;cursor:wait}.gachaPopover .gpIp[hidden]{display:none}'
       + '.gachaPopover .gpMessage{margin:6px 0 0;font-size:11px;line-height:1.45;color:var(--gp-muted)}.gachaPopover .gpMessage[data-error=true]{color:var(--gp-danger)}.gachaPopover .gpSettings{margin-top:8px;padding-top:8px}.gachaPopover label{margin-bottom:8px}.gachaPopover textarea{min-height:52px}.gachaPopover .gpModelsInput{min-height:84px}'
       + '.gachaPopover .gpMenu{margin:6px -3px 0}.gachaPopover .gpOption{min-height:30px;padding:5px 8px;justify-content:flex-start;gap:8px}.gachaPopover .gpOption .gpMark{margin-left:auto;color:var(--amp-acc,#2f6fed)}.gachaPopover .gpName{display:inline-flex;align-items:center;gap:4px;max-width:100%;overflow:hidden}.gachaPopover .gpChosen span.gpName{display:inline-flex;align-items:center;justify-content:center;gap:4px}.gachaPopover .gpChosen .gpName span{display:inline-flex;align-items:center;max-width:none}'
       + '.gachaPopover .gpRow2{display:grid;grid-template-columns:1fr 72px;gap:6px}.gachaPopover .gpSaveRow{display:flex;justify-content:flex-end}.gachaPopover .gpSecondary{padding:4px 10px;font-size:11px}.gachaPopover .gpHead{font-size:12px;color:var(--gp-fg);margin-bottom:6px}.gachaPopover .gpModelsInput{min-height:72px;margin-bottom:6px}.gachaPopover .choices{display:grid;grid-template-columns:1fr 1fr;gap:4px}.gachaPopover .choices .gpOption{border:1px solid var(--gp-line);border-radius:9px;transition:background .15s,color .15s,border-color .15s}.gachaPopover .choices .gpOption[data-on=true]{background:var(--amp-acc,#2f6fed);border-color:var(--amp-acc,#2f6fed);color:var(--amp-acc-fg,#fff)}.gachaPopover .choices .gpOption[data-on=true]:hover{background:color-mix(in srgb,var(--amp-acc,#2f6fed) 86%,#000)}'
@@ -4679,7 +4704,7 @@ const gachaUi = (() => {
       + '<div class="gpSettings modelEditor" hidden><label class="gpCheck gpHead"><input type="checkbox" data-k="archiveOn">归档黑名单</label><div class="gpChips" data-s="chips"></div><div class="gpConfirm" data-s="confirm" hidden><span data-s="confirmText"></span><div><button type="button" class="gpSecondary" data-ui="confirmNo">取消</button><button type="button" class="gpSecondary gpDanger" data-ui="confirmYes">删除</button></div></div><div class="gpAddRow"><textarea class="gpModelsInput gpAddInput" data-ui="archiveLines" rows="1" placeholder="输入关键词，换行可一次添加多个"></textarea><button type="button" class="gpSecondary" data-ui="saveModels">添加</button></div></div>'
       + '<div class="gpSettings advanced" hidden><div class="gpRow2"><label>提示词<input data-k="prompt" maxlength="4000"></label><label>间隔 秒<input data-k="intervalSec" type="number" min="0" max="60" step=".1"></label></div><label class="gpCheck"><input data-k="stopOnThinking" type="checkbox">路由到 Thinking 时停止</label><label class="gpCheck"><input data-k="sortSidebar" type="checkbox">左侧按实时排名排序</label><div class="gpSaveRow"><button type="button" class="gpSecondary" data-ui="saveText">保存</button></div><div class="gpLog" data-s="log" hidden></div></div>'
       + '<div class="gpQuantity"><div class="gpRange"><div class="gpDots" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div><input type="range" min="0" max="4" step="1" aria-label="抽卡张数" data-ui="quantity"></div><button type="button" class="gpPrimary gpGo" data-a="start">START</button><button type="button" class="gpPrimary gpGo" data-a="stop" hidden>STOP</button></div>'
-      + '<div class="gpStatus" role="status" hidden><span data-s="status"></span><span data-s="model"></span><button type="button" class="gpReset" data-a="reset" hidden>清除</button></div><p class="gpMessage" data-s="reason" role="status" hidden></p>';
+      + '<div class="gpStatus" role="status" hidden><span data-s="status"></span><span data-s="model"></span><button type="button" class="gpReset" data-a="reset" hidden>清除</button></div><p class="gpMessage" data-s="reason" role="status" hidden></p><button type="button" class="gpIp" data-a="ipok" hidden>我已更换 IP</button>';
     document.body.append(host);
     const $ = s => root.querySelector(s), field = k => $('[data-k="' + k + '"]'), text = (k, v) => { const e = $('[data-s="' + k + '"]'); if (e) e.textContent = v; };
     let anchor = null, lastAnchorRect = null, priorFocus = null, section = null, archiveConfirm = false, message = '', messageError = false, busy = false;
@@ -4776,6 +4801,7 @@ const gachaUi = (() => {
       text('chosen', vend ? vend.name : customOn ? cfg.customKeyword : '不限'); const vi = $('[data-s="vicon"]'), vk = vend ? vend.id : ''; if (vi.dataset.v !== vk) { vi.dataset.v = vk; vi.innerHTML = vend ? vendorIcon(vend.id, 13) : ''; }
       root.querySelectorAll('[data-k]:not([data-k="sortSidebar"]):not([data-k="stopOnThinking"]):not([data-k="earthTone"]),[data-ui="quantity"],[data-ui="archiveLines"],[data-ui="saveModels"],[data-ui="saveText"],.gpChip,[data-ui="confirmYes"]').forEach(n => n.disabled = active || busy);
       const start = $('[data-a="start"]'), stop = $('[data-a="stop"]'), reset = $('[data-a="reset"]');
+      { const ipb = $('[data-a="ipok"]'); if (ipb) { const on = !active && gacha.ipLimited(); ipb.hidden = !on; if (!on) { ipb.disabled = false; ipb.textContent = '我已更换 IP'; } } }
       start.hidden = active; stop.hidden = !active; stop.disabled = st?.status === 'stopping'; reset.hidden = active || !st;
       start.textContent = 'START'; start.title = st?.status === 'paused' ? '继续抽卡' : st && ['hit', 'done'].includes(st.status) ? '重新抽卡' : '开始抽卡';
       const total = st ? st.settings.maxAttempts : s.maxAttempts, done = st?.completed || 0;
@@ -5114,6 +5140,7 @@ const gachaUi = (() => {
     $('[data-a="start"]').onclick = () => { message = ''; const st = gacha.state(), r = gacha.start(st?.status === 'paused'); if (!r.ok) { say(r.error, true); render(); return; } close(); render(); };
     $('[data-a="stop"]').onclick = () => { gacha.stop(); render(); };
     $('[data-a="reset"]').onclick = () => { gacha.reset(); message = ''; render(); };
+    $('[data-a="ipok"]').onclick = async e => { const b = e.currentTarget; if (b.disabled) return; b.disabled = true; b.textContent = '检测中…'; let r; try { r = await gacha.ipRetry(); } catch (x) { r = { ok: false, error: String(x?.message || x) }; } b.disabled = false; b.textContent = '我已更换 IP'; if (r.ok) { say(r.msg); setTimeout(() => { if (message === r.msg) { message = ''; render(); } }, 5000); close(); } else say(r.error, true); };
     document.addEventListener('pointerdown', e => { if (!e.composedPath().includes(host) && !e.target.closest?.('[data-amp-native-gacha]')) close(); });
     document.addEventListener('keydown', e => {
       if (!panel.classList.contains('open')) return;
@@ -5130,7 +5157,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.54', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.55', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -6677,7 +6704,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
   },show(){ui?.show();},snapshot:()=>JSON.parse(JSON.stringify(exported())),exportAll:withRaw=>catalog.exportAll(withRaw===true).then(x=>JSON.parse(JSON.stringify(x)))};
   setTimeout(()=>void refreshBalance(),4000);
   setTimeout(()=>void refreshPulse(),5000);setInterval(()=>{if(!document.hidden)void refreshPulse();},60000);
-  gacha.bindCore({rawFetch,runFor,huntLive,usdQuota:()=>usd,note:(level,text)=>log(level,'看门狗',text)});
+  gacha.bindCore({rawFetch,runFor,huntLive,clearLimits:()=>{quota={chat:null,append:null};store(KEY+'.quota',quota);cooldown=0;log('info','限流','已更换 IP，清除本地限流记录');paint();},usdQuota:()=>usd,note:(level,text)=>log(level,'看门狗',text)});
   // 账号切换（配套脚本 Arena-Account-Switch）：限流/脉冲/credits 属于账号，切换后丢弃旧状态并立即重新读取
   function accountReset(reason){
     try{
