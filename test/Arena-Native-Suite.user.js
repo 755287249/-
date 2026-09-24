@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.60
+// @version      1.11.61
 // @description  【测试版】Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.60' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.61' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -4284,6 +4284,55 @@ const errReload = (() => {
       if (Date.now() - stableAt > 2500 && room > 2) off();
     }, 200);
   }
+  // ---------- 跟随最新：点了页面自带的“到底部”按钮后，新内容出来就一直贴着底部 ----------
+  // 向上滚动就取消（滚轮上滑 / 触摸下拉 / PageUp·↑·Home·Shift+空格 / 按住鼠标往上拖滚动条或选文字），页面的“到底部”按钮会重新出现。
+  const follow = (() => {
+    const LABEL = /scroll\s*(?:to\s*)?(?:the\s*)?(?:bottom|end|latest)|scroll\s*down|(?:jump|go|back|return|skip)\s*to\s*(?:the\s*)?(?:bottom|latest|present|end|recent)|(?:new|latest)\s*messages?|滚动到底|滚到底|回到底|到底部|跳到底|最新消息|回到最新|新消息/i;
+    const NOT = 'aside,nav,header,form,[role="dialog"],[role="menu"],[role="listbox"],[role="tablist"],[data-sidebar],[contenteditable="true"]';
+    let on = false, sc = null, findAt = 0, raf = 0, path = '', holding = false, downTop = 0, touchY = null, verify = 0;
+    const gap = e => e.scrollHeight - e.clientHeight - e.scrollTop;
+    const scroller = () => { if (sc && sc.isConnected) return sc; if (Date.now() - findAt < 400) return null; findAt = Date.now(); return (sc = findScroller()); };
+    const inScroller = t => { const s = sc && sc.isConnected ? sc : null; return !!(s && t && (t === s || s.contains(t))); };
+    function loop() {
+      raf = 0; if (!on) return;
+      if (location.pathname !== path) { stop(); return; }
+      const s = scroller();
+      if (s && !holding && gap(s) > 1) s.scrollTop = s.scrollHeight;
+      raf = requestAnimationFrame(loop);
+    }
+    function begin() {
+      if (!sidNow()) return;
+      const was = on; on = true; path = location.pathname; if (!sc || !sc.isConnected) { findAt = 0; scroller(); }
+      if (!raf) raf = requestAnimationFrame(loop);
+      // 倒计时提示条在用时不弹（toast 收起时会连带取消倒计时）
+      if (!was && !timer && !errBar && (!box || box.hidden)) toast('已跟随最新消息 · 向上滚动取消', 1800);
+    }
+    function stop() { on = false; holding = false; clearInterval(verify); if (raf) cancelAnimationFrame(raf); raf = 0; }
+    function onClick(e) {
+      const b = e.target?.closest?.('button,[role="button"]'); if (!b || !sidNow() || b.closest(NOT) || b.hasAttribute('aria-haspopup') || b.hasAttribute('aria-expanded')) return;
+      const label = norm([b.getAttribute('aria-label'), b.getAttribute('title'), b.textContent].filter(Boolean).join(' '));
+      if (LABEL.test(label)) { sc = null; begin(); return; }
+      // 认不出文字的按钮（通常只有一个箭头图标）：点的时候不在底部、2.5 秒内页面自己滚到了底部 → 就是“到底部”按钮。
+      // 流式输出时底部一直在往下走，平滑滚动停在“点击那一刻的底部”时可能还差很多：
+      // 所以只要往下走了点击时离底部距离的六成以上，或者已经离底部很近（初始距离的 1/4，最多 160px），就算。
+      const m = mainEl(); if (!m || !m.contains(b) || label.length > 24) return;
+      const s = findScroller(), g0 = s ? gap(s) : 0; if (!s || g0 < 40) return;
+      const top0 = s.scrollTop, near = Math.max(3, Math.min(160, g0 * 0.25));
+      clearInterval(verify); const t0 = Date.now();
+      verify = setInterval(() => { if (!s.isConnected || Date.now() - t0 > 2500) { clearInterval(verify); return; } const moved = s.scrollTop - top0; if (moved > 20 && (gap(s) <= near || moved >= g0 * 0.6)) { clearInterval(verify); sc = s; begin(); } }, 80);
+    }
+    function init() {
+      addEventListener('click', onClick, true);
+      addEventListener('wheel', e => { if (on && e.deltaY < 0 && inScroller(e.target)) stop(); }, { capture: true, passive: true });
+      addEventListener('touchstart', e => { touchY = on && inScroller(e.target) ? (e.touches[0]?.clientY ?? null) : null; }, { capture: true, passive: true });
+      addEventListener('touchmove', e => { if (on && touchY !== null && (e.touches[0]?.clientY ?? touchY) - touchY > 12) stop(); }, { capture: true, passive: true });
+      addEventListener('keydown', e => { if (on && (/^(PageUp|ArrowUp|Home)$/.test(e.key) || (e.key === ' ' && e.shiftKey)) && !e.target?.closest?.('[contenteditable="true"],textarea,input,select')) stop(); }, true);
+      // 按住鼠标时（拖滚动条 / 选文字）先不贴底；松开时如果往上走了就取消，否则继续跟随
+      addEventListener('mousedown', e => { if (on && e.button === 0 && inScroller(e.target)) { holding = true; downTop = sc.scrollTop; } }, true);
+      addEventListener('mouseup', () => { if (!holding) return; holding = false; if (on && sc && sc.scrollTop < downTop - 10) stop(); }, true);
+    }
+    return { init, begin, stop, get on() { return on; } };
+  })();
   function afterLoad() {
     const sid = sidNow(), j = read(JUST_KEY, null);
     try { sessionStorage.removeItem(JUST_KEY); } catch {}
@@ -4292,9 +4341,9 @@ const errReload = (() => {
     const ours = !!j && j.sid === sid && Date.now() - j.at < 60e3;
     if (nav === 'reload' || ours) bottomOnce(ours && j.auto ? '已自动刷新，回到最新消息' : '');
   }
-  function start() { afterLoad(); setInterval(() => { try { tick(); } catch {} }, 2000); addEventListener('resize', () => { if (box && !box.hidden) place(); }); }
+  function start() { afterLoad(); try { follow.init(); } catch {} setInterval(() => { try { tick(); } catch {} }, 2000); addEventListener('resize', () => { if (box && !box.hidden) place(); }); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
-  return { tick, findError, bottomOnce };
+  return { tick, findError, bottomOnce, follow };
 })();
 
 // ====================================================================================
@@ -4683,6 +4732,10 @@ const gachaUi = (() => {
   // Non-destructive: only CSS `order` on each list item and a data attribute. React-owned nodes are never moved.
   const sidebar = (() => {
     let stamp = '', touched = new Set(), lastRows = [], flatP = null, flatM = null, flatSet = new Set();
+    // GPT 同一代里的强弱：Astra > Sol > Terra > Luna（与 Arena 模型菜单的顺序一致）；没有这些词的排在它们后面。
+    // GPT 不用排行榜的系列名次（新型号常未上榜，短名/全名混用时名次还会不一致），版本号相同就按这个比，再比档位。
+    const GPT_FAM = { astra: 1, sol: 2, terra: 3, luna: 4 };
+    const gptFam = title => { let best = 9; for (const x of String(title || '').toLowerCase().replace(/(\d)([a-z])/g, '$1-$2').replace(/([a-z])(\d)/g, '$1-$2').split(/[^a-z0-9]+/)) if (GPT_FAM[x] && GPT_FAM[x] < best) best = GPT_FAM[x]; return best; };
     function unflat() {
       for (const el of flatSet) { el.style.removeProperty('order'); el.style.removeProperty('margin-left'); el.style.removeProperty('margin-right'); el.style.removeProperty('margin-top'); }
       flatSet = new Set(); document.querySelectorAll('[data-amp-flat]').forEach(n => n.removeAttribute('data-amp-flat')); document.querySelectorAll('[data-amp-flatp]').forEach(n => n.removeAttribute('data-amp-flatp')); flatP = null; flatM = null;
@@ -4726,7 +4779,8 @@ const gachaUi = (() => {
         const title = titleOf(a).toLowerCase(), sid = (a.getAttribute('href').match(/[0-9a-f-]{36}/i) || [''])[0];
         // 金色传说置顶：命中目标厂商且档位为 max / xhigh / high（取代以前 dxzui / clzui 的金色置顶）
         const hitNow = sortOn && kw.length > 0 && kw.some(k => title.includes(k)), isVip = hitNow && /(^|[-\s·(])(max|xhigh|high)(?=$|[-\s·)])/i.test(title);
-        groups.get(list).push({ a, item, vip: isVip, hit: hitNow, sc: sortOn ? ranking.score(title) : 0, fam: sortOn ? ranking.family(title) : 0, tier: sortOn ? ranking.tier(title) : 0, ver: brand.version(title), vid: brand.forSid(sid, title) || brand.of(vip.get(sid)) });
+        const vid = brand.forSid(sid, title) || brand.of(vip.get(sid)), gpt = sortOn && vid === 'openai';
+        groups.get(list).push({ a, item, vip: isVip, hit: hitNow, sc: sortOn ? ranking.score(title) : 0, gf: gpt ? gptFam(title) : 0, fam: sortOn && !gpt ? ranking.family(title) : 0, tier: sortOn ? ranking.tier(title) : 0, ver: brand.version(title), vid });
       }
       const next = new Set();
       // 金色只给同厂商里版本号最高的那一代（有 5.5 时 5 的 high/max 不再是金色；gpt 有 6 时 5.6 不是金色）
@@ -4752,7 +4806,7 @@ const gachaUi = (() => {
         const all = [...groups.values()].flat(); all.forEach((r, i) => r.i = i);
         const best = new Map(); for (const r of all) { const g = r.vid || '~' + r.i; best.set(g, Math.min(best.get(g) ?? Infinity, r.sc)); }
         for (const r of all) { r.g = r.vid || '~' + r.i; r.gs = best.get(r.g); }
-        const cmp = (x, y) => (y.vip - x.vip) || (y.hit - x.hit) || (sortOn ? (x.gs - y.gs) || (x.g < y.g ? -1 : x.g > y.g ? 1 : 0) || ((y.ver ?? -1) - (x.ver ?? -1)) || (x.fam - y.fam) || (y.tier - x.tier) || (x.sc - y.sc) : 0) || (x.i - y.i);
+        const cmp = (x, y) => (y.vip - x.vip) || (y.hit - x.hit) || (sortOn ? (x.gs - y.gs) || (x.g < y.g ? -1 : x.g > y.g ? 1 : 0) || ((y.ver ?? -1) - (x.ver ?? -1)) || (x.gf - y.gf) || (x.fam - y.fam) || (y.tier - x.tier) || (x.sc - y.sc) : 0) || (x.i - y.i);
         let seg = 0, firstBase = null;
         for (const c of P.children) {
           const base = 100000 + (seg++) * 10000, L = lists.filter(l => c === l || c.contains(l));
@@ -4771,7 +4825,7 @@ const gachaUi = (() => {
         // 比较器必须可传递，否则同一输入在不同轮次可能排出不同顺序 → 卡片来回交换（频闪）。
         const best = new Map(); for (const r of rows) { const g = r.vid || '~' + r.i; best.set(g, Math.min(best.get(g) ?? Infinity, r.sc)); }
         if (!P) for (const r of rows) { r.g = r.vid || '~' + r.i; r.gs = best.get(r.g); }
-        const sorted = rows.slice().sort((x, y) => (y.vip - x.vip) || (y.hit - x.hit) || (sortOn ? (x.gs - y.gs) || (x.g < y.g ? -1 : x.g > y.g ? 1 : 0) || ((y.ver ?? -1) - (x.ver ?? -1)) || (x.fam - y.fam) || (y.tier - x.tier) || (x.sc - y.sc) : 0) || (x.i - y.i));
+        const sorted = rows.slice().sort((x, y) => (y.vip - x.vip) || (y.hit - x.hit) || (sortOn ? (x.gs - y.gs) || (x.g < y.g ? -1 : x.g > y.g ? 1 : 0) || ((y.ver ?? -1) - (x.ver ?? -1)) || (x.gf - y.gf) || (x.fam - y.fam) || (y.tier - x.tier) || (x.sc - y.sc) : 0) || (x.i - y.i));
         // Strength shading: the strongest pinned card gets 50% of the selected card's colour depth, the rest fade evenly.
         const hits = sorted.filter(r => r.hit && !r.vip), vips = sorted.filter(r => r.vip);
         const tint = (arr, r) => { const n = arr.length, k = arr.indexOf(r); return k < 0 ? '' : (50 * (n - k) / n).toFixed(1) + '%'; };
@@ -5305,7 +5359,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.60', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.61', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
