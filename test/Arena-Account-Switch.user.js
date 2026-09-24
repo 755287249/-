@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arena 账号切换（Arena Native Suite 配套）
 // @namespace    local.amp.native.accounts
-// @version      1.0.18
+// @version      1.0.19
 // @description  【测试版】在 Arena 个人卡片里一键切换已保存的账号；显示各账号最近记录的额度
 // @match        https://arena.ai/*
 // @include      https://arena.ai/*
@@ -20,7 +20,7 @@
 
 (function arenaAccountSwitch() {
   'use strict';
-  const VERSION = '1.0.18';
+  const VERSION = '1.0.19';
   try { document.documentElement.dataset.ampSwitchVer = VERSION; } catch {}
   const ORIGIN = 'https://' + location.host;
   const AUTH_RE = /^arena-auth-prod-v1(\.\d+)?$/;
@@ -914,7 +914,7 @@
   try { GM_registerMenuCommand('Arena 账号切换', () => void openPanel(null)); GM_registerMenuCommand('账号密码备忘录', () => openMemo()); } catch {}
   let scanQueued = false;
   const scan = () => { scanQueued = false; const d = profileDialog(); if (d) { injectButton(d); } replaceLogin(); };
-  new MutationObserver(() => { if (!scanQueued) { scanQueued = true; requestAnimationFrame(scan); } }).observe(document.documentElement, { childList: true, subtree: true });
+  new MutationObserver(recs => { if (scanQueued) return; if (!recs.some(r => { const e = r.target.nodeType === 1 ? r.target : r.target.parentElement; return e && !e.closest('[role="log"]'); })) return; scanQueued = true; requestAnimationFrame(scan); }).observe(document.documentElement, { childList: true, subtree: true });
   (async () => {
     await checkPending();
     await syncCurrent();
