@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.53
+// @version      1.11.54
 // @description  Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.53' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.54' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -4307,7 +4307,7 @@ const gachaSlot = (() => {
   }
   function resetReels() {
     for (const r of reels) {
-      r.mode = 'spin'; r.label = ''; r.coast = false; r.el.classList.remove('stop', 'thunk');
+      r.mode = 'spin'; r.label = ''; r.coast = false; r.v = 0; r.el.classList.remove('stop', 'thunk');
       r.items.forEach((d, i) => setItem(r, d, r.list[(i + r.k * 3) % r.list.length]));
     }
   }
@@ -4315,7 +4315,9 @@ const gachaSlot = (() => {
     // 目标项放在滚轮背面（看不见的位置），减速转过去停住；初速度与匀速旋转衔接
     const to = Math.ceil(r.pos) + N / 2 + 1, idx = wrapI(to);
     setItem(r, r.items[idx], label);
-    r.mode = 'land'; r.label = label; r.from = r.pos; r.to = to; r.t0 = t; r.dur = Math.max(450, Math.min(850, 3 * (to - r.pos) / SPIN * 1000));
+    r.mode = 'land'; r.label = label; r.from = r.pos; r.to = to; r.t0 = t;
+    // 慢速落位：三次缓出的初速度 = 3·距离/时长，与当前转速衔接；追赶模式下短一些
+    r.dur = disp?.fast ? 520 : Math.max(1000, Math.min(1700, 3 * (to - r.pos) / Math.max(4, r.v || SPIN) * 1000));
   }
   function show() {
     clearTimeout(hideT); hideT = 0;
@@ -4352,9 +4354,10 @@ const gachaSlot = (() => {
     // 依次停轮：前一轮停稳后，下一轮才开始减速
     for (const r of reels) {
       const prev = reels[r.k - 1], gap = disp.fast ? 80 : 200;
-      const ready = r.k === 0 ? t - disp.t0 > (disp.fast ? 0 : 500) : prev.mode === 'stop' && t - prev.stopAt > gap;
+      const ready = r.k === 0 ? t - disp.t0 > (disp.fast ? 0 : 500) : (prev.mode === 'stop' && t - prev.stopAt > gap) || (!disp.fast && prev.mode === 'land' && !prev.coast && t - prev.t0 > prev.dur * .6);
       if (r.mode === 'spin' && (disp.coast || (!running && !disp.targets[r.k]))) { r.mode = 'land'; r.coast = true; r.from = r.pos; r.to = Math.ceil(r.pos) + 2; r.t0 = t; r.dur = 600; }
-      if (r.mode === 'spin') { r.pos += SPIN * dt; if (disp.targets[r.k] && ready) land(r, disp.targets[r.k], t); }
+      // 每一抽：先慢慢转起来（错开启动），加速到全速，再慢速落位
+      if (r.mode === 'spin') { const age = (t - disp.t0) / 1000 - r.k * .12; if (disp.fast) r.v = SPIN; else if (age > 0) r.v = Math.min(SPIN, (r.v || 0) + SPIN / .7 * dt); r.pos += (r.v || 0) * dt; if (disp.targets[r.k] && ready && (disp.fast || r.v >= SPIN * .95)) land(r, disp.targets[r.k], t); }
       if (r.mode === 'land') {
         const q = Math.min(1, (t - r.t0) / r.dur); r.pos = r.from + (r.to - r.from) * (1 - Math.pow(1 - q, 3));
         if (q >= 1 && r.coast) { r.mode = 'stop'; r.stopAt = t; r.pos = r.to; r.coast = false; }
@@ -4373,7 +4376,8 @@ const gachaSlot = (() => {
       wrap.classList.toggle('hit', v === 'hit' && !legend); wrap.classList.toggle('legend', legend); wrap.classList.toggle('dim', dim);
       if (legend) { try { navigator.vibrate?.([12, 60, 12, 60, 30]); } catch {} }
       // 金色传说 / 命中 / 归档 多停留一会儿再切到下一抽（即使下一抽已经开始）
-      disp.hold = legend ? 2400 : v === 'hit' ? 1500 : dim ? 1000 : disp.fast ? 250 : 650;
+      // 抽到具体模型：停留 3 秒展示（只影响显示，后台下一抽照常进行；显示落后时直接跳到最新一抽）
+      disp.hold = ['hit', 'keep', 'archive'].includes(v) ? (legend ? 3500 : 3000) : disp.fast ? 250 : 650;
     }
     // 展示完这一抽（停稳后停留一下）再切到下一抽
     if (p.no !== disp.no && disp.endAt && t - disp.endAt > (disp.hold || 650)) newDisp(p.no);
@@ -5126,7 +5130,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.53', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.54', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
