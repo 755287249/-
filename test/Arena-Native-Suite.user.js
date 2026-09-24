@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.57
+// @version      1.11.58
 // @description  【测试版】Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.57' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.58' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -4150,6 +4150,154 @@ const gacha = (() => {
 })();
 
 // ====================================================================================
+// 出错自动刷新：对话里出现 “Something went wrong. Please try again.” 时倒计时 5 秒后刷新当前对话。
+// 整页刷新（手动 F5 或自动刷新）后滚到最新消息一次——只在加载阶段滚，之后不锁定，可随意往上翻看历史。
+// 不自动刷新的情况：输入框有未发送内容、抽卡运行/停止中/暂停、页面显示限流提示、页面加载时就已存在的错误、刷新次数超限。
+// ====================================================================================
+const errReload = (() => {
+  const CONV = /^\/agent\/([0-9a-f-]{36})\/?$/i;
+  const LOG_KEY = 'amp.native.errReload', JUST_KEY = 'amp.native.errReload.just';
+  const WAIT = 5, PER_SID_GAP = 60e3, WINDOW = 10 * 60e3, MAX_IN_WINDOW = 3, BASELINE = 6000;
+  const PHRASE = /^(?:something went wrong[.!。]?(?:\s*please try again[.!。]?)?|出了点问题[，,。.]?(?:\s*请重试[。.!！]?)?|出错了[，,。.]?(?:\s*请重试[。.!！]?)?)$/i;
+  const SKIP = 'pre,code,blockquote,[contenteditable="true"],textarea,.prose,[class*="markdown"],[data-streamdown],[data-message-author-role],[data-user-message-layout]';
+  const sidNow = () => (CONV.exec(location.pathname) || [])[1] || null;
+  const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
+  const visible = el => !!el?.isConnected && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+  const read = (k, d) => { try { const v = JSON.parse(sessionStorage.getItem(k) || 'null'); return v ?? d; } catch { return d; } };
+  const write = (k, v) => { try { sessionStorage.setItem(k, JSON.stringify(v)); } catch {} };
+  const mainEl = () => document.querySelector('main');
+  const logEl = () => { const m = mainEl(); return m && [...m.querySelectorAll('[role="log"]')].find(visible) || null; };
+
+  // 只认“整段文字就是这句话”的提示元素；消息正文、代码、输入框里出现同样的句子不算
+  function findError() {
+    const m = mainEl(); if (!m) return null;
+    let snap; try { snap = document.evaluate(".//*[contains(text(),'Something went wrong') or contains(text(),'something went wrong') or contains(text(),'出了点问题') or contains(text(),'出错了')]", m, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null); } catch { return null; }
+    for (let i = snap.snapshotLength - 1; i >= 0; i--) {
+      let el = snap.snapshotItem(i);
+      if (el.closest(SKIP)) continue;
+      for (let up = el.parentElement, n = 0; up && up !== m && n < 3; up = up.parentElement, n++) { if (PHRASE.test(norm(up.textContent))) el = up; else break; }
+      if (PHRASE.test(norm(el.textContent)) && visible(el)) return el;
+    }
+    return null;
+  }
+  function chatStatus() {
+    const sid = sidNow(), log = logEl(); if (!sid || !log) return null;
+    try { let f = log[Object.keys(log).find(k => k.startsWith('__reactFiber'))]; for (let n = 0; f && n < 100; n++, f = f.return) { const v = f.memoizedProps?.value; if (v && v.id === sid && Array.isArray(v.messages)) return String(v.status || ''); } } catch {}
+    return null;
+  }
+  const draft = () => [...document.querySelectorAll('main div[contenteditable="true"], main textarea')].filter(visible).some(e => norm(e.value ?? e.innerText ?? e.textContent).length > 0);
+  const gachaBusy = () => { try { const pk = gacha.peek(); return !!pk && ['running', 'stopping', 'paused'].includes(pk.status); } catch { return false; } };
+  const limited = () => { try { return [...document.querySelectorAll('[role="alert"]')].some(e => visible(e) && /too many requests|rate limit|try again later|quota exceeded|limit reached|429/i.test(e.textContent || '')); } catch { return false; } };
+  function budget(sid) { const now = Date.now(), list = read(LOG_KEY, []).filter(x => x && now - x.at < WINDOW); return { list, ok: !list.some(x => x.sid === sid && now - x.at < PER_SID_GAP) && list.length < MAX_IN_WINDOW, n: list.length }; }
+
+  // ---------- 提示条 ----------
+  let host = null, box = null, hideTimer = 0;
+  function ui() {
+    if (box?.isConnected) return box;
+    host = document.createElement('div'); host.id = 'amp-err-reload'; host.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;z-index:2147483000';
+    const root = host.attachShadow({ mode: 'open' }), st = document.createElement('style');
+    st.textContent = '.b{position:fixed;display:flex;align-items:center;gap:8px;max-width:min(580px,calc(100vw - 24px));padding:8px 8px 8px 14px;border-radius:12px;background:rgba(38,37,34,.95);color:#f3f1ec;font:13px/1.45 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.28);transform:translateX(-50%);animation:in .18s ease-out}.b[hidden]{display:none}.t{flex:1;min-width:0}.b button{flex:none;height:26px;padding:0 10px;border:0;border-radius:7px;cursor:pointer;font:inherit;font-size:12px;background:rgba(255,255,255,.12);color:#f3f1ec}.b button:hover{background:rgba(255,255,255,.2)}.b button.p{background:#d8d3ca;color:#262522}.b button.p:hover{background:#fff}.b button.x{width:26px;padding:0;font-size:15px;background:transparent;color:rgba(243,241,236,.6)}@keyframes in{from{opacity:0;transform:translate(-50%,6px)}}';
+    box = document.createElement('div'); box.className = 'b'; box.hidden = true; box.setAttribute('role', 'status');
+    root.append(st, box); (document.body || document.documentElement).append(host);
+    return box;
+  }
+  function place() {
+    if (!box) return;
+    const m = mainEl()?.getBoundingClientRect(), ed = [...document.querySelectorAll('main div[contenteditable="true"], main textarea')].find(visible), f = (ed?.closest('form') || ed)?.getBoundingClientRect();
+    box.style.left = Math.round(m && m.width ? m.left + m.width / 2 : innerWidth / 2) + 'px';
+    box.style.bottom = Math.round(f && f.height ? Math.max(12, innerHeight - f.top + 10) : 150) + 'px';
+  }
+  function show(text, actions = [], closable = false) {
+    const b = ui(); clearTimeout(hideTimer); b.textContent = '';
+    const t = document.createElement('span'); t.className = 't'; t.textContent = text; b.append(t);
+    actions.forEach(([label, fn], i) => { const x = document.createElement('button'); x.type = 'button'; x.textContent = label; if (!i) x.className = 'p'; x.onclick = fn; b.append(x); });
+    if (closable) { const x = document.createElement('button'); x.type = 'button'; x.className = 'x'; x.textContent = '×'; x.title = '关闭'; x.onclick = () => { stale = true; hide(); }; b.append(x); }
+    b.hidden = false; place();
+  }
+  function hide() { clearInterval(timer); timer = 0; errBar = false; if (box) box.hidden = true; }
+  function toast(text, ms = 3200) { show(text); hideTimer = setTimeout(hide, ms); }
+
+  // ---------- 检测与自动刷新 ----------
+  let timer = 0, busy = false, stale = false, baseSid = null, baseUntil = 0, errBar = false;
+  function reloadNow(sid, auto) {
+    sid = sid || sidNow();
+    if (auto) { const b = budget(sid); b.list.push({ sid, at: Date.now() }); write(LOG_KEY, b.list); }
+    write(JUST_KEY, { sid, at: Date.now(), auto: !!auto });
+    clearInterval(timer); timer = 0; show('正在刷新当前对话…');
+    location.reload();
+  }
+  function cancel() { stale = true; busy = false; hide(); }
+  function countdown(sid) {
+    let n = WAIT; busy = true;
+    const paint = () => show('检测到 “Something went wrong”，' + n + ' 秒后自动刷新当前对话', [['立即刷新', () => reloadNow(sid, false)], ['取消', cancel]]);
+    paint(); clearInterval(timer);
+    timer = setInterval(() => {
+      if (sidNow() !== sid || !findError()) { busy = false; hide(); return; } // 已恢复或已离开这个对话
+      if (draft()) { clearInterval(timer); timer = 0; busy = false; stale = true; show('输入框里有未发送的内容，已取消自动刷新；需要时手动刷新', [['刷新', () => reloadNow(sid, false)]], true); errBar = true; return; }
+      if (--n <= 0) { clearInterval(timer); timer = 0; reloadNow(sid, true); return; }
+      paint();
+    }, 1000);
+  }
+  function tick() {
+    const sid = sidNow();
+    if (!sid) { if (busy) { busy = false; hide(); } baseSid = null; return; }
+    if (sid !== baseSid) { baseSid = sid; baseUntil = 0; stale = false; busy = false; hide(); }
+    if (!baseUntil) { if (!logEl()) return; baseUntil = Date.now() + BASELINE; } // 对话渲染出来后的前几秒算“加载时就有”
+    if (busy) return;
+    const el = findError();
+    if (!el) { stale = false; if (errBar) hide(); return; }
+    if (Date.now() < baseUntil) { stale = true; return; }
+    if (stale) return;
+    const st = chatStatus(); if (st === 'submitted' || st === 'streaming') return;
+    if (gachaBusy() || limited()) return;
+    stale = true; // 这一次出错只处理一次；提示消失后再出现才会重新处理
+    if (draft()) { show('检测到 “Something went wrong”。输入框里有未发送的内容，没有自动刷新', [['刷新', () => reloadNow(sid, false)]], true); errBar = true; return; }
+    const b = budget(sid);
+    if (!b.ok) { show('近 10 分钟已自动刷新 ' + b.n + ' 次，暂停自动刷新；需要时手动刷新', [['刷新', () => reloadNow(sid, false)]], true); errBar = true; return; }
+    stale = false; countdown(sid);
+  }
+
+  // ---------- 刷新后滚到最新消息（一次，不锁定） ----------
+  function findScroller() {
+    const log = logEl(), cands = [];
+    if (log) { for (let e = log; e && e !== document.body; e = e.parentElement) cands.push(e); cands.push(...log.querySelectorAll(':scope > *, :scope > * > *')); }
+    let best = null, room = 0;
+    for (const e of cands) { const r = e.scrollHeight - e.clientHeight; if (r > room + 1) { const oy = getComputedStyle(e).overflowY; if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') { best = e; room = r; } } }
+    if (!best && log) { const se = document.scrollingElement; if (se && se.scrollHeight - se.clientHeight > 1) best = se; }
+    return best;
+  }
+  function bottomOnce(msg) {
+    const t0 = Date.now(); let done = false, lastH = -1, stableAt = Date.now(), sc = null, said = false;
+    const off = () => { if (done) return; done = true; clearInterval(iv); removeEventListener('wheel', off, true); removeEventListener('touchstart', off, true); removeEventListener('keydown', onKey, true); removeEventListener('mousedown', onDown, true); };
+    const onKey = e => { if (/^(PageUp|PageDown|Home|End|ArrowUp|ArrowDown)$/.test(e.key) || (e.key === ' ' && !e.target?.closest?.('[contenteditable="true"],textarea,input'))) off(); };
+    const onDown = e => { if (sc && (e.target === sc || sc.contains(e.target))) off(); };
+    addEventListener('wheel', off, { capture: true, passive: true }); addEventListener('touchstart', off, { capture: true, passive: true }); addEventListener('keydown', onKey, true); addEventListener('mousedown', onDown, true);
+    const iv = setInterval(() => {
+      if (done) return;
+      if (Date.now() - t0 > 15000) { off(); return; }
+      if (!sc || !sc.isConnected) sc = findScroller();
+      if (!sc) return;
+      const h = sc.scrollHeight, room = h - sc.clientHeight;
+      if (h !== lastH) { lastH = h; stableAt = Date.now(); }
+      if (room > 2 && sc.scrollTop < room - 2) sc.scrollTop = h;
+      if (msg && !said) { said = true; toast(msg); }
+      if (Date.now() - stableAt > 2500 && room > 2) off();
+    }, 200);
+  }
+  function afterLoad() {
+    const sid = sidNow(), j = read(JUST_KEY, null);
+    try { sessionStorage.removeItem(JUST_KEY); } catch {}
+    if (!sid) return;
+    let nav = ''; try { nav = performance.getEntriesByType('navigation')[0]?.type || ''; } catch {}
+    const ours = !!j && j.sid === sid && Date.now() - j.at < 60e3;
+    if (nav === 'reload' || ours) bottomOnce(ours && j.auto ? '已自动刷新，回到最新消息' : '');
+  }
+  function start() { afterLoad(); setInterval(() => { try { tick(); } catch {} }, 2000); addEventListener('resize', () => { if (box && !box.hidden) place(); }); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
+  return { tick, findError, bottomOnce };
+})();
+
+// ====================================================================================
 // VIP pin (request model clzui / dxzui), current-chat progress fill, model-change alert.
 // ====================================================================================
 const vip = (() => {
@@ -5157,7 +5305,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.57', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.58', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
