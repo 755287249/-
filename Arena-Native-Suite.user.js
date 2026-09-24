@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.45
+// @version      1.11.46
 // @description  Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.45' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.46' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -4740,7 +4740,7 @@ const gachaUi = (() => {
     function render() {
       const s = gacha.settings(), st = gacha.state(), active = gacha.running();
       const idx = Math.max(0, Q.indexOf(active ? st.settings.maxAttempts : s.maxAttempts));
-      const slider = $('[data-ui="quantity"]'); slider.value = String(idx); slider.setAttribute('aria-valuetext', Q[idx] + ' 次'); $('.gpRange').style.setProperty('--gp-fill', idx * 25 + '%');
+      const slider = $('[data-ui="quantity"]'); slider.value = String(idx); slider.setAttribute('aria-valuetext', Q[idx] + ' 次'); $('.gpRange').style.setProperty('--gp-fill', 'calc(12px + (100% - 24px) * ' + idx / 4 + ')');
       text('count', Q[idx] + '张');
       const cfg = active ? st.settings : s, vend = gacha.VENDORS.find(v => v.id === cfg.vendor);
       const customOn = cfg.vendor === 'custom' && cfg.customKeyword;
@@ -5085,7 +5085,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.45', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.46', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
