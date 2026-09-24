@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arena 账号切换（Arena Native Suite 配套）
 // @namespace    local.amp.native.accounts
-// @version      1.0.16
+// @version      1.0.18
 // @description  在 Arena 个人卡片里一键切换已保存的账号；显示各账号最近记录的额度
 // @match        https://arena.ai/*
 // @include      https://arena.ai/*
@@ -20,7 +20,8 @@
 
 (function arenaAccountSwitch() {
   'use strict';
-  const VERSION = '1.0.16';
+  const VERSION = '1.0.18';
+  try { document.documentElement.dataset.ampSwitchVer = VERSION; } catch {}
   const ORIGIN = 'https://' + location.host;
   const AUTH_RE = /^arena-auth-prod-v1(\.\d+)?$/;
   const STORE = 'accounts.v2', OLD_STORE = 'accounts.v1'; // v2：按邮箱去重；旧版本标签页只会写 v1，不再污染
@@ -648,10 +649,11 @@
 @keyframes swgo{0%{transform:scale(1)}30%{transform:scale(.9)}100%{transform:scale(1.04)}}
 @keyframes swspin{to{transform:rotate(360deg)}}
 [data-amp-switcher] .sw-mcard,[data-amp-switcher] .sw-mside{display:none}
-[data-amp-switcher] .sw-addb{position:absolute;left:50%;top:calc(47% + 250px);transform:translateX(-50%);display:flex;align-items:center;gap:6px;border:0;border-radius:999px;padding:9px 18px 9px 14px;cursor:pointer;font:inherit;font-size:13px;color:rgba(243,241,236,.85);background:rgba(255,255,255,.1);box-shadow:inset 0 0 0 1px rgba(255,255,255,.14);transition:background .2s,transform .2s cubic-bezier(.22,1,.36,1),opacity .4s ease;z-index:3}
-[data-amp-switcher] .sw-addb:hover{background:rgba(255,255,255,.2);color:#fff;transform:translateX(-50%) scale(1.05)}
-[data-amp-switcher] .sw-addb:active{transform:translateX(-50%) scale(.95)}
-[data-amp-switcher] .sw-addb.solo{top:47%;margin-top:-20px}
+[data-amp-switcher] .sw-addb{position:absolute;left:50%;top:calc(47% + 238px);transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:6px;border:0;padding:0;background:none;cursor:pointer;font:inherit;font-size:12px;font-weight:600;color:rgba(243,241,236,.7);transition:transform .2s cubic-bezier(.22,1,.36,1),opacity .4s ease;z-index:3}
+[data-amp-switcher] .sw-addc{display:flex;align-items:center;justify-content:center;width:64px;height:64px;border-radius:50%;color:rgba(243,241,236,.75);background:rgba(255,255,255,.08);box-shadow:inset 0 0 0 2px rgba(255,255,255,.16),0 8px 22px rgba(0,0,0,.3);transition:background .2s,box-shadow .2s,color .2s}
+[data-amp-switcher] .sw-addb:hover{color:#fff;transform:translateX(-50%) scale(1.08)}[data-amp-switcher] .sw-addb:hover .sw-addc{background:rgba(255,255,255,.16);color:#fff;box-shadow:inset 0 0 0 2px rgba(255,255,255,.3),0 10px 26px rgba(0,0,0,.4)}
+[data-amp-switcher] .sw-addb:active{transform:translateX(-50%) scale(.94)}
+[data-amp-switcher] .sw-addb.solo{top:47%;margin-top:-44px}[data-amp-switcher] .sw-addb.solo .sw-addc{width:112px;height:112px}
 [data-amp-switcher] .sw-hint{left:auto!important;right:22px;bottom:18px!important;text-align:right}
 [data-amp-switcher] .sw-warn{bottom:auto;top:138px}
 [data-amp-switcher].vert .sw-top{top:max(14px,4vh)}
@@ -680,9 +682,10 @@
 [data-amp-switcher].vert .sw-arrow.l{top:calc(42% - 30px)}[data-amp-switcher].vert .sw-arrow.r{top:calc(42% + 30px)}
 [data-amp-switcher].vert .sw-arrow svg{transform:rotate(90deg)}
 [data-amp-switcher].vert .sw-hint{right:12px;bottom:max(10px,2vh)!important;font-size:11px}
-[data-amp-switcher].vert .sw-addb{left:auto;right:10px;top:42%;transform:translateY(-50%);flex-direction:column;gap:3px;padding:10px 8px;border-radius:16px;font-size:10.5px;margin:0}
-[data-amp-switcher].vert .sw-addb:hover{transform:translateY(-50%) scale(1.05)}[data-amp-switcher].vert .sw-addb:active{transform:translateY(-50%) scale(.95)}
-[data-amp-switcher].vert .sw-addb.solo{right:auto;left:50%;transform:translate(-50%,-50%);flex-direction:row;padding:10px 18px;font-size:13px}
+[data-amp-switcher].vert .sw-addb{left:auto;right:12px;top:42%;transform:translateY(-50%);font-size:10.5px;gap:4px;margin:0}
+[data-amp-switcher].vert .sw-addc{width:48px;height:48px}[data-amp-switcher].vert .sw-addc svg{width:22px;height:22px}
+[data-amp-switcher].vert .sw-addb:hover{transform:translateY(-50%) scale(1.06)}[data-amp-switcher].vert .sw-addb:active{transform:translateY(-50%) scale(.94)}
+[data-amp-switcher].vert .sw-addb.solo{right:auto;left:50%;transform:translate(-50%,-50%);font-size:13px}[data-amp-switcher].vert .sw-addb.solo .sw-addc{width:112px;height:112px}
 [data-amp-switcher].vert .sw-warn{bottom:auto;top:calc(max(14px,4vh) + 56px);width:calc(100vw - 40px)}
 [data-amp-switcher].vert .sw-close{right:12px;top:12px}
 [data-amp-switcher].leaving{opacity:0}
@@ -718,7 +721,7 @@
     const R = el('button', null, null, root); R.className = 'sw-arrow r'; R.type = 'button'; R.title = '下一个 (→)'; R.innerHTML = arrowSvg('M9 6l6 6-6 6');
     const hint = el('div', null, null, root); hint.className = 'sw-hint';
     const addB = el('button', null, null, root); addB.className = 'sw-addb'; addB.type = 'button'; addB.title = currentId ? '添加账号：输入邮箱密码，登录后自动保存并切换' : '输入邮箱密码登录其他账号';
-    addB.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span>' + (currentId ? '添加账号' : '其他账号') + '</span>';
+    addB.innerHTML = '<i class="sw-addc"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></i><span>' + (currentId ? '添加账号' : '其他账号') + '</span>';
     addB.onclick = e => { e.stopPropagation(); if (busy) return; closeSwitcher(); void addAccount(); };
     hint.innerHTML = '<kbd>←</kbd><kbd>→</kbd> 切换 &nbsp;·&nbsp; <kbd>Enter</kbd> 确认 &nbsp;·&nbsp; <kbd>Esc</kbd> 关闭';
     if (cookieMode !== 'gm') {
