@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.78
+// @version      1.11.79
 // @description  【测试版】Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.78' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.79' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 // v1.11.78 “-public”也是部署标记（grok-4.7-xhigh-public）：和 -vertex 一样不显示，档位才能识别出来（xhigh）
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '').replace(/-public(?=$|[\s·])/ig, '') : n;
@@ -3948,10 +3948,12 @@ const gacha = (() => {
     const ok = await waitFor(() => { tickContinue(); const v = page.view(); guard(v); return !v.generating; }, T.idleWait, my, 400);
     if (!ok) { page.clickStop(); log('当前页面持续生成 ' + pace.sec(T.idleWait) + ' 秒，已停止并开新对话', 'warn'); await nap(800); }
   }
-  function clickNewChat(link) { suppressReloadUntil = now() + 3000; try { window.__AMP_NATIVE_GACHA_NAV__ = suppressReloadUntil; } catch {} link.click(); }
+  // v1.11.79 开新对话时路径一变就同步一次顶部标题：上一抽刚揭晓的结果不会在新对话页上多停留（以前要等下一次定时刷新，最多 0.5 秒）
+  function syncOnNav() { const p0 = location.pathname, t0 = now(); const f = () => { if (location.pathname !== p0) { try { window.dispatchEvent(new Event('amp-title-sync')); } catch {} return; } if (now() - t0 < 3000) requestAnimationFrame(f); }; try { requestAnimationFrame(f); } catch {} }
+  function clickNewChat(link) { suppressReloadUntil = now() + 3000; try { window.__AMP_NATIVE_GACHA_NAV__ = suppressReloadUntil; } catch {} link.click(); syncOnNav(); }
   // v1.11.73 新建对话不再拉开左侧抽屉：桌面端点侧栏里看得见的 New Chat；手机端直接用 Next.js 路由切到 /agent（同一页面内，不刷新）
   function routerNew() {
-    try { const r = window.next?.router; if (typeof r?.push !== 'function') return false; suppressReloadUntil = now() + 3000; try { window.__AMP_NATIVE_GACHA_NAV__ = suppressReloadUntil; } catch {} r.push('/agent'); return true; } catch { return false; }
+    try { const r = window.next?.router; if (typeof r?.push !== 'function') return false; suppressReloadUntil = now() + 3000; try { window.__AMP_NATIVE_GACHA_NAV__ = suppressReloadUntil; } catch {} r.push('/agent'); syncOnNav(); return true; } catch { return false; }
   }
   // 兜底（路由不可用时）：仍要借侧栏里的 New Chat，但侧栏和遮罩全程透明，用户看不到抽屉弹出
   async function quietSidebarNew(my) {
@@ -4057,8 +4059,8 @@ const gacha = (() => {
         if (!id || got.name !== id.name) idAt ||= t;
         id = got;
         // v1.11.78 这一抽里原模型调用失败、被 Arena 改派：定名时只记一条日志，这一抽按实际回答的模型算（不弹提醒、不显示原模型）
-        // 状态行也不抢先报名字：顶部标题 / 老虎机还没亮出完整身份时只写“已识别”，名字和它们同一时刻出现
-        const settle_ = () => { if (attempt.model !== id.name) { attempt.model = id.name; attempt.tier = id.tier; let full = false; try { full = !!core?.shown?.(attempt.sid)?.full; } catch {} phase(full ? '已识别 ' + noVertex(id.name) : '已识别'); } if (id.routed && !attempt.routed) { attempt.routed = true; log('本抽原模型调用失败，Arena 已自动改派；按实际回答的 ' + noVertex(id.name) + ' 计'); } return id; };
+        // v1.11.79 阶段文字不再带名字：名字由老虎机状态行跟着轮子一格一格写出（已识别厂商 X → 已识别 X 型号 → … · 档位），底栏 / 抽卡面板只写“已识别”
+        const settle_ = () => { if (attempt.model !== id.name) { attempt.model = id.name; attempt.tier = id.tier; phase('已识别'); } if (id.routed && !attempt.routed) { attempt.routed = true; log('本抽原模型调用失败，Arena 已自动改派；按实际回答的 ' + noVertex(id.name) + ' 计'); } return id; };
         if (complete) settle_();
         // Rename only with a settled, final name: an internal name, or a stable fallback after 8s.
         if (settledAt && t - settledAt >= T.settle && (complete || t - idAt > pace.ms(8000))) return settle_();
@@ -4095,6 +4097,8 @@ const gacha = (() => {
       try { await archive(attempt.sid); attempt.archived = true; } catch (e) { attempt.note = '归档失败 ' + (e.status ? 'HTTP ' + e.status : e.message); log(attempt.note, 'warn'); }
     }
   }
+  // v1.11.79 等老虎机把这一抽 厂商 → 型号 → 档位 依次停完（最多 max 毫秒；切到后台 / 老虎机收起不等）
+  async function revealDone(my, max) { const t0 = now(); while (alive(my) && now() - t0 < max) { let busy = false; try { busy = gachaSlot.revealing(); } catch {} if (!busy) return; await nap(40); } }
   async function one(my) {
     // 每轮开始都读取最新保存的提示词（以前一直用开始抽卡时的快照，改了设置也还发旧词）。
     { const cur = settings(); run.settings = { ...run.settings, prompt: cur.prompt, intervalMs: cur.intervalMs, stopOnThinking: cur.stopOnThinking }; }
@@ -4126,7 +4130,9 @@ const gacha = (() => {
         if (run.skips >= 2) { const w = Math.min(40000, 5000 * 2 ** (run.skips - 2)); phase('连续 ' + run.skips + ' 次未完成，' + Math.round(w / 1000) + ' 秒后补抽'); await nap(w); if (!alive(my)) break; }
         await one(my);
         if (!alive(my)) break;
-        phase('间隔等待'); await nap(s.intervalMs);
+        // v1.11.79 老虎机依次停完再开下一个对话（与间隔等待同时计时）：顶部标题不会在揭晓到一半时被新对话换掉；
+        // 三格都停下后完整结果（顶部的档位与“识别模型为 …”）至少停留 0.6 秒再切走
+        phase('间隔等待'); { const t0 = now(); await revealDone(my, 2500); let dwell = 0; try { dwell = Math.max(0, 600 - gachaSlot.settledFor()); } catch {} await nap(Math.max(s.intervalMs - (now() - t0), dwell)); }
       }
     } catch (e) { if (my === token) await halt(e); }
     finally { if (my === token && run?.status === 'stopping') { run.status = 'stopped'; run.reason = '已手动停止'; run.endedAt = now(); changed(); } if (run && !['running'].includes(run.status)) void archiveQueued(false); }
@@ -4750,7 +4756,9 @@ const brand = (() => {
 })();
 // ====================================================================================
 // 抽卡老虎机（v1.11.34）：抽卡进行时在屏幕中央显示三段式滚轮——厂商 → 型号 → 档位，
-// v1.11.77 三个轮子同时起转、同速同相位（始终对齐成一排），完整身份（厂商 + 型号 + 档位）确定的同一时刻一起停；下面是总进度条。
+// v1.11.77 三个轮子同时起转、同速同相位（始终对齐成一排）；下面是总进度条。
+// v1.11.79 完整身份（厂商 + 型号 + 档位）确定之后像真正的老虎机一样 厂商 → 型号 → 档位 一格一格依次停下；
+// 顶部标题、进度条下的状态行、模型信息、左侧卡片都跟着轮子亮出（还没停下的格子哪里都不透露）。
 const gachaSlot = (() => {
   const MOB = (window.innerWidth || 800) < 560, H = MOB ? 36 : 44, N = 12, SPIN = 15;
   const VW = new Set(['claude', 'gpt', 'chatgpt', 'gemini', 'grok', 'kimi', 'deepseek', 'qwen', 'glm', 'mimo', 'doubao', 'minimax', 'mistral', 'llama', 'anthropic', 'openai', 'google', 'xai', 'models', 'agent']);
@@ -4861,22 +4869,50 @@ const gachaSlot = (() => {
     if (!wrap || hideT) return;
     hideT = setTimeout(() => { hideT = 0; wrap.classList.remove('on'); cancelAnimationFrame(raf); raf = 0; disp = null; }, delay);
   }
-  // v1.11.77 一抽 = 一个共享的滚动状态（三个轮子同一个 pos / 速度 / 落位时刻）
+  // v1.11.79 像真正的老虎机：三个轮子一起起转（同速同相位），这一抽的完整身份定下之后 厂商 → 型号 → 档位 一个接一个停下
+  // （间隔 GAP 毫秒）；每停一格就通知顶部标题 / 状态行 / 模型信息同一刻亮出这一格。下一抽已经开始时加快依次停。
+  const GAP = 400, LAND = 360, FGAP = 110, FLAND = 200;
+  let revealed = { sid: '', key: '', stage: 0, labels: null, sched: null }; const holdAt = new Map(), gaveUp = new Set();
+  function publish(D) {
+    revealed = { sid: D.sid || '', key: D.lkey || '', stage: D.stage, labels: D.labels ? D.labels.slice() : null, sched: D.sched };
+    try { window.dispatchEvent(new Event('amp-title-sync')); } catch {}
+  }
   function newDisp(no) {
     const pos = Number.isFinite(reels[0]?.pos) ? reels[0].pos : Math.random() * N;
-    disp = { no, att: 0, t0: performance.now(), targets: null, labels: null, ok: false, verdict: '', endAt: 0, mode: 'spin', v: 0, pos, from: 0, to: 0, dur: 0, coast: false, stopAt: 0, okAt: 0, fast: false };
+    disp = { no, sid: '', att: 0, t0: performance.now(), targets: null, labels: null, ok: false, verdict: '', endAt: 0, mode: 'spin', v: 0, coast: false, stopAt: 0, okAt: 0, fast: false, stage: 0, sched: null, tkey: '', lkey: '', hits0: p ? p.hits || 0 : 0 };
+    for (const r of reels) { if (!Number.isFinite(r.pos)) r.pos = pos; r.m = 'spin'; r.cst = false; r.at = Infinity; }
+    revealed = { sid: '', key: '', stage: 0, labels: null, sched: null };
     resetReels(); badgeEl.className = 'badge'; wrap.classList.remove('hit', 'legend', 'dim');
+  }
+  // 结果变了：从第一个不同的格子起重新转（前面已经停对的格子不动，顶部也不回退）
+  function respin(D, from) {
+    from = Math.max(0, from);
+    D.stage = Math.min(D.stage, from); D.mode = 'spin'; D.v = Math.max(D.v, SPIN * .6); D.coast = false; D.sched = null;
+    D.labels = from > 0 && D.targets ? D.targets.slice() : null; if (!D.labels) D.lkey = '';
+    reels.forEach((r, k) => { if (k >= from) { r.m = 'spin'; r.cst = false; r.at = Infinity; r.el.classList.remove('stop', 'thunk'); } });
+    publish(D);
+  }
+  // 揭晓文字：停下几格写几格（顶部名字 / 模型信息 / 状态行共用）
+  function stageName(v) {
+    const L = v?.labels, n = v?.stage || 0; if (!L || n < 1 || !L[0] || L[0] === '—') return '识别中…';
+    if (n === 1 || !L[1] || L[1] === '—') return L[0];
+    return L[1].toLowerCase().includes(L[0].toLowerCase()) ? L[1] : L[0] + ' ' + L[1];
+  }
+  function stageText(L, n) {
+    if (!L || !(n >= 1) || !L[0] || L[0] === '—') return '';
+    if (n === 1) return '已识别厂商 ' + L[0];
+    return '已识别 ' + stageName({ stage: n, labels: L }) + (n >= 3 && L[2] && L[2] !== '—' ? ' · ' + L[2] : '');
   }
   function frame(t, dt) {
     if (t - lastPeek > 60) { lastPeek = t; try { p = gacha.peek(); } catch { p = null; } }
     if (!p) { hide(); return; }
     if (!disp) newDisp(p.draw);
     const running = p.status === 'running' || p.status === 'stopping', D = disp;
-    // v1.11.77 厂商 / 型号 / 档位只在“完整身份”确定的同一时刻一起停：以顶部标题为准（标题也是三样同时出现、同一来源），
-    // 整抽已完成而标题还没给出结果时稍等 0.45 秒，再用本抽的识别结果。补抽不换号、不重转。
+    // 结果以顶部标题的完整身份为准（同一来源）；整抽已完成而标题还没给出结果时稍等 0.45 秒，再用本抽的识别结果。补抽不换号。
     if (p.draw === D.no) {
-      // 同一抽里换了一轮（上一轮未完成、补抽）：上一轮的结果作废，重新一起转
-      if (p.no && D.att && p.no !== D.att && !D.endAt) { D.targets = null; D.okAt = 0; if (D.mode !== 'spin') { D.mode = 'spin'; D.v = SPIN * .6; D.coast = false; for (const r of reels) r.el.classList.remove('stop'); } }
+      if (p.sid && D.sid !== p.sid) D.sid = p.sid;
+      // 同一抽里换了一轮（上一轮未完成、补抽）：上一轮的结果作废，三个轮子重新一起转
+      if (p.no && D.att && p.no !== D.att && !D.endAt) { D.targets = null; D.tkey = ''; D.okAt = 0; if (D.mode !== 'spin' || D.labels) respin(D, 0); }
       D.att = p.no || D.att;
       const skipped = p.done && p.verdict === 'skipped', sh = !skipped && p.shown && p.shown.full && (!p.sid || p.shown.sid === p.sid) ? p.shown : null;
       let want = null, wkey = '';
@@ -4884,43 +4920,62 @@ const gachaSlot = (() => {
       else if (p.ok) { D.okAt ||= t; if (t - D.okAt > 450) { const pr = parts(p.model, p.tier); want = [pr.vendor, pr.family, pr.tier]; } }
       if (want && (!D.targets || want.join('\n') !== D.targets.join('\n'))) { D.targets = want; D.tkey = wkey; }
       else if (want && wkey && D.tkey !== wkey) {
-        // 同样的结果、这次来自顶部标题：已经停在这个结果上就直接告诉标题可以亮出
-        D.tkey = wkey; if (D.mode === 'stop' && D.labels && D.labels.join('\n') === want.join('\n')) { D.lkey = wkey; landed = { sid: p.sid || '', key: wkey }; try { window.dispatchEvent(new Event('amp-title-sync')); } catch {} }
+        // 同样的结果、这次来自顶部标题：正在依次停 / 已经停在这个结果上，就把揭晓进度直接交给标题
+        D.tkey = wkey; if (D.labels && D.labels.join('\n') === want.join('\n')) { D.lkey = wkey; publish(D); }
       }
       if (p.done && !p.ok && !skipped) { D.verdict = p.verdict; if (p.verdict === 'cancelled') D.coast = true; else if (!D.targets) D.targets = ['—', '—', '—']; }
       if (p.ok) { D.ok = true; D.verdict = p.verdict; }
     } else if (!D.endAt) {
-      // 已经开始下一抽：这一抽还没停就立刻一起停（结果已知停在结果上，未知三格都显示 —）
+      // 已经开始下一抽：这一抽还没停完就加快依次停下（结果已知停在结果上，未知三格都显示 —）
       if (!D.targets) D.targets = ['—', '—', '—'];
-      D.fast = true;
+      if (!D.fast) { D.fast = true; let i = 0; for (const r of reels) if (r.m === 'spin' && Number.isFinite(r.at)) r.at = Math.min(r.at, t + (i++) * FGAP); if (D.sched) { D.sched.gap = FGAP; D.sched.dur = FLAND; D.sched.t0 = t - D.stage * FGAP; } }
     }
-    // 已停稳但结果又变了（标题里的结果更新）：三个一起再转一下、一起重新落位
-    if (D.mode === 'stop' && !D.endAt && D.targets && D.labels && D.targets.join('\n') !== D.labels.join('\n')) { D.mode = 'spin'; D.v = SPIN * .6; for (const r of reels) r.el.classList.remove('stop'); }
-    if (D.mode === 'spin' && (D.coast || (!running && !D.targets))) { D.mode = 'land'; D.coast = true; D.from = D.pos; D.to = Math.ceil(D.pos) + 2; D.t0 = t; D.dur = 600; }
+    // 已经在停（或已停下）而结果又变了：从第一个不同的格子起重新转、依次重新停
+    if (D.labels && !D.endAt && D.targets && D.targets.join('\n') !== D.labels.join('\n')) { const from = D.targets.findIndex((x, i) => x !== D.labels[i]); if (from > 0) D.lkey = D.tkey || D.lkey; respin(D, from); }
+    if (D.mode === 'spin' && (D.coast || (!running && !D.targets))) { D.mode = 'land'; D.coast = true; }
     if (D.mode === 'spin') {
       // 三个轮子同一时刻起转、一起加速到全速
       if (D.fast) D.v = SPIN; else D.v = Math.min(SPIN, D.v + SPIN / .7 * dt);
-      D.pos += D.v * dt;
       if (D.targets && (D.fast || D.v >= SPIN * .15)) {
-        // 目标项放在滚轮背面（4 格外完全透明，换字看不见），三个轮子同一段减速一起停住；初速度与匀速旋转衔接
-        const to = Math.ceil(D.pos) + 4, idx = wrapI(to);
-        reels.forEach((r, k) => setItem(r, r.items[idx], D.targets[k]));
-        D.labels = D.targets.slice(); D.lkey = D.tkey || ''; D.mode = 'land'; D.coast = false; D.from = D.pos; D.to = to; D.t0 = t; D.dur = D.fast ? 220 : 300;
+        // 排好依次停下的时刻表：厂商马上开始减速，型号晚 GAP 毫秒，档位再晚 GAP 毫秒（已经停对的格子不重排）
+        const gap = D.fast ? FGAP : GAP, first = Math.max(0, reels.findIndex(r => r.m !== 'stop'));
+        D.labels = D.targets.slice(); D.lkey = D.tkey || ''; D.mode = 'land'; D.stage = first;
+        D.sched = { t0: t - first * gap, gap, dur: D.fast ? FLAND : LAND };
+        reels.forEach((r, k) => { if (r.m !== 'stop') r.at = t + (k - first) * gap; });
+        publish(D);
       }
     }
-    if (D.mode === 'land') {
-      const q = Math.min(1, (t - D.t0) / D.dur); D.pos = D.from + (D.to - D.from) * (1 - Math.pow(1 - q, 3));
-      if (q >= 1) {
-        D.mode = 'stop'; D.stopAt = t; D.pos = D.to;
-        if (D.coast) D.coast = false;
-        else {
-          for (const r of reels) { r.el.classList.add('stop'); r.el.classList.remove('thunk'); void r.el.offsetWidth; r.el.classList.add('thunk'); } try { navigator.vibrate?.(8); } catch {}
-          // 停稳的这一刻通知顶部标题一起亮出同样的结果
-          landed = { sid: p.sid || '', key: D.lkey || '' }; try { window.dispatchEvent(new Event('amp-title-sync')); } catch {}
+    let stopped = 0;
+    reels.forEach((r, k) => {
+      if (r.m === 'spin') {
+        r.pos += D.v * dt;
+        if (D.mode === 'land') {
+          if (D.coast) { r.m = 'land'; r.cst = true; r.from = r.pos; r.to = Math.ceil(r.pos) + 2; r.t0 = t; r.dur = 600; r.v0 = D.v; }
+          else if (t >= r.at) {
+            // 目标项放在滚轮背面（4 格外完全透明，换字看不见），从当前转速平滑减速停在它上面
+            const to = Math.ceil(r.pos) + 4; setItem(r, r.items[wrapI(to)], D.labels[k]);
+            r.m = 'land'; r.cst = false; r.from = r.pos; r.to = to; r.t0 = t; r.dur = D.sched ? D.sched.dur : LAND; r.v0 = D.v;
+          }
         }
       }
+      if (r.m === 'land') {
+        // 三次 Hermite：起点速度 = 当前转速（不突然加速），终点速度 0
+        const q = Math.min(1, (t - r.t0) / r.dur), d = r.to - r.from, sp = Math.max(0, Math.min(3, r.v0 * r.dur / 1000 / d));
+        r.pos = r.from + d * q * (sp + q * (3 - 2 * sp + q * (sp - 2)));
+        if (q >= 1) {
+          r.m = 'stop'; r.pos = r.to;
+          if (!r.cst) { r.el.classList.add('stop'); r.el.classList.remove('thunk'); void r.el.offsetWidth; r.el.classList.add('thunk'); try { navigator.vibrate?.(k === 2 ? 12 : 7); } catch {} }
+        }
+      }
+      if (r.m === 'stop') stopped++;
+      r.pos = Number.isFinite(r.pos) ? r.pos : 0; paintReel(r);
+    });
+    if (D.mode === 'land') {
+      // 揭晓进度 = 从左数已经停下的格子数（厂商 → 型号 → 档位）；每停一格通知顶部标题同一刻亮出这一格
+      const first = reels.findIndex(r => r.m !== 'stop' || r.cst), stage = first < 0 ? 3 : first;
+      if (!D.coast && stage !== D.stage) { D.stage = stage; publish(D); }
+      if (stopped === reels.length) { D.mode = 'stop'; D.stopAt = t; if (D.coast) D.coast = false; }
     }
-    for (const r of reels) { r.pos = D.pos; paintReel(r); }
     const L = D.labels || ['', '', ''];
     if (D.mode === 'stop' && !D.endAt && (D.verdict || !running || D.fast)) {
       D.endAt = t;
@@ -4940,23 +4995,57 @@ const gachaSlot = (() => {
     if (p.draw !== D.no && D.endAt && (t - D.endAt > (D.hold || 650) || !!(p.shown && p.shown.full && p.shown.sid === p.sid))) newDisp(p.draw);
     // 头部与进度
     noEl.textContent = '第 ' + (disp.no || Math.max(1, Math.min(p.max || 1, p.completed + 1))) + ' / ' + p.max + ' 抽';
-    hitEl.textContent = p.hits ? '· 命中 ' + p.hits : '';
-    const frac = p.done ? 0 : !p.sid && !p.sent ? (/新对话/.test(p.phase) ? .1 : .04) : !p.sid ? .25 : disp.mode === 'stop' && disp.labels ? .92 : disp.mode === 'land' && !disp.coast ? .8 : .5;
+    // v1.11.79 命中数也等三格都停下再加（不提前剧透）
+    const hits = p.draw === disp.no && !disp.endAt ? Math.min(p.hits, disp.hits0) : p.hits;
+    hitEl.textContent = hits ? '· 命中 ' + hits : '';
+    const frac = p.done ? 0 : !p.sid && !p.sent ? (/新对话/.test(p.phase) ? .1 : .04) : !p.sid ? .25 : disp.mode === 'stop' && disp.labels ? .92 : disp.sched && !disp.coast ? .62 + .1 * disp.stage : .5;
     const pct = p.max ? Math.min(100, (p.completed + (running ? frac : 0)) / p.max * 100) : 0;
     const w = pct.toFixed(1) + '%'; if (fillEl.style.width !== w) fillEl.style.width = w;
     wrap.classList.toggle('idle', !running);
     let ph = running ? (p.phase || '准备中') : (p.reason || ({ done: '已完成', hit: '已完成', paused: '已停止', stopped: '已停止' }[p.status] || ''));
+    // v1.11.79 进度条下的状态行与轮子同步：停下几格只写几格（已识别厂商 Qwen → 已识别 qwen3.8-max-0902 → … · 标准），还没停下时不写名字
+    if (running) { const st = stageText(disp.labels, disp.coast ? 0 : disp.stage); if (st) ph = st; else if (/^已识别/.test(ph)) ph = '识别中…'; }
     if (phEl.textContent !== ph) phEl.textContent = ph;
     root.querySelector('.head span').textContent = running ? '抽卡中' : ['paused', 'stopped'].includes(p.status) ? '已停止' : '抽卡结束';
     root.querySelector('.stop').style.display = running ? '' : 'none';
   }
-  // v1.11.77 顶部标题问：这个对话的结果要不要等老虎机停稳再亮出？（老虎机正显示着这一抽、还没停在这个结果上；最多等 0.9 秒）
-  let landed = { sid: '', key: '' }; const holdAt = new Map();
-  function holdFor(sid, key) {
-    if (!sid || !wrap?.classList.contains('on') || !p || p.sid !== sid || !disp || !['running', 'stopping'].includes(p.status)) return false;
-    if (landed.sid === sid && landed.key === key) return false;
-    const k = sid + '|' + key, now = performance.now(); if (!holdAt.has(k)) { holdAt.set(k, now); if (holdAt.size > 24) holdAt.delete(holdAt.keys().next().value); }
-    return now - holdAt.get(k) < 900;
+  // v1.11.79 顶部标题问：这个对话此刻能亮出几格？null = 全部（不在抽卡里 / 老虎机已收起 / 切到后台 / 三格都已停下）；
+  // { stage: 0 } 还在转，什么都不亮；1 只亮厂商；2 厂商 + 型号。老虎机 0.9 秒内还没开始落位就不等。
+  function reveal(sid, key) {
+    if (!sid || !wrap?.classList.contains('on') || !p || p.sid !== sid || !disp || !['running', 'stopping'].includes(p.status) || document.hidden) return null;
+    const now = performance.now(), R = revealed, k = sid + '|' + key;
+    // 已经等不及、完整亮出过的结果：之后老虎机才开始落位也不再收回（不来回跳）
+    if (gaveUp.has(k)) return null;
+    if (disp.no === p.draw && R.sid === sid && R.labels) {
+      // 动画帧被节流（卡顿）时按落位时刻表推算，顶部不会一直卡住
+      let st = R.stage; const sc = R.sched; if (sc) st = Math.max(st, [0, 1, 2].filter(k => now >= sc.t0 + k * sc.gap + sc.dur + 400).length);
+      return st >= 3 ? null : { stage: st, labels: R.labels };
+    }
+    if (!holdAt.has(k)) { holdAt.set(k, now); if (holdAt.size > 24) holdAt.delete(holdAt.keys().next().value); }
+    if (now - holdAt.get(k) < 900) return { stage: 0, labels: null };
+    gaveUp.add(k); if (gaveUp.size > 24) gaveUp.delete(gaveUp.values().next().value); return null;
+  }
+  // 模型信息 / 底栏 / 左侧卡片 / 波轮用：这个对话的这一抽还在老虎机里揭晓（没全部停下）→ 已经亮出的部分；否则 null
+  function view(sid) {
+    if (!sid || !wrap?.classList.contains('on') || !disp || document.hidden) return null;
+    let q = null; try { q = gacha.peek(); } catch {}
+    if (!q || q.sid !== sid || !['running', 'stopping'].includes(q.status)) return null;
+    // 这一抽刚开始、老虎机还在展示上一抽的结果：先什么都不亮（进行中的调用名也不透露）
+    if (disp.no !== q.draw) return { stage: 0, labels: null };
+    if (disp.coast || disp.endAt || disp.stage >= 3) return null;
+    return { stage: disp.labels ? disp.stage : 0, labels: disp.labels ? disp.labels.slice() : null };
+  }
+  // 抽卡循环用：这一抽三格都停下已经多久了（毫秒；不在揭晓 / 老虎机收起 = Infinity）
+  function settledFor() {
+    if (!wrap?.classList.contains('on') || !disp || !disp.endAt || document.hidden || disp.coast) return Infinity;
+    let q = null; try { q = gacha.peek(); } catch {}
+    return q && q.draw === disp.no && disp.labels ? performance.now() - disp.endAt : Infinity;
+  }
+  // 抽卡循环用：这一抽已经定了（有结果）但三格还没全部停下 → 先别开下一个对话
+  function revealing() {
+    if (!wrap?.classList.contains('on') || !disp || document.hidden) return false;
+    let q = null; try { q = gacha.peek(); } catch {}
+    return !!q && ['running', 'stopping'].includes(q.status) && q.draw === disp.no && q.ok && !disp.endAt && !disp.coast;
   }
   function tick() {
     let q = null; try { q = gacha.peek(); } catch {}
@@ -4968,7 +5057,7 @@ const gachaSlot = (() => {
     } else if (wrap?.classList.contains('on') && (!q || q.id === hiddenRun)) hide();
   }
   setInterval(() => { try { tick(); } catch {} }, 250);
-  return { parts, holdFor };
+  return { parts, reveal, view, revealing, settledFor, stageName };
 })();
 const routeAlert = (() => {
   // Pops a notice whenever a conversation's response model changes (e.g. routed to another model).
@@ -5421,6 +5510,8 @@ const gachaUi = (() => {
       // 刚转起来（新开一轮 / 暂停后继续 / 刷新页面）：之前已有的结果不再闪，只亮之后新出的
       if (!b._ampSpin) { b._ampSpin = true; b._ampLand = key; return; }
       if (!last || key === b._ampLand) return;
+      // v1.11.79 老虎机还在依次停这一抽：波轮先不亮出抽到的厂商 / 命中绿圈，等三格都停下（每停一格都会重绘到这里）
+      if ((() => { try { return !!gachaSlot.view(last.sid); } catch { return false; } })()) return;
       b._ampLand = key;
       const land = b.querySelector('[data-amp-land]'), vid = brand.of(last.model) || '';
       if (land) land.innerHTML = vid ? vendorIcon(vid, 19) : '<b>' + (String(last.model).trim().charAt(0).toUpperCase() || '?') + '</b>';
@@ -6346,7 +6437,10 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       if(!miniBar())for(const [kind,q] of [['chat',quota.chat],['append',quota.append]]){const v=quotaView(q,kind,now,prefs.showQuotaReset);if(v)out.push(item('q'+kind,v.cls==='blocked'?'blocked':v.cls==='low'?'warn':'',[['t',v.label+' '],['b',v.value],['t',v.tail||'']],v.title));}
       const r=selectedRun(),c=r?.data?.calls?.at(-1);
       if(mini){const g=gacha.state();if(g&&['running','stopping'].includes(g.status))out.push(item('gacha','good',[['t','抽卡 '],['b',g.completed+'/'+g.settings.maxAttempts]],'点击打开抽卡面板',()=>window.dispatchEvent(new CustomEvent('amp-native-gacha-open'))));return out;}
-      if(c){const eff=c.effort?.value||({conflict:'冲突',unsupported:'不支持'}[c.effort?.status])||'';out.push(item('model','',[['t','模型 '],['b',(c.internal||c.model||'未提供').slice(0,48)],['t',eff?' · '+eff:'']],'当前会话最近一次模型调用\n请求 '+(c.request||'—')+'\n响应 '+(c.response||'—')+'\n内部 '+(c.internal||'—')+'\n显式档位 '+(eff||'未知'),()=>ui?.show()));}
+      // v1.11.79 这一抽还在老虎机里揭晓：底栏的“模型”也只写已经停下的格子
+      const gvb=(()=>{try{return gachaSlot.view(sidOf(location.href));}catch{return null;}})();
+      if(c&&gvb)out.push(item('model','',[['t','模型 '],['b',gachaSlot.stageName(gvb)]],'老虎机揭晓中：厂商 → 型号 → 档位 依次停下',()=>ui?.show()));
+      else if(c){const eff=c.effort?.value||({conflict:'冲突',unsupported:'不支持'}[c.effort?.status])||'';out.push(item('model','',[['t','模型 '],['b',(c.internal||c.model||'未提供').slice(0,48)],['t',eff?' · '+eff:'']],'当前会话最近一次模型调用\n请求 '+(c.request||'—')+'\n响应 '+(c.response||'—')+'\n内部 '+(c.internal||'—')+'\n显式档位 '+(eff||'未知'),()=>ui?.show()));}
       const sid=sidOf(location.href),cr=sid?costState.get(sid)?.credits||r?.data?.credits:null;
       if(cr&&cr.credits!==null&&cr.credits!==undefined)out.push(item('turn','',[['t','本轮 '],['b',Math.round(cr.credits).toLocaleString('zh-CN')+' cr'],['t',cr.usd!==null&&cr.usd!==undefined?' · $'+(+cr.usd).toFixed(4):'']],'GET /api/chat/{id}/cost · 本轮计费'));
       const g=gacha.state();
@@ -7783,7 +7877,7 @@ details.mc-card .section.credits{margin-top:12px}
       const zp=name.match(/^(dx|cl)zui\b/i);if(zp){const m=modelOf(sid,record);if(m&&brand.of(m))return zp[1].toLowerCase()+'-'+brand.short(m).replace(/(^|-)(\d{1,2})-(\d{1,2})(?=$|-)/,'$1$2.$3');return zp[1].toLowerCase()+'zui';}const m=modelOf(sid,record);if(m&&brand.of(m)&&!name.includes(m))return name+'-'+m;const v=record?.vendor;return v&&brand.NAME[v]?name+'-'+brand.NAME[v].toLowerCase():name;}
     // 左侧卡片已有厂商图标：文字去掉厂商/系列前缀（gpt-6-luna-max → 6-luna-max，kimi-k3 → K3），悬停显示全称
     function shortModel(n){n=String(n||'');if(!brand.of(n))return n;const m=n.match(/^(?:[\w.-]+\/)?(?:gpt|chatgpt|claude|gemini|grok|kimi|qwen|deepseek|mimo|glm|llama|mistral|doubao|minimax)[-_ ]+(.+)$/i);let r=m?m[1]:(n.match(/^[\w.-]+\/(.+)$/)||[])[1];if(!r||!/[\w]/.test(r))return n;if(/^k\d/.test(r))r='K'+r.slice(1);return r;}
-    let titleSyncRaf=0;window.addEventListener('amp-title-sync',()=>{if(titleSyncRaf)return;titleSyncRaf=requestAnimationFrame(()=>{titleSyncRaf=0;try{localTitles();}catch{}try{headerTitle();}catch{}try{window.dispatchEvent(new CustomEvent('amp-native-gacha'));}catch{}});});
+    let titleSyncRaf=0;window.addEventListener('amp-title-sync',()=>{if(titleSyncRaf)return;titleSyncRaf=requestAnimationFrame(()=>{titleSyncRaf=0;try{localTitles();}catch{}try{headerTitle();}catch{}try{window.dispatchEvent(new CustomEvent('amp-native-gacha'));}catch{}try{if(gacha.running())paint();}catch{}});});
     const ltMemo=new WeakMap();
     function localTitles(){
       if(!catalog.persistent||document.readyState!=='complete')return;
@@ -7794,7 +7888,10 @@ details.mc-card .section.credits{margin-top:12px}
         const hm=/^(?:https:\/\/arena\.ai)?\/agent\/([\w-]{1,128})\/?(?:[?#].*)?$/.exec(a.getAttribute('href')||'');if(!hm)continue;
         const sid=hm[1],own=gacha.ownsTitle(sid),record=own?null:catalog.entries.get(sid);if(record?.temporary){const old=marks.get(a);if(old){restoreMark(a,old);marks.delete(a);}continue;}
         const pr0=a.querySelector('span.truncate,div.truncate'),memoKey=(pr0?pr0.textContent:'')+'|'+(record?.title||'')+'|'+(record?.name?.name||'')+'|'+(own?gacha.pendingTitle(sid)||'':'')+'|'+prefs.showSeq+'|'+vip.rev+'|'+brand.hint.rev(),mm=ltMemo.get(a);
-        if(pr0&&mm&&mm.key===memoKey&&mm.pr===pr0&&pr0.isConnected)continue;ltMemo.set(a,{key:memoKey,pr:pr0});
+        if(pr0&&mm&&mm.key===memoKey&&mm.pr===pr0&&pr0.isConnected)continue;
+        // v1.11.79 抽卡刚定名的卡片：老虎机三格都停下之后再换成新名字（揭晓前不透露）
+        if(own&&gacha.pendingTitle(sid)&&(()=>{try{return !!gachaSlot.view(sid);}catch{return false;}})())continue;
+        ltMemo.set(a,{key:memoKey,pr:pr0});
         const primary=a.querySelector('span.truncate,div.truncate'),candidates=[...a.querySelectorAll('span')].filter(s=>!s.querySelector('svg,input,button,span,div')&&!s.classList.contains('sr-only')&&s.textContent.trim());const span=primary&&!primary.querySelector('svg,input,button')?primary:candidates.sort((a,b)=>b.textContent.length-a.textContent.length)[0];if(!span||!span.textContent.trim())continue;
         // 默认不显示本地编号 #N（与原标题/进度条挤在一起不好读）；设置里可打开。
         const shownTitle=own&&gacha.pendingTitle(sid)?gacha.pendingTitle(sid):record?.title?withVendor(sid,record,prefs.showSeq?record.title:(record.name?.name||String(record.title).replace(/^#\d+\s*/,''))||record.title):span.textContent.trim();
@@ -7817,6 +7914,7 @@ details.mc-card .section.credits{margin-top:12px}
       +'[data-amp-hlogo]{display:inline-flex!important;align-items:center;justify-content:center;flex:none;width:18px;height:18px;border-radius:50%;background:#fff;color:#111;box-shadow:0 0 0 1px #0000001a;margin-right:6px;vertical-align:middle;animation:ampHLogo .3s ease-out both}[data-amp-hlogo] svg{width:12px;height:12px;color:#111;fill:currentColor}[data-amp-hlogo][data-full]{background:transparent;box-shadow:none}[data-amp-hlogo][data-full] svg{width:18px;height:18px}'
       +'[data-amp-htier]{display:inline-flex!important;align-items:center;flex:none;height:18px;padding:0 7px;margin-left:6px;border-radius:999px;font-size:11px;font-weight:600;line-height:1;vertical-align:middle;color:#6a5e54;background:#6a5e5414;box-shadow:inset 0 0 0 1px #6a5e5433;white-space:nowrap}[data-amp-htier][hidden]{display:none!important}[data-amp-htier][data-hi]{color:#fff;background:#6a5e54;box-shadow:none}'
       +'[data-amp-htier][data-amp-hdark]{color:#d8d3ca;background:#d8d3ca14;box-shadow:inset 0 0 0 1px #d8d3ca33}[data-amp-htier][data-amp-hdark][data-hi]{color:#262522;background:#d8d3ca}[data-amp-htier][data-pop]{animation:ampHLogo .3s cubic-bezier(.3,1.6,.5,1) both}[data-amp-hswap]{display:inline-flex!important;align-items:center;justify-content:center;flex:none;width:20px;height:20px;margin-left:5px;border-radius:50%;color:#fff;background:hsl(var(--syntax-yellow,48 92% 38%));vertical-align:middle;cursor:pointer;animation:ampHLogo .3s cubic-bezier(.3,1.6,.5,1) both}[data-amp-hswap][hidden]{display:none!important}[data-amp-hswap] svg{width:12px;height:12px}[data-amp-hswap][data-tone=suspect]{color:hsl(var(--syntax-yellow,48 92% 38%));background:transparent;box-shadow:inset 0 0 0 1.5px hsl(var(--syntax-yellow,48 92% 38%))}'
+      +'[data-amp-htitle][data-amp-hstep]{animation:ampHStep .34s cubic-bezier(.3,1.45,.5,1) both}@keyframes ampHStep{from{opacity:.15;transform:translateY(-30%)}to{opacity:1;transform:none}}'
       +'@keyframes ampHLogo{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:none}}@media (prefers-reduced-motion:reduce){[data-amp-htitle],[data-amp-hlogo]{transition:none!important;animation:none!important}}';
     el('style','',hdrCSS,document.head||document.body);
     let hdr={t:null,logo:null,name:null},hdrStart=new Map(),hdrFull=new Map(),hdrIdle=new Map();
@@ -7875,11 +7973,12 @@ details.mc-card .section.credits{margin-top:12px}
       const full=!!idName,pending=!full&&((!!r&&!final&&(recent||!done))||generating);
       let fam='',tierTxt='';
       if(full){[fam,tierTxt]=split(idName);if(tierTxt==='none')tierTxt='';}
-      // 抽卡老虎机正在为这个对话落位：顶部等老虎机停稳的那一刻一起亮出（老虎机收起 / 超过 0.9 秒就不等）
-      const hold=full&&(()=>{try{return gachaSlot.holdFor(sid,fam+'|'+tierTxt);}catch{return false;}})(),showFull=full&&!hold;
-      const dFam=showFull?fam:((provisional||full?noVertex((link&&link.textContent.trim())||t.textContent||'').trim():shownName)||'识别中…');
+      // v1.11.79 抽卡老虎机 厂商 → 型号 → 档位 依次停：顶部跟着轮子一格一格亮出——还在转：都不亮（原标题 + 识别中…）；
+      // 厂商停下：logo + 厂商名；型号停下：logo + 型号；档位停下：档位标签 + “识别模型为 …”（老虎机收起 / 不在抽卡 / 切到后台就不等）
+      const rv=full?(()=>{try{return gachaSlot.reveal(sid,fam+'|'+tierTxt);}catch{return null;}})():null,stg=rv?rv.stage:3,hold=full&&stg<1,showFull=full&&stg>=3;
+      const dFam=showFull||full&&stg===2?fam:full&&stg===1?(rv.labels?.[0]||brand.NAME[brand.of(idName)]||fam):((provisional||full?noVertex((link&&link.textContent.trim())||t.textContent||'').trim():shownName)||'识别中…');
       if(showFull&&idNew)p=100;else if(!showFull&&done&&!final)p=Math.min(p,92);
-      if(nm.textContent!==dFam)nm.textContent=dFam;nm.title=full?idName:shownName;hdrShown={sid,fam:full?fam:'',tier:full?tierTxt||'':'',vid:'',full,name:idName,at:Date.now()};
+      if(nm.textContent!==dFam){nm.textContent=dFam;if(full&&stg>=1&&stg<3){nm.removeAttribute('data-amp-hstep');void nm.offsetWidth;nm.setAttribute('data-amp-hstep','');}}if(!full||stg>=3)nm.removeAttribute('data-amp-hstep');nm.title=showFull?idName:full?dFam:shownName;hdrShown={sid,fam:full?fam:'',tier:full?tierTxt||'':'',vid:'',full,name:idName,at:Date.now()};
       if(!showFull)tierTxt='';
       let tg=hdr.tier;if(!tg||!tg.isConnected||nm.nextElementSibling!==tg){tg?.remove();tg=document.createElement('span');tg.setAttribute('data-amp-htier','');nm.after(tg);hdr.tier=tg;}
       if(tg.dataset.t!==tierTxt||tg.textContent!==tierTxt){tg.dataset.t=tierTxt;tg.replaceChildren();if(tierTxt){const lv=TIER_LV[tierTxt]??0;tg.dataset.lv=String(lv);tg.append(document.createTextNode(tierTxt));}tg.removeAttribute('data-pop');void tg.offsetWidth;if(tierTxt)tg.setAttribute('data-pop','');}
@@ -7887,7 +7986,7 @@ details.mc-card .section.credits{margin-top:12px}
       // 换模型徽标：本轮已确认（实心）/ 疑似（描边）；点一下打开“监控”页
       {const ms_=monState(sid),show=(ms_.tone==='switch'||ms_.tone==='suspect')&&!qt;let sw=hdr.swap;if(!sw||!sw.isConnected||tg.nextElementSibling!==sw){sw?.remove();sw=document.createElement('span');sw.setAttribute('data-amp-hswap','');sw.setAttribute('role','button');sw.tabIndex=0;sw.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>';const go=e=>{e.preventDefault();e.stopPropagation();ui?.show('detector');};sw.addEventListener('click',go,true);sw.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' ')go(e);});tg.after(sw);hdr.swap=sw;}
         sw.hidden=!show;if(show){sw.dataset.tone=ms_.tone;sw.title=ms_.text;sw.setAttribute('aria-label',ms_.text);}}
-      nm.style.setProperty('--amp-hp',Math.round(p)+'%');nm.toggleAttribute('data-amp-hdone',!hold&&(final||(full&&idNew)||(done&&!recent)));nm.toggleAttribute('data-amp-hdark',isDark());
+      nm.style.setProperty('--amp-hp',Math.round(p)+'%');nm.toggleAttribute('data-amp-hdone',(!full||showFull)&&(final||(full&&idNew)||(done&&!recent)));nm.toggleAttribute('data-amp-hdark',isDark());
       // 副标题：识别中… → 识别模型为 claude-opus-5-5（8 秒后淡出）
       // v1.11.77 不再逐步透露“已确定厂商 / 识别：部分型号”：完整结果出来之前一律“识别中…”
       const VN={openai:'GPT',anthropic:'Claude',google:'Gemini',xai:'Grok',moonshot:'Kimi',deepseek:'DeepSeek',qwen:'Qwen',zhipu:'GLM',xiaomi:'MiMo',bytedance:'豆包',minimax:'MiniMax',mistral:'Mistral',meta:'Llama'};
@@ -7895,7 +7994,7 @@ details.mc-card .section.credits{margin-top:12px}
       const rn=rc?.response||rc?.request||(rc?.model&&rc.model!=='未提供'?rc.model:''),finalName=(rc?.internal||(rn&&brand.of(rn)&&brand.of(rn)!==brand.of(meta?.name?.name||'')?rn:'')||meta?.name?.name||c?.internal||c?.model||'').replace(/^未提供$/,'');
       let sub='',fresh=false;
       if(r&&showFull&&(done||idNew)){const key=r.runId+'|full';if(!hdrStart.has(key)){hdrStart.set(key,Date.now());if(hdrStart.size>60)hdrStart.delete(hdrStart.keys().next().value);}if(Date.now()-hdrStart.get(key)<8000){sub='识别模型为 '+brand.short(idName);fresh=true;}}
-      if(!sub&&(pending||hold||generating&&!done))sub='识别中…';
+      if(!sub&&(pending||full&&!showFull||generating&&!done))sub='识别中…';
       // v1.11.77 “已被改派：A → B”也只在完整结果亮出之后显示；抽卡发出的那一轮不显示
       const rt=r?.data?.routing||live?.routing;if(rt&&!fresh&&showFull&&!(()=>{try{return gacha.quietTurn(sid);}catch{return false;}})())sub='已被改派：'+(rt.from?brand.short(rt.from):'原模型')+' → '+(rt.to?brand.short(rt.to):'其他模型');
       if(nm.getAttribute('data-amp-hsub')!==sub)nm.setAttribute('data-amp-hsub',sub);nm.toggleAttribute('data-amp-hfresh',fresh);
@@ -7982,6 +8081,8 @@ details.mc-card .section.credits{margin-top:12px}
       const shown=meta?.name?.name||liveCall?.internal||liveCall?.model||'模型信息',eff=liveCall?.effort,effortText=eff?.value||({conflict:'冲突',unsupported:'不支持'}[eff?.status])||'未知';
       triggerLabel.textContent=(prefs.showSeq&&seqLabel(sid)?seqLabel(sid)+' ':'')+shown;mini.textContent=liveCall?(originTag?originTag+' · ':'')+'推理 '+effortText:'';mini.hidden=true;
       compactName.textContent=triggerLabel.textContent;{const st=monState(sid),[,sfx]=famTier(liveCall?.internal||liveCall?.model||''),tier=liveCall?.effort?.value||sfx,rs=liveCall&&liveCall.reasoning.status!=='conflict'?number(liveCall.reasoning.value):null;compactText.textContent=liveCall?[tier?'档位 '+tier:'',rs?'思考 '+spendShort(rs):rs===0?'无思考链':'',st.tone==='idle'?'':st.short].filter(Boolean).join(' · ')||'已识别':'尚无模型记录';compactText.dataset.tone=liveCall?st.tone:'';}numberLabel.textContent=seqLabel(s?.sid||sid);
+      // v1.11.79 这一抽还在老虎机里揭晓：模型信息只写已经停下的格子（厂商 → 型号），详情等三格都停下再显示
+      const gv=sid?(()=>{try{return gachaSlot.view(sid);}catch{return null;}})():null;if(gv){triggerLabel.textContent=compactName.textContent=gachaSlot.stageName(gv);compactText.textContent='识别中…';compactText.dataset.tone='';}
       const historical=!!historyView||!!turnKey||!r?.data&&!!s||!!r?.data&&r.data.revision!==r.revision,explicitHist=!!historyView||!!turnKey;banner.hidden=!explicitHist||!['overview','sources','raw'].includes(tab);{const ct=!explicitHist&&historical?(r?.data?'上次':'缓存'):'';for(const ch of [compactChip,headChip]){ch.hidden=!ct;if(ch.textContent!==ct)ch.textContent=ct;}}
       bannerText.textContent=historyView?'本地缓存 · '+(seqLabel(historyView.sid)||'')+' · '+turnLabel(historyView):turnKey?'历史轮次 · '+turnLabel(s)+' · 非最新记录':r?.data?'上次记录 · 非本轮结论':'本地缓存 · 非本轮结论';banner.querySelector('button').hidden=!(historyView||turnKey);
       const grp=groupOf(tab);groupLast[grp[0]]=tab;for(let i=0;i<groups.length;i++){const on=groups[i]===grp;tabButtons[i].setAttribute('aria-selected',String(on));tabButtons[i].tabIndex=on?0:-1;}body.setAttribute('aria-labelledby','amp-tab-'+grp[0]);subnav.hidden=grp[2].length<2;if(!subnav.hidden){const k=grp[0]+'|'+tab;if(subStamp!==k){subStamp=k;subnav.replaceChildren();subnav.setAttribute('aria-label',grp[1]);for(const id of grp[2]){const t=(tabs.find(x=>x[0]===id)||[id,id])[1],sb=button(subnav,t,t,()=>{tab=id;render();});sb.setAttribute('aria-pressed',String(id===tab));}}}
@@ -7994,8 +8095,8 @@ details.mc-card .section.credits{margin-top:12px}
       pickers.hidden=turnPicker.hidden&&picker.hidden;
       if(tab==='logs'){const logSid=historyView?.sid||sid,key=(logSid||'')+':'+catalog.logRevision;if(logKey!==key){logKey=key;void catalog.readLogs(logSid).then(rows=>{if(logKey!==key)return;logItems=rows;logSerial++;paint();});}}
       if(tab==='settings'&&Date.now()-usageAt>5000){usageAt=Date.now();void catalog.usage().then(u=>{usageInfo=u;settingsSerial++;paint();});}
-      const next=[tab,tab==='detector'?legacyDisplay.revision+'|'+force.serial+'|'+(sid||'')+'|'+mon.serial:tab==='hunt'?gacha.revision:0,s,c,historical,moreOpen,tab==='cache'?catalog.revision:0,cacheLimit,openSid,tab==='logs'?logSerial:0,tab==='logs'?pref.level:null,!!r?.busy,Date.now()<cooldown,rawFilter,rawSpan,tab==='raw'?rawStore.get(s?.key)?.spans.size:0,tab==='settings'?settingsSerial:0,confirmRawClear,tab==='settings'?JSON.stringify(prefs):'',tab==='raw'?JSON.stringify(rawOf(s)?.probe&&Object.keys(rawOf(s).probe)):'',tab==='overview'?spendSerial+'|'+mon.serial:0];
-      if(next.some((x,i)=>x!==bodyStamp[i])||!bodyStamp.length){const scroll=body.scrollTop,sameTab=bodyStamp[0]===tab,focus=root.activeElement?.dataset.focus;bodyStamp=next;body.replaceChildren();if(tab==='hunt')huntTab();else if(tab==='detector')detectorTab();else if(tab==='cache')cacheTab();else if(tab==='logs')logTab();else if(tab==='settings')settingsTab();else if(tab==='about')aboutTab();else if(!c){if(tab==='overview'&&turnSid){liveCard(turnSid,null,!historyView&&!turnKey);spendCard({sid:turnSid});}empty(turnKey?'正在读取此轮缓存':'尚无模型记录',turnKey?'如长时间无内容，说明此轮快照不可用。':'发送一条新消息后，型号与配置会自动填入。');}else if(tab==='sources')sources(s,c);else if(tab==='raw')rawTab(s,c);else overview(s,c);body.scrollTop=sameTab?scroll:0;if(focus)[...body.querySelectorAll('[data-focus]')].find(e=>e.dataset.focus===focus)?.focus({preventScroll:true});}
+      const next=[tab,tab==='detector'?legacyDisplay.revision+'|'+force.serial+'|'+(sid||'')+'|'+mon.serial:tab==='hunt'?gacha.revision:0,s,c,historical,moreOpen,tab==='cache'?catalog.revision:0,cacheLimit,openSid,tab==='logs'?logSerial:0,tab==='logs'?pref.level:null,!!r?.busy,Date.now()<cooldown,rawFilter,rawSpan,tab==='raw'?rawStore.get(s?.key)?.spans.size:0,tab==='settings'?settingsSerial:0,confirmRawClear,tab==='settings'?JSON.stringify(prefs):'',tab==='raw'?JSON.stringify(rawOf(s)?.probe&&Object.keys(rawOf(s).probe)):'',tab==='overview'?spendSerial+'|'+mon.serial:0,gv&&['overview','sources','raw'].includes(tab)?'g'+gv.stage:''];
+      if(next.some((x,i)=>x!==bodyStamp[i])||!bodyStamp.length){const scroll=body.scrollTop,sameTab=bodyStamp[0]===tab,focus=root.activeElement?.dataset.focus;bodyStamp=next;body.replaceChildren();if(tab==='hunt')huntTab();else if(tab==='detector')detectorTab();else if(tab==='cache')cacheTab();else if(tab==='logs')logTab();else if(tab==='settings')settingsTab();else if(tab==='about')aboutTab();else if(gv)empty('老虎机揭晓中…','厂商 → 型号 → 档位 依次停下后显示这一抽的完整信息。');else if(!c){if(tab==='overview'&&turnSid){liveCard(turnSid,null,!historyView&&!turnKey);spendCard({sid:turnSid});}empty(turnKey?'正在读取此轮缓存':'尚无模型记录',turnKey?'如长时间无内容，说明此轮快照不可用。':'发送一条新消息后，型号与配置会自动填入。');}else if(tab==='sources')sources(s,c);else if(tab==='raw')rawTab(s,c);else overview(s,c);body.scrollTop=sameTab?scroll:0;if(focus)[...body.querySelectorAll('[data-focus]')].find(e=>e.dataset.focus===focus)?.focus({preventScroll:true});}
     }
     // 独立检测页：上半“一键检测”（立刻读取本对话此刻的全部记录，看中途有没有换模型、换成了谁），下半“原脚本检测”（v8.1.0 原样结果，只换排版）
     const posText=c=>!c?'':(c.turn?'第 '+c.turn+' 轮':'未标记轮次')+(c.attempt>1?'（第 '+c.attempt+' 次）':'')+' · 第 '+c.n+' 次调用';
