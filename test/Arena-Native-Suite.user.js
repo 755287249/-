@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.70
+// @version      1.11.71
 // @description  【测试版】Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.70' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.71' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -4291,6 +4291,20 @@ const errReload = (() => {
     for (let e = log.parentElement; e && e !== document.body && e !== document.documentElement; e = e.parentElement) if (can(e)) return e;
     const se = document.scrollingElement; return se && se.scrollHeight - se.clientHeight > 1 ? se : null;
   }
+  // v1.11.71 输入法弹出 / 输入框变高 → 对话区变矮时，保持最底下那段内容不动（整体跟着输入框往上推）；收起时再一起落回去
+  (() => {
+    let sc = null, ro = null, lastH = 0, lastTop = 0;
+    const note = () => { if (sc) { lastH = sc.clientHeight; lastTop = sc.scrollTop; } };
+    const fit = () => {
+      if (!sc || !sc.isConnected) return; const h = sc.clientHeight;
+      if (lastH && h !== lastH) { const want = Math.max(0, Math.min(sc.scrollHeight - h, lastTop + (lastH - h))); if (Math.abs(sc.scrollTop - want) > 1) { sc._ampAnchorAt = Date.now(); sc.scrollTop = want; } }
+      note();
+    };
+    // 浏览器改高度时可能先把滚动位置“夹”到底部并发出 scroll：高度已变就按变化前的位置补偿，而不是把被夹过的位置当成新的起点
+    const onScroll = () => { if (sc && lastH && sc.clientHeight !== lastH) fit(); else note(); };
+    const bind = () => { let s = null; try { s = findScroller(); } catch {} if (s === sc) return; try { ro?.disconnect(); } catch {} sc?.removeEventListener('scroll', onScroll); sc = s; lastH = 0; if (!sc) return; ro = new ResizeObserver(fit); ro.observe(sc); sc.addEventListener('scroll', onScroll, { passive: true }); note(); };
+    setInterval(bind, 1200); try { window.visualViewport?.addEventListener('resize', () => requestAnimationFrame(fit)); } catch {}
+  })();
   function bottomOnce(msg) {
     const t0 = Date.now(); let done = false, lastH = -1, stableAt = Date.now(), sc = null, said = false;
     const off = () => { if (done) return; done = true; clearInterval(iv); removeEventListener('wheel', off, true); removeEventListener('touchstart', off, true); removeEventListener('keydown', onKey, true); removeEventListener('mousedown', onDown, true); };
@@ -4440,6 +4454,8 @@ const errReload = (() => {
       // 滚轮惯性、拖滚动条、按键滚动：滚动过程中一露出白点就开始跟随
       addEventListener('scroll', e => {
         const s = sc; if (!s || e.target !== s) return;
+        // v1.11.71 输入法 / 输入框高度变化时“贴住底部”的补偿滚动不算用户往下滚，不触发跟随
+        if (Date.now() - (s._ampAnchorAt || 0) < 250) { lastTop = s.scrollTop; return; }
         if (on) { lastTop = s.scrollTop; return; }
         const down = lastTop >= 0 && s.scrollTop > lastTop + 0.5; lastTop = s.scrollTop;
         if (inDir > 0 || (inDir === 0 && down)) auto(s);
@@ -4845,6 +4861,8 @@ const gachaSlot = (() => {
 const routeAlert = (() => {
   // Pops a notice whenever a conversation's response model changes (e.g. routed to another model).
   const KEY = 'amp.native.resp.v1';
+  // v1.11.71 旧版本在“同一运行被多个对话共用”时可能把别的对话的模型记到这里，升级后清空一次，避免再误报一次“换回来”
+  try { if (localStorage.getItem(KEY + '.rev') !== '2') { localStorage.removeItem(KEY); localStorage.setItem(KEY + '.rev', '2'); } } catch {}
   let last = new Map(); try { last = new Map(Object.entries(JSON.parse(localStorage.getItem(KEY)) || {}).slice(-300)); } catch {}
   let host = null, box = null;
   function ensure() {
@@ -4881,7 +4899,9 @@ const routeAlert = (() => {
     const refine = old && brand.same(old, model);
     last.delete(sid); last.set(sid, model); while (last.size > 300) last.delete(last.keys().next().value);
     ampStore.set(KEY, JSON.stringify(Object.fromEntries(last)));
-    if (old && !quiet && !refine) show('模型变更提醒', old, model, sub, '');
+    // 只在当前打开的这个对话里弹提醒（后台对话的变化静默记下），切换对话不会误报
+    const here = (location.pathname.match(/^\/agent\/([\w-]{1,128})\/?$/) || [])[1] === sid;
+    if (old && !quiet && !refine && here) show('模型变更提醒', old, model, sub, '');
   }
   return { note, show };
 })();
@@ -5357,7 +5377,9 @@ const gachaUi = (() => {
         + '[data-amp-revolver] .rv-it.sel{background:transparent;box-shadow:none;font-weight:700;color:var(--rv-acc)}[data-amp-revolver] .rv-it.sel .rv-ic{color:var(--rv-fg)}[data-amp-revolver] .rv-it .rv-ic{display:inline-flex;width:18px;height:18px;align-items:center;justify-content:center;flex:none}[data-amp-revolver] .rv-it .rv-ic svg{width:16px;height:16px}'
         + '[data-amp-revolver] .rv-it .rv-nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}[data-amp-revolver] .rv-it .rv-ck{opacity:0;font-size:12px;color:var(--rv-acc)}[data-amp-revolver] .rv-it.cur .rv-ck{opacity:1}'
         + '[data-amp-revolver] .rv-hint{position:absolute;left:0;right:0;top:4px;text-align:center;font-size:11px;font-weight:400;color:var(--rv-mut)}'
-        + '[data-amp-native-gacha="1"]{touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}[data-amp-native-gacha="1"][data-amp-rv]{transform:scale(.94)!important}';
+        + '[data-amp-native-gacha="1"]{touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}[data-amp-native-gacha="1"][data-amp-rv]{transform:scale(.94)!important}'
+        // v1.11.71 波轮：玻璃面板 + 指向按钮的尖角 + 背景压暗；手机布局下按钮里的图标跟着滚轮一格格滚
+        + '[data-amp-revolver]{width:176px!important;border-radius:22px;background:color-mix(in srgb,var(--rv-card) 92%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.5);backdrop-filter:blur(18px) saturate(1.5);box-shadow:0 18px 48px rgba(0,0,0,.28),0 2px 8px rgba(0,0,0,.08),inset 0 0 0 1px var(--rv-line)}[data-amp-revolver]::after{content:"";position:absolute;left:var(--rv-stem,50%);bottom:-6px;width:13px;height:13px;margin-left:-6.5px;background:var(--rv-card);transform:rotate(45deg);border-radius:0 0 4px 0;box-shadow:1px 1px 0 var(--rv-line)}[data-amp-revolver] .rv-drum{perspective:520px;-webkit-mask:linear-gradient(transparent 0,#000 24%,#000 76%,transparent 100%);mask:linear-gradient(transparent 0,#000 24%,#000 76%,transparent 100%)}[data-amp-revolver] .rv-it{background:transparent!important;box-shadow:none!important}[data-amp-revolver] .rv-win{left:8px!important;right:8px!important;border-radius:14px!important;box-shadow:inset 0 0 0 1.5px var(--rv-acc),0 4px 14px rgba(0,0,0,.1)!important}[data-amp-rv-shade]{position:fixed;inset:0;z-index:2147483645;background:rgb(0 0 0/.16);-webkit-backdrop-filter:blur(1.5px);backdrop-filter:blur(1.5px);opacity:0;transition:opacity .18s ease;pointer-events:none}[data-amp-rv-shade].on{opacity:1}html[data-amp-gem] [data-amp-native-gacha="1"]:has([data-amp-rvicon]) [data-amp-icon]{visibility:hidden}html[data-amp-gem] [data-amp-native-gacha="1"]:has([data-amp-rvicon])::after{opacity:0!important}html:not([data-amp-gem]) [data-amp-rvicon]{display:none!important}[data-amp-rvicon]{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;perspective:120px}[data-amp-rvicon] svg{width:19px!important;height:19px!important}[data-amp-rvicon][data-dir=up]{animation:ampRvUp .2s cubic-bezier(.2,.9,.3,1)}[data-amp-rvicon][data-dir=down]{animation:ampRvDown .2s cubic-bezier(.2,.9,.3,1)}@keyframes ampRvUp{from{transform:translateY(75%) rotateX(-60deg);opacity:0}to{transform:none;opacity:1}}@keyframes ampRvDown{from{transform:translateY(-75%) rotateX(60deg);opacity:0}to{transform:none;opacity:1}}@media (prefers-reduced-motion:reduce){[data-amp-rvicon]{animation:none!important}[data-amp-rv-shade]{transition:none}}';
       (document.head || document.documentElement).append(st);
     }
     function revItems() {
@@ -5365,6 +5387,16 @@ const gachaUi = (() => {
       for (const v of gacha.VENDORS) out.push({ id: v.id, name: v.name, icon: vendorIcon(v.id, 16) });
       if (s.customKeyword) out.push({ id: 'custom', kw: s.customKeyword, name: s.customKeyword, icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h10M4 17h7"/></svg>' });
       return out;
+    }
+    // v1.11.71 波轮：滚轮转到哪一格，圆形厂商按钮里的图标就跟着上下滚到哪一格（手机 Gemini 布局；松手后换回正式图标）
+    const RV_DICE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="4.5"/><g fill="currentColor" stroke="none"><circle cx="8.6" cy="8.6" r="1.5"/><circle cx="15.4" cy="15.4" r="1.5"/><circle cx="15.4" cy="8.6" r="1.5"/><circle cx="8.6" cy="15.4" r="1.5"/><circle cx="12" cy="12" r="1.5"/></g></svg>';
+    function rvIcon(b, it, dir) {
+      let x = b.querySelector('[data-amp-rvicon]');
+      if (!it) { x?.remove(); return; }
+      if (!document.documentElement.hasAttribute('data-amp-gem')) return;
+      if (!x) { x = document.createElement('span'); x.setAttribute('data-amp-rvicon', ''); x.setAttribute('aria-hidden', 'true'); b.append(x); }
+      x.innerHTML = it.id === '' ? RV_DICE : it.id === 'custom' ? it.icon : vendorIcon(it.id, 19);
+      if (dir) { x.dataset.dir = dir > 0 ? 'up' : 'down'; x.style.animation = 'none'; void x.offsetWidth; x.style.animation = ''; } else delete x.dataset.dir;
     }
     function wheelOpen(b) {
       revCss();
@@ -5376,9 +5408,9 @@ const gachaUi = (() => {
       root.innerHTML = '<div class="rv-win"></div><div class="rv-drum"></div><div class="rv-hint">滚轮选择 · 停下或移开确认</div>';
       const drum = root.querySelector('.rv-drum');
       const els = items.map((it, i) => { const d = document.createElement('div'); d.className = 'rv-it' + (i === cur ? ' cur' : ''); d.innerHTML = '<span class="rv-ic">' + it.icon + '</span><span class="rv-nm"></span><span class="rv-ck">当前</span>'; d.querySelector('.rv-nm').textContent = it.name; drum.append(d); return d; });
-      document.body.append(root);
-      const r = b.getBoundingClientRect(), W = 200, H = REV_H * 5;
-      root.style.left = Math.max(8, Math.min(innerWidth - W - 8, r.left + r.width / 2 - W / 2)) + 'px';
+      document.body.append(root); const rvShade = document.createElement('div'); rvShade.dataset.ampRvShade = '1'; root.before(rvShade); requestAnimationFrame(() => rvShade.classList.add('on'));
+      const r = b.getBoundingClientRect(), W = 176, H = REV_H * 5;
+      root.style.left = Math.max(8, Math.min(innerWidth - W - 8, r.left + r.width / 2 - W / 2)) + 'px'; root.style.setProperty('--rv-stem', Math.max(20, Math.min(W - 20, r.left + r.width / 2 - parseFloat(root.style.left))) + 'px');
       root.style.top = Math.max(8, r.top - H - 14) + 'px';
       b.setAttribute('data-amp-rv', ''); b._ampRv = true;
       const n = els.length, wrapI = k => ((k % n) + n) % n;
@@ -5388,7 +5420,7 @@ const gachaUi = (() => {
           d.style.transform = 'translateY(' + (off * REV_H * 0.92) + 'px) rotateX(' + (-off * 24) + 'deg) translateZ(' + (-a * a * 6) + 'px) scale(' + Math.max(.72, 1 - a * .07) + ')';
           d.style.opacity = String(Math.max(0, 1 - a * .3)); d.style.zIndex = String(100 - Math.round(a * 10));
         });
-        const k = wrapI(Math.round(pos)); if (k !== shown) { shown = k; els.forEach((d, i) => d.classList.toggle('sel', i === k)); }
+        const k = wrapI(Math.round(pos)); if (k !== shown) { const dir = shown < 0 ? 0 : Math.sign(pos - (root._p ?? pos)) || 1; shown = k; els.forEach((d, i) => d.classList.toggle('sel', i === k)); rvIcon(b, items[k], dir); } root._p = pos;
       };
       paint(); requestAnimationFrame(() => root.classList.add('on'));
       const loop = () => { raf = 0; pos += (target - pos) * .3; if (Math.abs(target - pos) < .003) pos = target; paint(); if (pos !== target) raf = requestAnimationFrame(loop); };
@@ -5397,7 +5429,7 @@ const gachaUi = (() => {
         b.removeEventListener('mouseleave', leave); b.removeEventListener('click', clk, true); removeEventListener('keydown', esc, true); removeEventListener('blur', away); document.removeEventListener('visibilitychange', away);
         const kr = Math.round(target), k = wrapI(kr);
         const from = pos, t0 = performance.now(); const snap = t => { const p = Math.min(1, (t - t0) / 160); pos = from + (kr - from) * (1 - Math.pow(1 - p, 3)); paint(); if (p < 1) requestAnimationFrame(snap); }; requestAnimationFrame(snap);
-        root.classList.add('out'); setTimeout(() => root.remove(), 420);
+        root.classList.add('out'); setTimeout(() => root.remove(), 420); rvShade.classList.remove('on'); setTimeout(() => rvShade.remove(), 240); setTimeout(() => rvIcon(b, null), 260);
         b.removeAttribute('data-amp-rv'); b._ampRv = false; b._ampWh = null; b._ampRvSkip = Date.now();
         if (pick) { const it = items[k]; if (it.id !== curId || it.id === 'custom') { if (it.id === 'custom') gacha.setVendor('custom', it.kw); else gacha.setVendor(it.id); try { window.dispatchEvent(new CustomEvent('amp-native-gacha')); } catch {} } }
       };
@@ -5452,9 +5484,9 @@ const gachaUi = (() => {
           root.innerHTML = '<div class="rv-win"></div><div class="rv-drum"></div><div class="rv-hint">上下推动 · 松开选中</div>';
           const drum = root.querySelector('.rv-drum');
           const els = items.map((it, i) => { const d = document.createElement('div'); d.className = 'rv-it' + (i === cur ? ' cur' : ''); d.innerHTML = '<span class="rv-ic">' + it.icon + '</span><span class="rv-nm"></span><span class="rv-ck">当前</span>'; d.querySelector('.rv-nm').textContent = it.name; drum.append(d); return d; });
-          document.body.append(root);
-          const r = b.getBoundingClientRect(), W = 200, H = REV_H * 5;
-          root.style.left = Math.max(8, Math.min(innerWidth - W - 8, r.left + r.width / 2 - W / 2)) + 'px';
+          document.body.append(root); const rvShade = document.createElement('div'); rvShade.dataset.ampRvShade = '1'; root.before(rvShade); requestAnimationFrame(() => rvShade.classList.add('on'));
+          const r = b.getBoundingClientRect(), W = 176, H = REV_H * 5;
+          root.style.left = Math.max(8, Math.min(innerWidth - W - 8, r.left + r.width / 2 - W / 2)) + 'px'; root.style.setProperty('--rv-stem', Math.max(20, Math.min(W - 20, r.left + r.width / 2 - parseFloat(root.style.left))) + 'px');
           root.style.top = Math.max(8, r.top - H - 14) + 'px';
           b.setAttribute('data-amp-rv', ''); b._ampRv = true;
           const wrap = k => ((k % items.length) + items.length) % items.length;
@@ -5465,7 +5497,7 @@ const gachaUi = (() => {
               d.style.transform = 'translateY(' + (off * REV_H * 0.92) + 'px) rotateX(' + (-off * 24) + 'deg) translateZ(' + (-a * a * 6) + 'px) scale(' + Math.max(.72, 1 - a * .07) + ')';
               d.style.opacity = String(Math.max(0, 1 - a * .3)); d.style.zIndex = String(100 - Math.round(a * 10));
             });
-            const k = wrap(Math.round(pos)); if (k !== shown) { if (shown >= 0) try { navigator.vibrate?.(6); } catch {} shown = k; els.forEach((d, i) => d.classList.toggle('sel', i === k)); }
+            const k = wrap(Math.round(pos)); if (k !== shown) { if (shown >= 0) try { navigator.vibrate?.(6); } catch {} const dir = shown < 0 ? 0 : Math.sign(pos - (root._p ?? pos)) || 1; shown = k; els.forEach((d, i) => d.classList.toggle('sel', i === k)); rvIcon(b, items[k], dir); } root._p = pos;
           };
           paint(); requestAnimationFrame(() => root.classList.add('on'));
           // 循环滚动：不分首尾，最后一项之后接第一项
@@ -5479,7 +5511,7 @@ const gachaUi = (() => {
             const kr = Math.round(pos), k = wrap(kr);
             // 吸附到选中项再淡出
             const from = pos, t0 = performance.now(); const snap = t => { const p = Math.min(1, (t - t0) / 160); pos = from + (kr - from) * (1 - Math.pow(1 - p, 3)); paint(); if (p < 1) requestAnimationFrame(snap); }; requestAnimationFrame(snap);
-            root.classList.add('out'); setTimeout(() => root.remove(), 420);
+            root.classList.add('out'); setTimeout(() => root.remove(), 420); rvShade.classList.remove('on'); setTimeout(() => rvShade.remove(), 240); setTimeout(() => rvIcon(b, null), 260);
             b.removeAttribute('data-amp-rv'); b._ampRv = false; b._ampRvSkip = Date.now();
             if (pick) { const it = items[k]; if (it.id !== curId || it.id === 'custom') { if (it.id === 'custom') gacha.setVendor('custom', it.kw); else gacha.setVendor(it.id); try { window.dispatchEvent(new CustomEvent('amp-native-gacha')); } catch {} } }
           };
@@ -5596,7 +5628,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.70', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.71', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -6013,7 +6045,7 @@ const gachaUi = (() => {
   const load=(key,fallback)=>{try{return JSON.parse(localStorage.getItem(key))??fallback;}catch{return fallback;}};
   const store=(key,value)=>{try{return ampStore.set(key,JSON.stringify(value));}catch{return false;}};
   const clamp=(v,min,max,fallback)=>Number.isFinite(v)?Math.min(max,Math.max(min,Math.round(v))):fallback;
-  const stored=load(KEY+'.prefs',{}), prefs={width:clamp(stored.width,280,720,340),sidebarWidth:clamp(stored.sidebarWidth,200,560,null),cloudSync:stored.cloudSync===true,cloudFormat:stored.cloudFormat==='name'?'name':'prefix',rawBudget:BUDGET_OPTIONS.includes(stored.rawBudget)?stored.rawBudget:64,showSent:stored.showSent!==false,showQuota:stored.showQuota!==false,showCredits:stored.showCredits!==false,showBar:stored.showBar!==false,barCollapsed:stored.barCollapsed===true,barOffset:stored.barOffset!==false,showSeq:stored.showSeq===true,hideDocIcon:stored.hideDocIcon!==false,stopOnResample:stored.stopOnResample!==false,showQuotaReset:stored.showQuotaReset===true,spendUnit:stored.spendUnit==='usd'?'usd':'token',sheetH:typeof stored.sheetH==='number'&&stored.sheetH>=0.05&&stored.sheetH<=1?stored.sheetH:0.5,sheetFull:stored.sheetFull===true,pullRefresh:stored.pullRefresh!==false,glassDrawer:stored.glassDrawer!==false,gemLayout:stored.gemLayout!==false,monOn:stored.monOn!==false,monAlert:stored.monAlert!==false,monStop:stored.monStop===true,wsEdge:stored.wsEdge!==false,wsEdgeY:typeof stored.wsEdgeY==='number'&&stored.wsEdgeY>=0.12&&stored.wsEdgeY<=0.88?stored.wsEdgeY:0.6};
+  const stored=load(KEY+'.prefs',{}), prefs={width:clamp(stored.width,280,720,340),sidebarWidth:clamp(stored.sidebarWidth,200,560,null),cloudSync:stored.cloudSync===true,cloudFormat:stored.cloudFormat==='name'?'name':'prefix',rawBudget:BUDGET_OPTIONS.includes(stored.rawBudget)?stored.rawBudget:64,showSent:stored.showSent!==false,showQuota:stored.showQuota!==false,showCredits:stored.showCredits!==false,showBar:stored.showBar!==false,barCollapsed:stored.barCollapsed===true,barOffset:stored.barOffset!==false,showSeq:stored.showSeq===true,hideDocIcon:stored.hideDocIcon!==false,stopOnResample:stored.stopOnResample!==false,showQuotaReset:stored.showQuotaReset===true,spendUnit:stored.spendUnit==='usd'?'usd':'token',sheetH:typeof stored.sheetH==='number'&&stored.sheetH>=0.05&&stored.sheetH<=1?stored.sheetH:0.5,sheetFull:stored.sheetFull===true,pullRefresh:stored.pullRefresh!==false,glassDrawer:stored.glassDrawer!==false,gemLayout:stored.gemLayout!==false,monOn:stored.monOn!==false,monAlert:stored.monAlert!==false,monStop:stored.monStop===true,wsEdge:stored.wsEdge!==false,wsEdgeY:typeof stored.wsEdgeY==='number'&&stored.wsEdgeY>=0.12&&stored.wsEdgeY<=0.88?stored.wsEdgeY:0.6,kbResize:stored.kbResize!==false};
   // 手机/窄屏：底部只留一条余额栏，点击余额栏才展开模型信息
   const miniBar=()=>innerWidth<768||!!document.getElementById('amp-lite-dock')?.hasAttribute('data-compact');
   const savePrefs=()=>store(KEY+'.prefs',prefs);
@@ -6088,7 +6120,7 @@ const gachaUi = (() => {
   function mountBar(){
     if(bar||stopped||!document.body)return;
     const host=document.createElement('div');host.id='amp-native-bar';document.body.append(host);const root=host.attachShadow({mode:'open'});
-    const barCss=`:host{all:initial;position:fixed;left:0;right:0;bottom:0;z-index:30;height:${BAR_H}px;display:block;font:400 11px/1 var(--font-basel-grotesk,var(--font-inter,system-ui)),'PingFang SC','Microsoft YaHei',sans-serif;
+    const barCss=`:host{all:initial;position:fixed;left:0;right:0;bottom:var(--amp-kb-inset,0px);z-index:30;height:${BAR_H}px;display:block;font:400 11px/1 var(--font-basel-grotesk,var(--font-inter,system-ui)),'PingFang SC','Microsoft YaHei',sans-serif;
 --bg:hsl(var(--surface-primary,36 45% 98%));--raised:hsl(var(--surface-tertiary,33 31% 94%));--line:hsl(var(--border-faint,30 5% 90%));--fg:hsl(var(--text-primary,24 6% 17%));--muted:hsl(var(--text-tertiary,35 6% 42%));--good:hsl(var(--interactive-positive,125 49% 38%));--warn:hsl(var(--syntax-yellow,40 92% 38%));--bad:#c2410c;color:var(--fg)}
 :host([hidden]){display:none!important}:host([data-collapsed]){left:auto;right:8px;bottom:6px;height:auto}
 .bar{box-sizing:border-box;height:${BAR_H}px;display:flex;align-items:center;gap:0;padding:0 6px 0 10px;background:var(--bg);border-top:1px solid var(--line);white-space:nowrap;overflow:hidden}
@@ -6189,27 +6221,36 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     ensureVp();setTimeout(ensureVp,1500);setTimeout(ensureVp,5000);
     // 键盘弹出时：输入框底边到键盘的距离 = 输入框到屏幕左边的距离（按实际测量：先压掉外层底部留白，不够再整体下移）
     let kbBox=null,kbRaf=0;
-    const kbClear=()=>{if(kbBox){kbBox.style.removeProperty('transform');kbBox.style.removeProperty('--amp-kb-dy');kbBox.style.removeProperty('z-index');kbBox.style.removeProperty('position');}kbBox=null;};
+    // v1.11.71 底部信息栏贴在输入法上方（浏览器只缩“可见区域”时按键盘遮住的高度抬起）；输入面板只能靠位移上去时，
+    // 对话区底部补上同样的留白并一起滚上去——最新内容跟着输入框推上去，而不是被输入框盖住
+    const barFollow=()=>prefs.kbResize!==false&&prefs.showBar&&!prefs.barCollapsed&&!host.hidden;
+    const kbInset=on=>{try{const vv=window.visualViewport;document.documentElement.style.setProperty('--amp-kb-inset',(on&&barFollow()&&vv?Math.max(0,Math.round(innerHeight-vv.offsetTop-vv.height)):0)+'px');}catch{}};
+    let kbPadEl=null,kbPadPx=0,kbPadBase=0;
+    const logSc=()=>{const l=[...document.querySelectorAll('main [role="log"]')].find(e=>e.getClientRects().length);for(let e=l;e&&e!==document.body;e=e.parentElement){const oy=getComputedStyle(e).overflowY;if((oy==='auto'||oy==='scroll'||oy==='overlay')&&e.scrollHeight>e.clientHeight+1)return e;}return null;};
+    const kbPad=px=>{try{px=Math.max(0,Math.round(px||0));const sc=px?logSc():kbPadEl;if(kbPadEl&&kbPadEl!==sc){kbPadEl.style.removeProperty('padding-bottom');kbPadEl=null;kbPadPx=0;}if(!sc)return;const d=px-kbPadPx;if(!d)return;const want=sc.scrollTop+d;if(px){if(!kbPadEl)kbPadBase=parseFloat(getComputedStyle(sc).paddingBottom)||0;sc.style.setProperty('padding-bottom',(kbPadBase+px)+'px','important');}else sc.style.removeProperty('padding-bottom');kbPadEl=px?sc:null;kbPadPx=px;sc._ampAnchorAt=Date.now();sc.scrollTop=Math.max(0,want);}catch{}};
+    const kbClear=()=>{kbPad(0);if(kbBox){kbBox.style.removeProperty('transform');kbBox.style.removeProperty('--amp-kb-dy');kbBox.style.removeProperty('z-index');kbBox.style.removeProperty('position');}kbBox=null;};
     // 整个输入面板 = 同时包含输入框和发送按钮、且有圆角边框/背景的那一层（不是内部的编辑区）
     const kbPanel=ed=>{let n=ed.parentElement;for(let i=0;i<12&&n&&n!==document.body&&n.tagName!=='MAIN';i++,n=n.parentElement){if(!n.querySelector('button[aria-label="Send message"],button[aria-label="发送消息"],button[type=submit]'))continue;const cs=getComputedStyle(n);if(parseFloat(cs.borderTopWidth)>0&&parseFloat(cs.borderTopLeftRadius)>=8)return n;}return null;};
     const kbFit=()=>{cancelAnimationFrame(kbRaf);kbRaf=requestAnimationFrame(()=>{try{
       if(!kbOpen()){kbClear();return;}
       const ed=document.activeElement;if(!ed?.closest?.('main'))return;
       if(!kbBox||!kbBox.isConnected||!kbBox.contains(ed)){kbClear();kbBox=kbPanel(ed);if(!kbBox)return;}
-      const vv=window.visualViewport,vb=vv?vv.offsetTop+vv.height:innerHeight;
+      const vv=window.visualViewport,vb=(vv?vv.offsetTop+vv.height:innerHeight)-(barFollow()?BAR_H:0);
       const cur=parseFloat(kbBox.style.getPropertyValue('--amp-kb-dy')||'0')||0,r=kbBox.getBoundingClientRect();
       const want=Math.max(8,Math.round(r.left)),bottom=r.bottom-cur;
       // 面板底边到键盘 = 面板到屏幕左边的距离；整块面板（含发送按钮）一起上下移动，位移参与点击命中
       const dy=Math.max(-900,Math.min(600,Math.round(vb-want-bottom)));
-      kbBox.style.setProperty('--amp-kb-dy',dy+'px');kbBox.style.setProperty('transform',dy?'translateY('+dy+'px)':'none','important');
+      kbBox.style.setProperty('--amp-kb-dy',dy+'px');kbBox.style.setProperty('transform',dy?'translateY('+dy+'px)':'none','important');kbPad(prefs.kbResize!==false&&dy<0?-dy:0);
       if(dy){if(getComputedStyle(kbBox).position==='static')kbBox.style.setProperty('position','relative');kbBox.style.setProperty('z-index','40');}
     }catch{}});};
-    if(!document.getElementById('amp-kb-css')){const st=document.createElement('style');st.id='amp-kb-css';st.textContent='html[data-amp-kb] main{padding-bottom:0!important}';(document.head||document.documentElement).append(st);}
+    if(!document.getElementById('amp-kb-css')){const st=document.createElement('style');st.id='amp-kb-css';st.textContent='html[data-amp-kb][data-amp-kbhide] main{padding-bottom:0!important}';(document.head||document.documentElement).append(st);}
     let kbMax=0;const kbOpen=()=>document.documentElement.hasAttribute('data-amp-kb');
-    const kbCheck=()=>{try{const vv=window.visualViewport,h=vv?vv.height:innerHeight;kbMax=Math.max(kbMax,innerHeight,h);const ae=document.activeElement,typing=!!ae&&(ae.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName));const kb=matchMedia('(pointer:coarse)').matches&&typing&&h<kbMax-120;if(kb!==kbOpen()){document.documentElement.toggleAttribute('data-amp-kb',kb);ensureVp();sync();}kbFit();}catch{}};
-    window.visualViewport?.addEventListener('resize',kbCheck,{passive:true});window.visualViewport?.addEventListener('scroll',()=>{if(kbOpen())kbFit();},{passive:true});document.addEventListener('input',()=>{if(kbOpen())kbFit();},true);addEventListener('resize',kbCheck,{passive:true});addEventListener('orientationchange',()=>{kbMax=0;setTimeout(kbCheck,500);});document.addEventListener('focusin',()=>setTimeout(kbCheck,350),true);document.addEventListener('focusout',()=>setTimeout(kbCheck,350),true);
+    const kbCheck=()=>{try{const vv=window.visualViewport,h=vv?vv.height:innerHeight;kbMax=Math.max(kbMax,innerHeight,h);const ae=document.activeElement,typing=!!ae&&(ae.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName));const kb=matchMedia('(pointer:coarse)').matches&&typing&&h<kbMax-120;if(kb!==kbOpen()){document.documentElement.toggleAttribute('data-amp-kb',kb);ensureVp();sync();}kbInset(kb);kbFit();}catch{}};
+    window.visualViewport?.addEventListener('resize',kbCheck,{passive:true});window.visualViewport?.addEventListener('scroll',()=>{if(kbOpen()){kbInset(true);kbFit();}},{passive:true});document.addEventListener('input',()=>{if(kbOpen())kbFit();},true);addEventListener('resize',kbCheck,{passive:true});addEventListener('orientationchange',()=>{kbMax=0;setTimeout(kbCheck,500);});document.addEventListener('focusin',()=>setTimeout(kbCheck,350),true);document.addEventListener('focusout',()=>setTimeout(kbCheck,350),true);
     function sync(){
-      const eligible=prefs.showBar&&location.origin==='https://arena.ai'&&!kbOpen();host.hidden=!eligible;document.documentElement.style.setProperty('--amp-bar-h',eligible&&!prefs.barCollapsed?BAR_H+'px':'0px');host.toggleAttribute('data-collapsed',!!prefs.barCollapsed);
+      // v1.11.71 打字时不再藏起底部信息栏（设置里关掉“输入法弹出时一起上移”才恢复旧行为）
+      const kbHide=kbOpen()&&prefs.kbResize===false;document.documentElement.toggleAttribute('data-amp-kbhide',kbHide);
+      const eligible=prefs.showBar&&location.origin==='https://arena.ai'&&!kbHide;host.hidden=!eligible;document.documentElement.style.setProperty('--amp-bar-h',eligible&&!prefs.barCollapsed?BAR_H+'px':'0px');host.toggleAttribute('data-collapsed',!!prefs.barCollapsed);
       const offset=eligible&&!prefs.barCollapsed&&prefs.barOffset;document.documentElement.toggleAttribute('data-amp-bar-offset',offset);
       if(!offset)document.documentElement.removeAttribute('data-amp-bar-overlap');
       else{const m=document.querySelector('main');if(m){const b=m.getBoundingClientRect().bottom;if(b>innerHeight-BAR_H+1&&!document.documentElement.hasAttribute('data-amp-bar-overlap'))document.documentElement.setAttribute('data-amp-bar-overlap','');}}
@@ -6233,10 +6274,28 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
   // 内存中保留最近 RAW_KEEP 轮的完整原始 Trace 与 Span（持久化的是精简版）
   function keepRaw(r){if(!r.data)return;const key=r.data.key;rawStore.delete(key);rawStore.set(key,{trace:r.rawTrace,spans:r.rawSpans,probe:r.probe,at:Date.now()});while(rawStore.size>RAW_KEEP)rawStore.delete(rawStore.keys().next().value);}
   function later(r,ms=1200,final=false){if(stopped||!enabled||!r.token||Date.now()<cooldown)return;clearTimeout(r.timer);r.timer=setTimeout(()=>{r.timer=null;if(r.busy)later(r,400,final);else void poll(r,final);},ms);}
+  // v1.11.71 锁定对话：Arena 可能把同一个 Trace 运行先后给多个对话用。以前新对话的令牌被忽略（信息不更新），
+  // 旧对话却把新对话的调用读进来，误报“换模型 / 又换回来”。现在按对话分段：每个对话只认自己那段事件，互不串台。
+  const shareLog=new Map(); // runId → [{sid,from}]：from = 接手时上一个对话最后一条事件的服务端时间（第一个对话 from=null）
+  function ownTrace(r,trace){
+    const L=r&&shareLog.get(r.runId);if(!L||!Array.isArray(trace?.events))return trace;
+    const ev=trace.events,mark=e=>/^chat turn \d+$/.test(e?.message||'');
+    // 分界落在新对话的第一个轮次标记上（服务端时间），上一个对话在分界之后才写完的尾巴仍归它自己
+    const cuts=L.map((w,i)=>{if(!i)return -Infinity;let t=Infinity;for(const e of ev){const at=toMs(e?.startTime);if(at!==null&&at>w.from&&at<t&&mark(e))t=at;}return t===Infinity?w.from+0.001:t;});
+    const owner=at=>{let k=0;for(let i=1;i<cuts.length;i++)if(at>=cuts[i])k=i;return L[k].sid;};
+    return {...trace,events:ev.filter(e=>{const at=toMs(e?.startTime);return at!==null&&owner(at)===r.sid;})};
+  }
   function accept(token,sid){
     let auth;try{auth=authorized(token,sid);}catch(e){log('warn','权限',e.message,null,{sid});return;}
     let r=runs.get(auth.runId);
-    if(r){if(r.sid!==auth.sid||r.rejectedToken===token)return;if(r.token!==token){r.token=token;r.expires=auth.expires;log('debug','权限','运行令牌已更新',null,r);if(r.phase!=='已读取'){r.tries=0;later(r);}}return;}
+    if(r&&r.sid!==auth.sid){
+      if(r.rejectedToken===token)return;
+      // 同一个运行换了对话：记下分界（服务端时间，不用本机时钟），上一个对话的记录到此冻结，新对话单独记录
+      if(r.newest){const L=shareLog.get(auth.runId)||[{sid:r.sid,from:null}];L.push({sid:auth.sid,from:r.newest});while(L.length>12)L.splice(1,1);shareLog.delete(auth.runId);shareLog.set(auth.runId,L);while(shareLog.size>16)shareLog.delete(shareLog.keys().next().value);}
+      log('warn','权限','同一个运行换了对话（'+String(r.sid).slice(0,8)+' → '+String(auth.sid).slice(0,8)+'）：按对话分开记录，互不串台',null,{sid:auth.sid,runId:auth.runId});
+      clearTimeout(r.timer);r.abort?.abort();r.token=null;runs.delete(auth.runId);r=null;
+    }
+    if(r){if(r.rejectedToken===token)return;if(r.token!==token){r.token=token;r.expires=auth.expires;log('debug','权限','运行令牌已更新',null,r);if(r.phase!=='已读取'){r.tries=0;later(r);}}return;}
     const pending=submissions.get(auth.sid)||(pendingNew&&Date.now()-pendingNew.at<15000?pendingNew:null);
     r={...auth,token,revision:pending?.revision||++revision,requestConfigs:pending?.configs||[],prompt:pending?.prompt||null,submittedAt:pending?.at||null,baseline:null,markers:0,seen:new Set(),newest:null,tries:0,finalReads:0,busy:false,timer:null,abort:null,cache:new Map(),rawSpans:new Map(),rawTrace:[],missing:new Map(),probe:null,data:null,credits:costOf(auth.sid).credits,phase:'等待 Trace'};
     runs.set(auth.runId,r);while(runs.size>8){const [id,old]=runs.entries().next().value;clearTimeout(old.timer);old.abort?.abort();old.token=null;runs.delete(id);}
@@ -6333,7 +6392,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     const cause=/content.?filter/i.test(fin)?'被内容审核拦截（finish=content-filter），'+(wait?wait+'内':'')+'没有任何输出':fk==='empty_stream'?(wait?wait+'内':'')+'返回了空内容（empty_stream'+(fin?' · finish='+fin:'')+'）':sw.waitMs>=60000?wait+'内没有返回任何内容（首包超时）':'调用失败'+(fk||ec?'（'+[fk,ec].filter(Boolean).join(' · ')+'）':'')+(wait?'，用时 '+wait:'');
     r.routeCause=cause;if(r.data?.routing)r.data.routing.cause=cause;
     log('warn','路由',turnLabel(r.data)+' · '+(sw.from||'原模型')+' '+cause+'，Arena 自动改派 '+(sw.to||'其他模型')+(sw.committed?'（已写入本对话，后续轮次也会用新模型）':'')+(reason?' · '+reason:''),null,r);
-    try{routeAlert.show('模型被 Arena 改派',sw.from||'原模型',sw.to||'其他模型','原模型'+cause+'，服务端自动故障转移'+(sw.committed?' · 本对话之后也会用新模型，想要原模型请新开对话':''),'drop');}catch{}
+    if(r.sid===sidOf(location.href))try{routeAlert.show('模型被 Arena 改派',sw.from||'原模型',sw.to||'其他模型','原模型'+cause+'，服务端自动故障转移'+(sw.committed?' · 本对话之后也会用新模型，想要原模型请新开对话':''),'drop');}catch{}
     if(prefs.stopOnResample&&sidOf(location.href)===r.sid&&pageGenerating()){
       const b=document.querySelector('button[aria-label="Stop generating"],button[aria-label="Stop response"],button[aria-label="停止生成"]');
       if(b){b.click();log('info','路由','已自动停止生成：改派后的模型不是原来那个，继续等待只会消耗额度（设置里可关闭）',null,r);}
@@ -6346,7 +6405,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     const sid=sidOf(location.href),r=[...runs.values()].find(x=>x.sid===sid&&x.token);if(!r||r.busy||r.watching)return;
     const age=Date.now()-(r.submittedAt||0);if(age<45000||age>1800000)return;
     r.watching=true;const ctrl=new AbortController();
-    try{const trace=await json(r,'events',ctrl.signal);const p=plan(trace,r.runId,r.baseline);
+    try{const trace=ownTrace(r,await json(r,'events',ctrl.signal));const p=plan(trace,r.runId,r.baseline);
       if(p.route.some(x=>x.message==='model.resample.switched')&&p.count){r.data=snapshot(r,p,r.cache);keepRaw(r);await noteRoute(r,p,ctrl.signal);}
     }catch{}finally{r.watching=false;}
   }
@@ -6357,7 +6416,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     const epoch=r.revision,ctrl=new AbortController();r.abort=ctrl;
     const live=()=>!stopped&&enabled&&r.revision===epoch&&!ctrl.signal.aborted&&runs.get(r.runId)===r;
     try{
-      const trace=await json(r,'events',ctrl.signal);if(!live())return;
+      const trace=ownTrace(r,await json(r,'events',ctrl.signal));if(!live())return;
       const p=plan(trace,r.runId,r.baseline);r.markers=p.markers;for(const id of p.spanIds)r.seen.add(id);r.newest=Math.max(r.newest||0,p.newest||0)||null;monTrace(r,trace);
       // 刷新页面后首次提交时还没有基线：若最新段落明显早于本次提交，就把当前内容记为基线，之后只认新出现的标记或 span。
       // 基线一旦存在便不再用本机时钟判断，避免时钟偏差把新一轮吞掉
@@ -6989,7 +7048,7 @@ details.mc-card .section.credits{margin-top:12px}
       if(!r)out.notes.push('没有这个对话的运行读取权限（页面只在收到回复流时下发，有效期有限）：只核对了本机记录。发一条消息后再检测，可读取完整记录。');
       else{
         out.runId=r.runId;step('读取此刻的 Trace');
-        try{trace=await json(r,'events',ctrl.signal);}catch(e){if(e.name==='AbortError')throw e;out.notes.push('读取 Trace 失败（'+(e.status===429?'接口限流，稍后再试':e.status===401||e.status===403?'读取权限已失效，发一条消息后再试':errorText(e))+'）：只核对了本机记录。');}
+        try{trace=ownTrace(r,await json(r,'events',ctrl.signal));}catch(e){if(e.name==='AbortError')throw e;out.notes.push('读取 Trace 失败（'+(e.status===429?'接口限流，稍后再试':e.status===401||e.status===403?'读取权限已失效，发一条消息后再试':errorText(e))+'）：只核对了本机记录。');}
         if(trace){
           segs=forceSegments(trace,r.runId);out.events=trace.events.length;
           for(const x of segs.flatMap(s=>[...s.records,...s.streams])){
@@ -8034,8 +8093,9 @@ details.mc-card .section.credits{margin-top:12px}
       const sec=el('section','section',null,body);el('h3','section-heading','显示',sec);
       toggle(sec,'隐藏输入框里的文档图标','默认开启：目标按钮左边的纸张图标按钮没什么实际用途，隐藏后更宽松。',prefs.hideDocIcon,v=>{prefs.hideDocIcon=v;if(!v)store(DOC_KEY,'');docIcon();});
       toggle(sec,'长按输入框下拉刷新（手机）','默认开启：长按输入框约 0.3 秒，感到轻震后往下拉，整页跟着往下，顶部圆环随距离画满；画满后松开就刷新，没松手推回去就取消。\n输入框有未发送内容、待发附件、抽卡进行中或本轮还在进行时，圆环变橙色提醒。取代原来左上角的刷新按钮。',prefs.pullRefresh,v=>{prefs.pullRefresh=v;});
-      toggle(sec,'手机端 Gemini 风格布局','默认开启，参考 Gemini App（颜色沿用 Arena 原配色）：\n· 顶栏：左上角 ≡ 打开侧栏，旁边是模型名（与左侧卡片一致）；右上角是深色/浅色切换和账号头像；工作区收在右侧屏幕边缘的小把手里（向左拖出来或轻点打开，上下拖动换位置）。\n· 头像外圈是美金余额圆环（剩余 / 总额度）：绿色，低于 20% 变橙，低于 5% 变红。点头像打开账号切换（需账号切换 v1.0.21+），否则打开侧栏。\n· 输入框改成圆角长条：左边 +，右边厂商图标和发送；抽卡时厂商图标像波轮一样来回转，外圈圆环显示进度，每出一张停一下、亮出抽到的厂商（命中时外圈变绿）。\n· 模式切换（Battle / Agent / Side by Side / Direct）挪到左侧抽屉 logo 旁。',prefs.gemLayout,v=>{prefs.gemLayout=v;document.documentElement.toggleAttribute('data-amp-gem',gemOn());if(!v){avatarHost.remove();modeHost.remove();}wsSync();});
+      toggle(sec,'手机端 Gemini 风格布局','默认开启，参考 Gemini App（颜色沿用 Arena 原配色）：\n· 顶栏：左上角 ≡ 打开侧栏，旁边是模型名（与左侧卡片一致）；右上角是深色/浅色切换和账号头像；工作区收在右侧屏幕边缘的小把手里（向左拖出来或轻点打开，上下拖动换位置）。\n· 头像外圈是美金余额圆环（剩余 / 总额度）：绿色，低于 20% 变橙，低于 5% 变红。点头像打开账号切换（需账号切换 v1.0.21+），否则打开侧栏。\n· 输入框改成圆角长条：左边 +，右边厂商图标和发送。在厂商图标上上下滑动就是“波轮”：弹出厂商滚轮，按钮里的图标跟着手指一格格滚动，松手即选中；抽卡时图标转动、外圈显示进度，每出一张亮出抽到的厂商。\n· 模式切换（Battle / Agent / Side by Side / Direct）挪到左侧抽屉 logo 旁。',prefs.gemLayout,v=>{prefs.gemLayout=v;document.documentElement.toggleAttribute('data-amp-gem',gemOn());if(!v){avatarHost.remove();modeHost.remove();}wsSync();});
       toggle(sec,'工作区收到右侧边缘','默认开启（手机端 Gemini 布局下）：顶栏不再单独放工作区按钮，改成右侧屏幕边缘的小把手。\n· 向左拖出来，或轻点一下，打开工作区。\n· 上下拖动把手可以换位置（会记住）。\n· 新对话还没有工作区时把手是灰的；工作区打开、弹窗打开或正在输入时，把手自动让开。\n· 安卓手势导航下，从屏幕最边缘往里划可能触发系统返回，按住把手中间再拖（或直接轻点）更稳。\n关闭后恢复顶栏的工作区按钮。',prefs.wsEdge,v=>{prefs.wsEdge=v;wsSync();});
+      toggle(sec,'输入法弹出时一起上移','默认开启（手机端）：弹出输入法时，对话内容、输入框、底部模型信息栏一起上移——最新的内容跟着输入框推上去，不会被挡住；模型信息栏贴在输入法上方，不再藏起来。\n· 输入框变成多行时，对话内容同样跟着往上推。\n· 关闭后恢复旧行为：打字时隐藏底部信息栏。',prefs.kbResize!==false,v=>{prefs.kbResize=v;try{bar?.sync();}catch{}});
       toggle(sec,'玻璃侧栏（手机）','默认开启：左侧对话列表抽屉变窄，背景改成半透明磨砂玻璃、遮罩调淡，能看到后面的页面。关闭恢复 Arena 原样。',prefs.glassDrawer,v=>{prefs.glassDrawer=v;document.documentElement.toggleAttribute('data-amp-glass',v);});
       toggle(sec,'显示“已重置”的推断限流','默认关闭：如“新会话 10/10 · 已重置”只是按上限推断的数值，不是必要信息。',prefs.showQuotaReset,v=>{prefs.showQuotaReset=v;});
       toggle(sec,'对话名显示本地编号 #N','默认关闭：左侧对话名只显示模型名，避免与加载进度、厂商图标挤在一起。',prefs.showSeq,v=>{prefs.showSeq=v;for(const m of marks.values()){m.span.removeAttribute('data-amp-local-title');m.span.removeAttribute('data-amp-short');}localTitles();});
