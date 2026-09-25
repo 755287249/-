@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.75
+// @version      1.11.76
 // @description  【测试版】Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.75' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.76' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -4859,7 +4859,9 @@ const gachaSlot = (() => {
       disp.endAt = t;
       const v = disp.verdict, txt = { hit: '命中！', keep: '保留', archive: '归档', skipped: '未完成 · 补抽', cancelled: '已停止', error: '出错' }[v] || '';
       // 命中目标厂商且档位为 max / xhigh / high → 金色传说；抽到归档词里的模型 → 整体变暗变灰
-      const legend = v === 'hit' && /^(max|xhigh|high)$/.test(disp.targets[2] || ''), dim = v === 'archive';
+      // v1.11.76 GPT 的金色传说只给 Astra：Sol / Terra / Luna 就算是 max 也只算“命中”（与左侧卡片的金色同一规则）
+      const gptWeak = disp.targets[0] === 'GPT' && /(^|-)(sol|terra|luna)(-|$)/i.test(disp.targets[1] || '') && !/(^|-)astra(-|$)/i.test(disp.targets[1] || '');
+      const legend = v === 'hit' && /^(max|xhigh|high)$/.test(disp.targets[2] || '') && !gptWeak, dim = v === 'archive';
       const label = legend ? '金色传说 · ' + disp.targets[2] : txt;
       if (label) { badgeEl.textContent = label; badgeEl.className = 'badge show' + (legend ? ' gold' : v === 'hit' ? ' hit' : dim ? ' dim' : ''); }
       wrap.classList.toggle('hit', v === 'hit' && !legend); wrap.classList.toggle('legend', legend); wrap.classList.toggle('dim', dim);
@@ -5006,6 +5008,7 @@ const gachaUi = (() => {
   const sidebar = (() => {
     let stamp = '', touched = new Set(), lastRows = [], flatP = null, flatM = null, flatSet = new Set();
     // GPT 同一代里的强弱：Astra > Sol > Terra > Luna（与 Arena 模型菜单的顺序一致）；没有这些词的排在它们后面。
+    // v1.11.76 系列比档位优先：astra-low 也排在 luna-max 前面；金色只给 Astra 的 high / xhigh / max。
     // GPT 不用排行榜的系列名次（新型号常未上榜，短名/全名混用时名次还会不一致），版本号相同就按这个比，再比档位。
     const GPT_FAM = { astra: 1, sol: 2, terra: 3, luna: 4 };
     const gptFam = title => { let best = 9; for (const x of String(title || '').toLowerCase().replace(/(\d)([a-z])/g, '$1-$2').replace(/([a-z])(\d)/g, '$1-$2').split(/[^a-z0-9]+/)) if (GPT_FAM[x] && GPT_FAM[x] < best) best = GPT_FAM[x]; return best; };
@@ -5051,9 +5054,11 @@ const gachaUi = (() => {
         const item = a.closest('li') || a, list = item.parentElement; if (!list) continue; if (!groups.has(list)) groups.set(list, []);
         const title = titleOf(a).toLowerCase(), sid = (a.getAttribute('href').match(/[0-9a-f-]{36}/i) || [''])[0];
         // 金色传说置顶：命中目标厂商且档位为 max / xhigh / high（取代以前 dxzui / clzui 的金色置顶）
-        const hitNow = sortOn && kw.length > 0 && kw.some(k => title.includes(k)), isVip = hitNow && /(^|[-\s·(])(max|xhigh|high)(?=$|[-\s·)])/i.test(title);
-        const vid = brand.forSid(sid, title) || brand.of(vip.get(sid)), gpt = sortOn && vid === 'openai';
-        groups.get(list).push({ a, item, vip: isVip, hit: hitNow, sc: sortOn ? ranking.score(title) : 0, gf: gpt ? gptFam(title) : 0, fam: sortOn && !gpt ? ranking.family(title) : 0, tier: sortOn ? ranking.tier(title) : 0, ver: brand.version(title), vid });
+        // v1.11.76 GPT 先比系列再比档位：Astra 最强 → Sol → Terra → Luna。金色只给 Astra（标题里没有这些系列词的旧型号照旧按档位）——
+        // 以前 luna-max 因为档位是 max 被镀金置顶，排到了 astra-medium / astra-low 前面
+        const vid = brand.forSid(sid, title) || brand.of(vip.get(sid)), gpt = sortOn && vid === 'openai', gf = gpt ? gptFam(title) : 0;
+        const hitNow = sortOn && kw.length > 0 && kw.some(k => title.includes(k)), isVip = hitNow && /(^|[-\s·(])(max|xhigh|high)(?=$|[-\s·)])/i.test(title) && !(gpt && gf > 1 && gf < 9);
+        groups.get(list).push({ a, item, vip: isVip, hit: hitNow, sc: sortOn ? ranking.score(title) : 0, gf, fam: sortOn && !gpt ? ranking.family(title) : 0, tier: sortOn ? ranking.tier(title) : 0, ver: brand.version(title), vid, nt: sortOn ? title.replace(/\s*·\s*\d+\s*$/, '') : '' });
       }
       const next = new Set();
       // 金色只给同厂商里版本号最高的那一代（有 5.5 时 5 的 high/max 不再是金色；gpt 有 6 时 5.6 不是金色）
@@ -5079,7 +5084,7 @@ const gachaUi = (() => {
         const all = [...groups.values()].flat(); all.forEach((r, i) => r.i = i);
         const best = new Map(); for (const r of all) { const g = r.vid || '~' + r.i; best.set(g, Math.min(best.get(g) ?? Infinity, r.sc)); }
         for (const r of all) { r.g = r.vid || '~' + r.i; r.gs = best.get(r.g); }
-        const cmp = (x, y) => (y.vip - x.vip) || (y.hit - x.hit) || (sortOn ? (x.gs - y.gs) || (x.g < y.g ? -1 : x.g > y.g ? 1 : 0) || ((y.ver ?? -1) - (x.ver ?? -1)) || (x.gf - y.gf) || (x.fam - y.fam) || (y.tier - x.tier) || (x.sc - y.sc) : 0) || (x.i - y.i);
+        const cmp = (x, y) => (y.vip - x.vip) || (y.hit - x.hit) || (sortOn ? (x.gs - y.gs) || (x.g < y.g ? -1 : x.g > y.g ? 1 : 0) || ((y.ver ?? -1) - (x.ver ?? -1)) || (x.gf - y.gf) || (x.fam - y.fam) || (y.tier - x.tier) || (x.sc - y.sc) || (x.nt < y.nt ? 1 : x.nt > y.nt ? -1 : 0) : 0) || (x.i - y.i);
         let seg = 0, firstBase = null;
         for (const c of P.children) {
           const base = 100000 + (seg++) * 10000, L = lists.filter(l => c === l || c.contains(l));
@@ -5098,7 +5103,7 @@ const gachaUi = (() => {
         // 比较器必须可传递，否则同一输入在不同轮次可能排出不同顺序 → 卡片来回交换（频闪）。
         const best = new Map(); for (const r of rows) { const g = r.vid || '~' + r.i; best.set(g, Math.min(best.get(g) ?? Infinity, r.sc)); }
         if (!P) for (const r of rows) { r.g = r.vid || '~' + r.i; r.gs = best.get(r.g); }
-        const sorted = rows.slice().sort((x, y) => (y.vip - x.vip) || (y.hit - x.hit) || (sortOn ? (x.gs - y.gs) || (x.g < y.g ? -1 : x.g > y.g ? 1 : 0) || ((y.ver ?? -1) - (x.ver ?? -1)) || (x.gf - y.gf) || (x.fam - y.fam) || (y.tier - x.tier) || (x.sc - y.sc) : 0) || (x.i - y.i));
+        const sorted = rows.slice().sort((x, y) => (y.vip - x.vip) || (y.hit - x.hit) || (sortOn ? (x.gs - y.gs) || (x.g < y.g ? -1 : x.g > y.g ? 1 : 0) || ((y.ver ?? -1) - (x.ver ?? -1)) || (x.gf - y.gf) || (x.fam - y.fam) || (y.tier - x.tier) || (x.sc - y.sc) || (x.nt < y.nt ? 1 : x.nt > y.nt ? -1 : 0) : 0) || (x.i - y.i));
         // Strength shading: the strongest pinned card gets 50% of the selected card's colour depth, the rest fade evenly.
         // 平铺时（多个日期分组合成一列）按整列的最终顺序算深浅，否则每个分组各自从最深开始，跨分组时忽深忽浅
         const pool = flatPinned || sorted, hits = pool.filter(r => r.hit && !r.vip), vips = pool.filter(r => r.vip);
@@ -5654,7 +5659,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.75', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.76', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -6071,7 +6076,7 @@ const gachaUi = (() => {
   const load=(key,fallback)=>{try{return JSON.parse(localStorage.getItem(key))??fallback;}catch{return fallback;}};
   const store=(key,value)=>{try{return ampStore.set(key,JSON.stringify(value));}catch{return false;}};
   const clamp=(v,min,max,fallback)=>Number.isFinite(v)?Math.min(max,Math.max(min,Math.round(v))):fallback;
-  const stored=load(KEY+'.prefs',{}), prefs={width:clamp(stored.width,280,720,340),sidebarWidth:clamp(stored.sidebarWidth,200,560,null),cloudSync:stored.cloudSync===true,cloudFormat:stored.cloudFormat==='name'?'name':'prefix',rawBudget:BUDGET_OPTIONS.includes(stored.rawBudget)?stored.rawBudget:64,showSent:stored.showSent!==false,showQuota:stored.showQuota!==false,showCredits:stored.showCredits!==false,showBar:stored.showBar!==false,barCollapsed:stored.barCollapsed===true,barOffset:stored.barOffset!==false,showSeq:stored.showSeq===true,hideDocIcon:stored.hideDocIcon!==false,stopOnResample:stored.stopOnResample!==false,showQuotaReset:stored.showQuotaReset===true,spendUnit:stored.spendUnit==='usd'?'usd':'token',sheetH:typeof stored.sheetH==='number'&&stored.sheetH>=0.05&&stored.sheetH<=1?stored.sheetH:0.5,sheetFull:stored.sheetFull===true,pullRefresh:stored.pullRefresh!==false,glassDrawer:stored.glassDrawer!==false,gemLayout:stored.gemLayout!==false,monOn:stored.monOn!==false,monAlert:stored.monAlert!==false,monStop:stored.monStop===true,wsRight:stored.wsRight!==false,wsEdge:stored.wsEdge!==false,wsEdgeY:typeof stored.wsEdgeY==='number'&&stored.wsEdgeY>=0.12&&stored.wsEdgeY<=0.88?stored.wsEdgeY:0.6,kbResize:stored.kbResize!==false};
+  const stored=load(KEY+'.prefs',{}), prefs={width:clamp(stored.width,280,720,340),sidebarWidth:clamp(stored.sidebarWidth,200,560,null),cloudSync:stored.cloudSync===true,cloudFormat:stored.cloudFormat==='name'?'name':'prefix',rawBudget:BUDGET_OPTIONS.includes(stored.rawBudget)?stored.rawBudget:64,showSent:stored.showSent!==false,showQuota:stored.showQuota!==false,showCredits:stored.showCredits!==false,showBar:stored.showBar!==false,barCollapsed:stored.barCollapsed===true,barOffset:stored.barOffset!==false,showSeq:stored.showSeq===true,hideDocIcon:stored.hideDocIcon!==false,stopOnResample:stored.stopOnResample!==false,showQuotaReset:stored.showQuotaReset===true,spendUnit:stored.spendUnit==='usd'?'usd':'token',sheetH:typeof stored.sheetH==='number'&&stored.sheetH>=0.05&&stored.sheetH<=1?stored.sheetH:0.5,sheetFull:stored.sheetFull===true,pullRefresh:stored.pullRefresh!==false,glassDrawer:stored.glassDrawer!==false,gemLayout:stored.gemLayout!==false,monOn:stored.monOn!==false,monAlert:stored.monAlert!==false,monStop:stored.monStop===true,wsRight:stored.wsRight!==false,wsSwipe:stored.wsSwipe!==false,wsEdge:stored.wsEdge!==false,wsEdgeY:typeof stored.wsEdgeY==='number'&&stored.wsEdgeY>=0.12&&stored.wsEdgeY<=0.88?stored.wsEdgeY:0.6,kbResize:stored.kbResize!==false};
   // 手机/窄屏：底部只留一条余额栏，点击余额栏才展开模型信息
   const miniBar=()=>innerWidth<768||!!document.getElementById('amp-lite-dock')?.hasAttribute('data-compact');
   const savePrefs=()=>store(KEY+'.prefs',prefs);
@@ -7399,6 +7404,7 @@ details.mc-card .section.credits{margin-top:12px}
       +'.tab{position:fixed;right:var(--w);top:calc(var(--y) - 30px);width:22px;height:60px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;padding-left:1px;border-radius:13px 0 0 13px;background:color-mix(in srgb,hsl(var(--surface-primary,36 45% 98%)) 84%,transparent);-webkit-backdrop-filter:blur(14px) saturate(1.6);backdrop-filter:blur(14px) saturate(1.6);box-shadow:inset 1px 0 0 hsl(var(--border-medium,30 9% 87%)),inset 0 1px 0 hsl(var(--border-medium,30 9% 87%)),inset 0 -1px 0 hsl(var(--border-medium,30 9% 87%)),-3px 3px 14px rgb(0 0 0/.10);color:hsl(var(--text-secondary,30 5% 35%));touch-action:none;cursor:grab;outline:none;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;transition:right .3s cubic-bezier(.2,.9,.3,1),opacity .2s,transform .25s}'
       +'.tab::before{content:"";position:absolute;left:-16px;right:0;top:-10px;bottom:-10px}.tab svg{width:15px;height:15px;flex:none;pointer-events:none}.tab:focus-visible{box-shadow:0 0 0 2px hsl(var(--text-secondary,30 5% 35%))}'
       +':host([data-drag]) .tab{transition:opacity .2s;cursor:grabbing}:host([data-drag="move"]) .tab{transform:scale(1.08)}:host([data-disabled]) .tab svg{opacity:.4}'
+      +':host([data-notab]) .tab{display:none!important}'
       +':host([data-away]) .tab{opacity:0;pointer-events:none;transform:translateX(26px)}:host([data-nope]) .tab{animation:wsNope .42s}@keyframes wsNope{20%,60%{transform:translateX(-5px)}40%,80%{transform:translateX(3px)}}'
       +'.ghost{position:fixed;top:var(--app-banner-height,0px);bottom:0;right:0;width:var(--w);box-sizing:border-box;overflow:hidden;display:flex;flex-direction:column;align-items:stretch;border-radius:20px 0 0 20px;background:hsl(var(--surface-secondary,0 0% 100%));box-shadow:-12px 0 36px rgb(0 0 0/.2);color:hsl(var(--text-secondary,30 5% 35%));pointer-events:none;visibility:hidden;white-space:nowrap}'
       +'.ghost::before{content:"";position:absolute;left:6px;top:50%;width:5px;height:44px;margin-top:-22px;border-radius:3px;background:hsl(var(--surface-tertiary,33 31% 94%))}'
@@ -7412,7 +7418,7 @@ details.mc-card .section.credits{margin-top:12px}
       +'@media (prefers-reduced-motion:reduce){.tab,.ghost,.shade{transition:none!important;animation:none!important}}',wsRoot);
     const wsShade=el('div','shade',null,wsRoot),wsGhost=el('div','ghost',null,wsRoot),wsTab=el('div','tab',null,wsRoot);
     wsGhost.innerHTML='<div class="gh">'+WS_ICON+'<span>工作区</span></div><div class="gs"></div><div class="gd"></div>'+[62,48,70,40,56,66].map(w=>'<div class="gr"><i></i><b style="width:'+w+'%"></b></div>').join('')+'<span class="hint"></span>';wsTab.innerHTML=WS_ICON;
-    wsTab.setAttribute('role','button');wsTab.tabIndex=0;wsTab.setAttribute('aria-label','打开工作区');wsTab.title='工作区：向左拖出来或轻点打开，上下拖动换位置';
+    wsTab.setAttribute('role','button');wsTab.tabIndex=0;wsTab.setAttribute('aria-label','打开工作区');wsTab.title='工作区：轻点或向左拖出来打开（也可以在对话内容上向左划），上下拖动换位置';
     const wsHint=wsGhost.querySelector('.hint');let wsBtn=null,wsDrag=null,wsSettleT=0;
     const wsOff=b=>!b||b.disabled||b.getAttribute('aria-disabled')==='true';
     // v1.11.72 工作区从右侧滑出：Arena 手机端的工作区是 vaul 底部抽屉（[data-vaul-drawer]）。从把手打开时接管这一个抽屉——
@@ -7478,17 +7484,19 @@ details.mc-card .section.credits{margin-top:12px}
       wsHost.removeAttribute('data-settle');wsHost.setAttribute('data-go','');wsPull(wsW());wsWatch();wsExpect=Date.now()+1800;
       try{b.click();}catch{}
       clearTimeout(wsGoT);wsGoT=setTimeout(()=>{if(!wsHost.hasAttribute('data-go'))return;wsHost.removeAttribute('data-go');wsPull(0);wsHost.removeAttribute('data-ready');wsSync();},700);return true;}
+    // 工作区已打开 / 有弹窗 / 输入法弹出 → 把手让开，对话区左划也不接（v1.11.76 抽成函数：左划按下时现算，不依赖上次同步的 data-away）
+    // v1.11.75 只在输入法真正弹出时让开（data-amp-kb）；以前输入框有焦点就藏，收起键盘后焦点还在，把手一直看不见
+    function wsBusy(b){const lab=b?.getAttribute('aria-label')||'',open=/close|关闭/i.test(lab)||b?.getAttribute('aria-expanded')==='true'||b?.getAttribute('aria-pressed')==='true'||b?.getAttribute('data-state')==='open';
+      if(open||document.documentElement.hasAttribute('data-amp-kb'))return true;
+      return [...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')].some(d=>d.getAttribute('data-state')!=='closed'&&d.getBoundingClientRect().width>0);}
     function wsSync(){
       document.documentElement.toggleAttribute('data-amp-wsr',prefs.wsRight!==false);wsWatch();wsScan(); // v1.11.75 先接管工作区（与把手是否显示无关）
-      let b=null;if(gemOn()&&prefs.wsEdge!==false&&document.body)for(const x of document.querySelectorAll(WS_SEL)){const m=x.closest('main'),r=x.getBoundingClientRect();if(m&&r.width>0&&r.height>0&&r.top<m.getBoundingClientRect().top+100){b=x;break;}}
-      document.documentElement.toggleAttribute('data-amp-wsedge',!!b);
+      // v1.11.76 右侧把手或“对话区左划”任一开着就找原生按钮；只开左划（没开 Gemini 布局 / 把手）时不显示把手，顶栏按钮照常显示
+      const tabOn=gemOn()&&prefs.wsEdge!==false;let b=null;if((tabOn||wsSwOn())&&document.body)for(const x of document.querySelectorAll(WS_SEL)){const m=x.closest('main'),r=x.getBoundingClientRect();if(m&&r.width>0&&r.height>0&&r.top<m.getBoundingClientRect().top+100){b=x;break;}}
+      document.documentElement.toggleAttribute('data-amp-wsedge',!!b&&tabOn);
       if(!b){wsBtn=null;if(wsHost.isConnected&&!wsDrag&&!wsHost.hasAttribute('data-go'))wsHost.remove();return;}
-      wsBtn=b;if(!wsHost.isConnected)document.body.append(wsHost);if(!wsDrag)wsPlace(prefs.wsEdgeY*innerHeight);
-      const lab=b.getAttribute('aria-label')||'',open=/close|关闭/i.test(lab)||b.getAttribute('aria-expanded')==='true'||b.getAttribute('aria-pressed')==='true'||b.getAttribute('data-state')==='open';
-      const dlg=[...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')].some(d=>d.getAttribute('data-state')!=='closed'&&d.getBoundingClientRect().width>0);
-      // v1.11.75 只在输入法真正弹出时让开（data-amp-kb）；以前输入框有焦点就藏，收起键盘后焦点还在，把手一直看不见
-      const kb=document.documentElement.hasAttribute('data-amp-kb');
-      wsHost.toggleAttribute('data-away',!wsDrag&&!wsHost.hasAttribute('data-go')&&(open||dlg||kb));wsHost.toggleAttribute('data-disabled',wsOff(b));
+      wsBtn=b;if(!wsHost.isConnected)document.body.append(wsHost);wsHost.toggleAttribute('data-notab',!tabOn);if(!wsDrag)wsPlace(prefs.wsEdgeY*innerHeight);
+      wsHost.toggleAttribute('data-away',!wsDrag&&!wsHost.hasAttribute('data-go')&&wsBusy(b));wsHost.toggleAttribute('data-disabled',wsOff(b));
       wsTab.setAttribute('aria-disabled',String(wsOff(b)));
     }
     wsTab.addEventListener('pointerdown',e=>{if(e.button>0||wsHost.hasAttribute('data-go'))return;const r=wsTab.getBoundingClientRect(),t=performance.now();wsDrag={id:e.pointerId,x:e.clientX,y:e.clientY,c:r.top+r.height/2,t,mode:'',hs:[[t,e.clientX]]};try{wsTab.setPointerCapture(e.pointerId);}catch{}});
@@ -7504,6 +7512,31 @@ details.mc-card .section.credits{margin-top:12px}
       if(e.type==='pointerup'&&(dx>=WS_OPEN||dx>=28&&v>0.35))wsOpen();else wsPull(0,true);};
     wsTab.addEventListener('pointerup',wsEnd);wsTab.addEventListener('pointercancel',wsEnd);wsTab.addEventListener('lostpointercapture',wsEnd);
     wsTab.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();wsOpen();}});wsTab.addEventListener('contextmenu',e=>e.preventDefault());
+    // v1.11.76 在对话内容上向左划也能把工作区拉出来——和拖右侧把手一样：预览面板跟着手指从右边出来，松手打开，不够远就弹回。
+    // 安卓全面屏手势把“从屏幕最边缘开始的左划”当成系统返回，页面根本收不到，所以右侧把手在这类手机上只能轻点、拖不出来；
+    // 从屏幕里面开始划就不受影响。只认明显的横向左划（横向 ≥ 纵向 2 倍）；上下滚动、代码块 / 表格等能横向滚动的地方、输入框里开始的手势都不管。
+    // 用 touch 事件跟踪：浏览器接手横划时 pointer 事件会被 cancel，touch 事件照样送达；Arena 的对话区是 overscroll-contain，横划不会带动别的东西，
+    // 所以不改页面的 touch-action。第二根手指按下、系统接管（touchcancel）、按住超过 0.45 秒才动（长按选字）都当放弃，预览面板弹回。
+    // 对话区自己能横向滚动时（内容被撑宽），只有滚到最右边了才接左划。
+    let wsSw=null;
+    function wsSwOn(){return prefs.wsSwipe!==false&&wsRightOn();}
+    const wsSwSkip=(t,log)=>{for(let n=t;n&&n!==document.body;n=n.parentElement){if(n.matches?.('input,textarea,select,[contenteditable]:not([contenteditable="false"]),pre,[data-noswipe],[role="slider"],[draggable="true"]'))return true;if(n.scrollWidth>n.clientWidth+2){const ox=getComputedStyle(n).overflowX;if((ox==='auto'||ox==='scroll')&&(n!==log||n.scrollLeft<n.scrollWidth-n.clientWidth-2))return true;}if(n===log)break;}return false;};
+    const wsSwTouch=(e,s)=>[...(e.changedTouches||[])].find(t=>t.identifier===s.tid);
+    function wsSwEnd(e,ok){const s=wsSw;wsSw=null;if(!s||s.mode!=='pull')return;if(wsDrag===s)wsDrag=null;wsHost.removeAttribute('data-drag');
+      const p=e&&wsSwTouch(e,s),x=p?p.clientX:s.lx,dx=s.x-x,now=performance.now(),ref=s.hs.find(h=>now-h[0]<=120)||s.hs.at(-1),v=ref?(ref[1]-x)/Math.max(16,now-ref[0]):0;
+      if(ok&&(dx>=WS_OPEN||dx>=28&&v>0.35))wsOpen();else wsPull(0,true);}
+    document.addEventListener('touchstart',e=>{
+      if(wsSw){if(wsSw.mode==='pull')wsSwEnd(null,false);else wsSw=null;}
+      if(e.touches.length!==1||!wsSwOn()||wsDrag||!wsBtn?.isConnected||wsOff(wsBtn)||!wsHost.isConnected||wsHost.hasAttribute('data-go')||wsBusy(wsBtn))return;
+      const t=e.target,log=t?.closest?.('main [role="log"]');if(!log||wsSwSkip(t,log))return;
+      const p=e.touches[0];wsSw={sw:1,id:'sw',tid:p.identifier,x:p.clientX,y:p.clientY,lx:p.clientX,mode:'',hs:[[performance.now(),p.clientX]]};
+    },{capture:true,passive:true});
+    document.addEventListener('touchmove',e=>{const s=wsSw;if(!s)return;const p=wsSwTouch(e,s);if(!p)return;const dx=s.x-p.clientX,dy=p.clientY-s.y;s.lx=p.clientX;
+      if(!s.mode){if(Math.abs(dx)<10&&Math.abs(dy)<10)return;if(dx>=10&&dx>=Math.abs(dy)*2&&performance.now()-s.hs[0][0]<450&&!wsDrag&&!wsHost.hasAttribute('data-go')){s.mode='pull';wsDrag=s;wsHost.setAttribute('data-drag','pull');try{getSelection()?.removeAllRanges();}catch{}}else{wsSw=null;return;}}
+      s.hs.push([performance.now(),p.clientX]);if(s.hs.length>10)s.hs.shift();wsPull(Math.max(0,dx));
+    },{capture:true,passive:true});
+    document.addEventListener('touchend',e=>{if(wsSw&&wsSwTouch(e,wsSw))wsSwEnd(e,true);},{capture:true,passive:true});
+    document.addEventListener('touchcancel',e=>{if(wsSw&&wsSwTouch(e,wsSw))wsSwEnd(e,false);},{capture:true,passive:true});
     document.addEventListener('focusin',()=>{wsScan();if(wsHost.isConnected)wsSync();},true);addEventListener('resize',()=>setTimeout(wsSync,80),{passive:true});document.addEventListener('focusout',()=>{if(wsHost.isConnected)setTimeout(wsSync,0);},true);
     const drawerMo=new MutationObserver(()=>requestAnimationFrame(syncMode));let drawerMoOn=false;
     const panel=el('section','panel',null,root),resizer=el('div','resizer',null,panel);resizer.title='拖动调整宽度，双击恢复';const sheetGrip=el('div','sheet-grip',null,panel);el('i','',null,sheetGrip);sheetGrip.title='上下拖动调整高度，停在哪都可以：顶到最上面全屏，拉到最底收起；轻点切换全屏';
@@ -8194,9 +8227,10 @@ details.mc-card .section.credits{margin-top:12px}
       const sec=el('section','section',null,body);el('h3','section-heading','显示',sec);
       toggle(sec,'隐藏输入框里的文档图标','默认开启：目标按钮左边的纸张图标按钮没什么实际用途，隐藏后更宽松。',prefs.hideDocIcon,v=>{prefs.hideDocIcon=v;if(!v)store(DOC_KEY,'');docIcon();});
       toggle(sec,'长按输入框下拉刷新（手机）','默认开启：长按输入框约 0.3 秒，感到轻震后往下拉，整页跟着往下，顶部圆环随距离画满；画满后松开就刷新，没松手推回去就取消。\n输入框有未发送内容、待发附件、抽卡进行中或本轮还在进行时，圆环变橙色提醒。取代原来左上角的刷新按钮。',prefs.pullRefresh,v=>{prefs.pullRefresh=v;});
-      toggle(sec,'手机端 Gemini 风格布局','默认开启，参考 Gemini App（颜色沿用 Arena 原配色）：\n· 顶栏：左上角 ≡ 打开侧栏，旁边是模型名（与左侧卡片一致）；右上角是深色/浅色切换和账号头像；工作区收在右侧屏幕边缘的小把手里（向左拖出来或轻点打开，上下拖动换位置）。\n· 头像外圈是美金余额圆环（剩余 / 总额度）：绿色，低于 20% 变橙，低于 5% 变红。点头像打开账号切换（需账号切换 v1.0.21+），否则打开侧栏。\n· 输入框改成圆角长条：左边 +，右边厂商图标和发送。在厂商图标上上下滑动就是“波轮”：弹出旧版透明样式的厂商滚轮（卡片直接浮在页面上、越往外越淡，没有底板和背景压暗），跟着手指一格格转，松手即选中；抽卡时图标转动、外圈显示进度，每出一张亮出抽到的厂商。\n· 模式切换（Battle / Agent / Side by Side / Direct）挪到左侧抽屉 logo 旁。',prefs.gemLayout,v=>{prefs.gemLayout=v;document.documentElement.toggleAttribute('data-amp-gem',gemOn());if(!v){avatarHost.remove();modeHost.remove();}wsSync();});
-      toggle(sec,'工作区收到右侧边缘','默认开启（手机端 Gemini 布局下）：顶栏不再单独放工作区按钮，改成右侧屏幕边缘的小把手。\n· 向左拖出来，或轻点一下，打开工作区：工作区从右侧跟着手指滑出（不再从底部升起）。\n· 收起：在工作区左边缘或标题栏向右划，或点左侧暗处 / ×。\n· 上下拖动把手可以换位置（会记住）。\n· 新对话还没有工作区时把手是灰的；工作区打开、弹窗打开或输入法弹出时，把手自动让开。\n· 安卓手势导航下，从屏幕最边缘往里划可能触发系统返回，按住把手中间再拖（或直接轻点）更稳。\n关闭后恢复顶栏的工作区按钮。',prefs.wsEdge,v=>{prefs.wsEdge=v;wsSync();});
+      toggle(sec,'手机端 Gemini 风格布局','默认开启，参考 Gemini App（颜色沿用 Arena 原配色）：\n· 顶栏：左上角 ≡ 打开侧栏，旁边是模型名（与左侧卡片一致）；右上角是深色/浅色切换和账号头像；工作区收在右侧屏幕边缘的小把手里（轻点或向左拖出来打开，也可以在对话内容上向左划；上下拖动把手换位置）。\n· 头像外圈是美金余额圆环（剩余 / 总额度）：绿色，低于 20% 变橙，低于 5% 变红。点头像打开账号切换（需账号切换 v1.0.21+），否则打开侧栏。\n· 输入框改成圆角长条：左边 +，右边厂商图标和发送。在厂商图标上上下滑动就是“波轮”：弹出旧版透明样式的厂商滚轮（卡片直接浮在页面上、越往外越淡，没有底板和背景压暗），跟着手指一格格转，松手即选中；抽卡时图标转动、外圈显示进度，每出一张亮出抽到的厂商。\n· 模式切换（Battle / Agent / Side by Side / Direct）挪到左侧抽屉 logo 旁。',prefs.gemLayout,v=>{prefs.gemLayout=v;document.documentElement.toggleAttribute('data-amp-gem',gemOn());if(!v){avatarHost.remove();modeHost.remove();}wsSync();});
+      toggle(sec,'工作区收到右侧边缘','默认开启（手机端 Gemini 布局下）：顶栏不再单独放工作区按钮，改成右侧屏幕边缘的小把手。\n· 向左拖出来，或轻点一下，打开工作区：工作区从右侧跟着手指滑出（不再从底部升起）。\n· 收起：在工作区左边缘或标题栏向右划，或点左侧暗处 / ×。\n· 上下拖动把手可以换位置（会记住）。\n· 新对话还没有工作区时把手是灰的；工作区打开、弹窗打开或输入法弹出时，把手自动让开。\n· 安卓全面屏手势会把从屏幕最边缘开始的左划当成“返回”，把手可能拖不动：轻点把手，或者在对话内容上向左划（见下面“对话区向左划拉出工作区”）。\n关闭后恢复顶栏的工作区按钮。',prefs.wsEdge,v=>{prefs.wsEdge=v;wsSync();});
       toggle(sec,'工作区从右侧滑出','默认开启（手机）：工作区一律贴在右侧、从右向左滑出，不再从底部升起——不管是拉右侧把手、点顶栏按钮，还是点消息里的文件打开的，也不管有没有开 Gemini 布局。\n· 收起：在工作区左边缘或标题栏向右划，或点左侧暗处 / ×。\n关闭后恢复 Arena 原来的底部弹出。',prefs.wsRight,v=>{prefs.wsRight=v;wsSync();});
+      toggle(sec,'对话区向左划拉出工作区','默认开启（手机）：在对话内容上向左划，工作区就从右侧跟着手指滑出来，松手打开（拉得不够远会弹回去）。\n· 安卓全面屏手势会把从屏幕最边缘开始的左划当成“返回”，右侧把手有时拖不动——从屏幕里面开始划就没这个问题。\n· 只认明显的横向左划：上下滚动、在代码块 / 表格这类能横向滚动的地方、输入框里的手势都照旧。\n· 需要同时开着“工作区从右侧滑出”。',prefs.wsSwipe!==false,v=>{prefs.wsSwipe=v;wsSync();});
       toggle(sec,'输入法弹出时一起上移','默认开启（手机端）：弹出输入法时，对话内容、输入框、底部模型信息栏一起上移——最新的内容跟着输入框推上去，不会被挡住；模型信息栏贴在输入法上方，不再藏起来。\n· 输入框变成多行时，对话内容同样跟着往上推。\n· 关闭后恢复旧行为：打字时隐藏底部信息栏。',prefs.kbResize!==false,v=>{prefs.kbResize=v;try{bar?.sync();}catch{}});
       toggle(sec,'玻璃侧栏（手机）','默认开启：左侧对话列表抽屉变窄，背景改成半透明磨砂玻璃、遮罩调淡，能看到后面的页面。关闭恢复 Arena 原样。',prefs.glassDrawer,v=>{prefs.glassDrawer=v;document.documentElement.toggleAttribute('data-amp-glass',v);});
       toggle(sec,'显示“已重置”的推断限流','默认关闭：如“新会话 10/10 · 已重置”只是按上限推断的数值，不是必要信息。',prefs.showQuotaReset,v=>{prefs.showQuotaReset=v;});
