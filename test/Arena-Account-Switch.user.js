@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arena 账号切换（Arena Native Suite 配套）
 // @namespace    local.amp.native.accounts
-// @version      1.0.20
+// @version      1.0.21
 // @description  【测试版】在 Arena 个人卡片里一键切换已保存的账号；显示各账号最近记录的额度
 // @match        https://arena.ai/*
 // @include      https://arena.ai/*
@@ -20,7 +20,7 @@
 
 (function arenaAccountSwitch() {
   'use strict';
-  const VERSION = '1.0.20';
+  const VERSION = '1.0.21';
   try { document.documentElement.dataset.ampSwitchVer = VERSION; } catch {}
   const ORIGIN = 'https://' + location.host;
   const AUTH_RE = /^arena-auth-prod-v1(\.\d+)?$/;
@@ -1149,6 +1149,8 @@
   // ---------------- 启动 ----------------
   try { GM_registerMenuCommand('Arena 账号切换', () => void openPanel(null)); GM_registerMenuCommand('账号密码备忘录', () => openMemo()); GM_registerMenuCommand('账号快捷键设置', () => openHotkeys()); } catch {}
   window.addEventListener('keydown', onHotkey, true);
+  // 套件手机顶栏的头像：点一下打开 / 再点关闭账号切换面板（套件 v1.11.68+）
+  window.addEventListener('amp:switch-open', () => { if (document.querySelector('[data-amp-switcher]')) closeSwitcher(); else void openPanel(null); });
   let scanQueued = false;
   const scan = () => { scanQueued = false; const d = profileDialog(); if (d) { injectButton(d); } replaceLogin(); };
   new MutationObserver(recs => { if (scanQueued) return; if (!recs.some(r => { const e = r.target.nodeType === 1 ? r.target : r.target.parentElement; return e && !e.closest('[role="log"]'); })) return; scanQueued = true; requestAnimationFrame(scan); }).observe(document.documentElement, { childList: true, subtree: true });
