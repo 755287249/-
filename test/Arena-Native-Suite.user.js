@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.73
+// @version      1.11.74
 // @description  【测试版】Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.73' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.74' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -5654,7 +5654,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.73', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.74', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -8176,7 +8176,7 @@ details.mc-card .section.credits{margin-top:12px}
       const sec=el('section','section',null,body);el('h3','section-heading','显示',sec);
       toggle(sec,'隐藏输入框里的文档图标','默认开启：目标按钮左边的纸张图标按钮没什么实际用途，隐藏后更宽松。',prefs.hideDocIcon,v=>{prefs.hideDocIcon=v;if(!v)store(DOC_KEY,'');docIcon();});
       toggle(sec,'长按输入框下拉刷新（手机）','默认开启：长按输入框约 0.3 秒，感到轻震后往下拉，整页跟着往下，顶部圆环随距离画满；画满后松开就刷新，没松手推回去就取消。\n输入框有未发送内容、待发附件、抽卡进行中或本轮还在进行时，圆环变橙色提醒。取代原来左上角的刷新按钮。',prefs.pullRefresh,v=>{prefs.pullRefresh=v;});
-      toggle(sec,'手机端 Gemini 风格布局','默认开启，参考 Gemini App（颜色沿用 Arena 原配色）：\n· 顶栏：左上角 ≡ 打开侧栏，旁边是模型名（与左侧卡片一致）；右上角是深色/浅色切换和账号头像；工作区收在右侧屏幕边缘的小把手里（向左拖出来或轻点打开，上下拖动换位置）。\n· 头像外圈是美金余额圆环（剩余 / 总额度）：绿色，低于 20% 变橙，低于 5% 变红。点头像打开账号切换（需账号切换 v1.0.21+），否则打开侧栏。\n· 输入框改成圆角长条：左边 +，右边厂商图标和发送。在厂商图标上上下滑动就是“波轮”：弹出厂商滚轮，按钮里的图标跟着手指一格格滚动，松手即选中；抽卡时图标转动、外圈显示进度，每出一张亮出抽到的厂商。\n· 模式切换（Battle / Agent / Side by Side / Direct）挪到左侧抽屉 logo 旁。',prefs.gemLayout,v=>{prefs.gemLayout=v;document.documentElement.toggleAttribute('data-amp-gem',gemOn());if(!v){avatarHost.remove();modeHost.remove();}wsSync();});
+      toggle(sec,'手机端 Gemini 风格布局','默认开启，参考 Gemini App（颜色沿用 Arena 原配色）：\n· 顶栏：左上角 ≡ 打开侧栏，旁边是模型名（与左侧卡片一致）；右上角是深色/浅色切换和账号头像；工作区收在右侧屏幕边缘的小把手里（向左拖出来或轻点打开，上下拖动换位置）。\n· 头像外圈是美金余额圆环（剩余 / 总额度）：绿色，低于 20% 变橙，低于 5% 变红。点头像打开账号切换（需账号切换 v1.0.21+），否则打开侧栏。\n· 输入框改成圆角长条：左边 +，右边厂商图标和发送。在厂商图标上上下滑动就是“波轮”：弹出旧版透明样式的厂商滚轮（卡片直接浮在页面上、越往外越淡，没有底板和背景压暗），跟着手指一格格转，松手即选中；抽卡时图标转动、外圈显示进度，每出一张亮出抽到的厂商。\n· 模式切换（Battle / Agent / Side by Side / Direct）挪到左侧抽屉 logo 旁。',prefs.gemLayout,v=>{prefs.gemLayout=v;document.documentElement.toggleAttribute('data-amp-gem',gemOn());if(!v){avatarHost.remove();modeHost.remove();}wsSync();});
       toggle(sec,'工作区收到右侧边缘','默认开启（手机端 Gemini 布局下）：顶栏不再单独放工作区按钮，改成右侧屏幕边缘的小把手。\n· 向左拖出来，或轻点一下，打开工作区：工作区从右侧跟着手指滑出（不再从底部升起）。\n· 收起：在工作区左边缘或标题栏向右划，或点左侧暗处 / ×。\n· 上下拖动把手可以换位置（会记住）。\n· 新对话还没有工作区时把手是灰的；工作区打开、弹窗打开或正在输入时，把手自动让开。\n· 安卓手势导航下，从屏幕最边缘往里划可能触发系统返回，按住把手中间再拖（或直接轻点）更稳。\n关闭后恢复顶栏的工作区按钮。',prefs.wsEdge,v=>{prefs.wsEdge=v;wsSync();});
       toggle(sec,'输入法弹出时一起上移','默认开启（手机端）：弹出输入法时，对话内容、输入框、底部模型信息栏一起上移——最新的内容跟着输入框推上去，不会被挡住；模型信息栏贴在输入法上方，不再藏起来。\n· 输入框变成多行时，对话内容同样跟着往上推。\n· 关闭后恢复旧行为：打字时隐藏底部信息栏。',prefs.kbResize!==false,v=>{prefs.kbResize=v;try{bar?.sync();}catch{}});
       toggle(sec,'玻璃侧栏（手机）','默认开启：左侧对话列表抽屉变窄，背景改成半透明磨砂玻璃、遮罩调淡，能看到后面的页面。关闭恢复 Arena 原样。',prefs.glassDrawer,v=>{prefs.glassDrawer=v;document.documentElement.toggleAttribute('data-amp-glass',v);});
