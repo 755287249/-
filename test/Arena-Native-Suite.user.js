@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.77
+// @version      1.11.78
 // @description  【测试版】Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,9 +15,13 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.77' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.78' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
-const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
+// v1.11.78 “-public”也是部署标记（grok-4.7-xhigh-public）：和 -vertex 一样不显示，档位才能识别出来（xhigh）
+const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '').replace(/-public(?=$|[\s·])/ig, '') : n;
+// v1.11.78 Arena 服务端故障转移（原模型报错 / 超时 → 自动改派别的模型）：这一轮真正回答的是改派之后的模型。
+// 失败的那次调用（failed）不算这一轮的模型；已改派、但新模型的调用还没出现在 Trace 里（failover.pending）= 还没识别出来，返回空。
+const servingCalls = d => { const calls = Array.isArray(d?.calls) ? d.calls.filter(Boolean) : []; return d?.failover?.pending ? [] : calls.filter(c => !c.failed); };
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
 // 失败时依次清掉可重建的大缓存（本地历史副本 / 排行榜缓存 / 型号变更记录）再重试，并把结果告诉调用方。
 const ampStore = (() => {
@@ -3754,15 +3758,19 @@ const gacha = (() => {
   function identify(live, attempt) {
     if (!live || live.sid !== attempt.sid || !live.data) return null;
     if (attempt.sentAt && live.submittedAt && live.submittedAt < attempt.sentAt - 3000) return null;
-    const calls = live.data.calls || [], last = calls.at(-1) || {};
-    const internal = [last.internal, ...(live.data.internalNames || [])].find(validName) || null;
+    // v1.11.78 Arena 自己的故障转移：原模型调用失败 → 改派。以前拿“最后一次调用”识别，新模型的调用还没进 Trace 时
+    // 最后一次就是失败的原模型（v4-flash-vision-exp），于是先报原模型、过一会儿又变成 Grok（左右横跳）。
+    // 现在只看真正回答了的调用；改派了但新模型还没出现 = 还没识别出来（不拿失败的原模型充数，也不拿它的内部名）。
+    const all = live.data.calls || [], calls = servingCalls(live.data), last = calls.at(-1); if (!last) return null;
+    const routed = calls.length !== all.length || !!live.data.routing;
+    const internal = [last.internal, ...calls.map(c => c.internal), ...(routed ? [] : (live.data.internalNames || []))].find(validName) || null;
     const response = [last.response, ...calls.map(c => c.response)].find(validName) || null;
     const request = [last.request, ...calls.map(c => c.request)].find(validName) || null;
     const traced = [last.model, ...calls.map(c => c.model)].find(validName) || null;
     const name = internal || response || request || traced; if (!name) return null;
-    const suffix = internal && /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(internal) ? /-(none|minimal|low|medium|high|xhigh|max)$/i.exec(internal.replace(/-(vertex|agent)$/i, '')) : null;
+    const suffix = internal && /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(internal) ? /-(none|minimal|low|medium|high|xhigh|max)$/i.exec(internal.replace(/-(vertex|agent|public)$/i, '')) : null;
     const tier = suffix ? suffix[1].toLowerCase() : (TIERS.includes(last.effort) ? last.effort : null);
-    return { name: name.trim(), internal, response, request, traced, tier, partial: !!live.data.partial };
+    return { name: name.trim(), internal, response, request, traced, tier, partial: !!live.data.partial, routed };
   }
   const has = (name, words) => { const n = String(name || '').toLowerCase(); return words.some(w => w && n.includes(String(w).toLowerCase())); };
   function classify(id, s) {
@@ -3869,7 +3877,7 @@ const gacha = (() => {
       if (now() - c.at > 1200000) return false;
       const live = core?.runFor?.(c.sid); if (!live?.data?.calls?.length || !(live.submittedAt >= c.at - 2000)) return true;
       const pv = String(live.prompt || '').replace(/\s+/g, ' ').trim().slice(0, 20); if (c.want && pv && pv !== c.want) return false;
-      const last = live.data.calls.at(-1), got = last.request || last.model;
+      const last = servingCalls(live.data).at(-1); if (!last) return true; const got = last.request || last.model;
       if (!got || got === '未提供' || live.busy && !live.data.routing) return true;
       const sw = live.data.routing;
       const kept = !sw && (!c.expected || got === c.expected);
@@ -4043,10 +4051,21 @@ const gacha = (() => {
       const got = identify(live, attempt);
       if (got) {
         if (!id) pace.note(t - attempt.sentAt, 6000);
-        if (!id || got.name !== id.name) { id = got; idAt ||= t; attempt.model = got.name; attempt.tier = got.tier; phase('已识别 ' + got.name); }
+        // v1.11.78 只有完整身份（已结束调用的内部名）才报“已识别 X”：请求名 / 进行中的调用随后可能失败被 Arena 改派，
+        // 以前一识别到就报名字，于是先报原模型、再报改派后的模型（左右横跳）
+        const complete = !!got.internal && !got.partial;
+        if (!id || got.name !== id.name) idAt ||= t;
+        id = got;
+        // v1.11.78 这一抽里原模型调用失败、被 Arena 改派：定名时只记一条日志，这一抽按实际回答的模型算（不弹提醒、不显示原模型）
+        // 状态行也不抢先报名字：顶部标题 / 老虎机还没亮出完整身份时只写“已识别”，名字和它们同一时刻出现
+        const settle_ = () => { if (attempt.model !== id.name) { attempt.model = id.name; attempt.tier = id.tier; let full = false; try { full = !!core?.shown?.(attempt.sid)?.full; } catch {} phase(full ? '已识别 ' + noVertex(id.name) : '已识别'); } if (id.routed && !attempt.routed) { attempt.routed = true; log('本抽原模型调用失败，Arena 已自动改派；按实际回答的 ' + noVertex(id.name) + ' 计'); } return id; };
+        if (complete) settle_();
         // Rename only with a settled, final name: an internal name, or a stable fallback after 8s.
-        if (settledAt && t - settledAt >= T.settle && ((got.internal && !got.partial) || t - idAt > pace.ms(8000))) return id;
-        if (t - idAt > pace.ms(25000)) return id;
+        if (settledAt && t - settledAt >= T.settle && (complete || t - idAt > pace.ms(8000))) return settle_();
+        if (t - idAt > pace.ms(25000)) return settle_();
+      } else if (id && live?.data?.failover?.pending) {
+        // 识别到的调用随后失败、正在改派：收回，等改派后的模型（计时重新开始）
+        id = null; idAt = 0;
       } else if (settledAt) {
         // The reply is finished but no model yet: trace data can lag, so wait (longer while it is still being read),
         // then resend in the same chat. Never skip the draw.
@@ -4194,7 +4213,7 @@ const gacha = (() => {
   function peek() {
     if (!run) return null;
     const a = run.attempts.at(-1) || null; let partial = '', exact = '';
-    if (a?.sid && core?.runFor && !a.done) { try { const live = core.runFor(a.sid), rc = live?.data?.calls?.at(-1); if (live && live.sid === a.sid && !(a.sentAt && live.submittedAt && live.submittedAt < a.sentAt - 3000)) { exact = rc?.internal || rc?.response || ''; partial = exact || rc?.request || (rc?.model && rc.model !== '未提供' ? rc.model : ''); } } catch {} }
+    if (a?.sid && core?.runFor && !a.done) { try { const live = core.runFor(a.sid), rc = servingCalls(live?.data).at(-1); if (live && live.sid === a.sid && !(a.sentAt && live.submittedAt && live.submittedAt < a.sentAt - 3000)) { exact = rc?.internal || rc?.response || ''; partial = exact || rc?.request || (rc?.model && rc.model !== '未提供' ? rc.model : ''); } } catch {} }
     const ok = !!a?.done && ['hit', 'keep', 'archive'].includes(a.verdict);
     // v1.11.73 显示用的“第几抽”只按真正完成的抽数算（补抽 / 页面没加载好的轮次不涨号）；shown = 顶部标题此刻显示的厂商 / 型号 / 档位
     const max0 = run.settings?.maxAttempts || 1, draw = a?.draw || Math.max(1, Math.min(max0, (run.completed || 0) + 1));
@@ -5069,7 +5088,22 @@ const gachaUi = (() => {
       for (const el of flatSet) { el.style.removeProperty('order'); el.style.removeProperty('margin-left'); el.style.removeProperty('margin-right'); el.style.removeProperty('margin-top'); }
       flatSet = new Set(); document.querySelectorAll('[data-amp-flat]').forEach(n => n.removeAttribute('data-amp-flat')); document.querySelectorAll('[data-amp-flatp]').forEach(n => n.removeAttribute('data-amp-flatp')); flatP = null; flatM = null;
     }
+    // v1.11.78 目标模型的卡片（置顶的命中 / 金色卡片）标题下一小行“最近一次对话时间”（月-日 时:分），最新的那张字色深一点；其他卡片不加。
+    // 时间用 Arena 侧栏自己的数据（卡片组件 props.entry.updatedAt——它分 Today / Yesterday 用的就是这个），不额外请求。
+    // 只加属性 + 伪元素（不插节点），和标题左对齐。
     try { const st = document.createElement('style'); st.textContent = '[data-amp-flat]{display:contents!important}[data-amp-flatp]{display:flex!important;flex-direction:column!important;row-gap:0!important;gap:0!important}'; (document.head || document.documentElement).append(st); } catch {}
+    // 样式表单独放、每次同步前确认还在（脚本启动时 head 还没有，React 水合出错重建文档时会把早插入的 style 一起清掉）
+    const CT_CSS = '[data-amp-ctime]{position:relative!important;padding-bottom:13px!important}'
+      + '[data-amp-ctime]::before{content:attr(data-amp-ctime);position:absolute;left:0;right:0;bottom:0;height:13px;font-size:10.5px;line-height:13px;font-weight:400;font-style:normal;font-variant-numeric:tabular-nums;letter-spacing:.01em;color:hsl(var(--text-tertiary,35 6% 38%));opacity:.85;white-space:nowrap;overflow:hidden;visibility:visible;pointer-events:none;text-align:left}'
+      + '[data-amp-ctime][data-amp-cnew]::before{color:hsl(var(--text-secondary,35 6% 30%));opacity:1;font-weight:600}'
+      + 'a[data-amp-current][data-amp-ink] [data-amp-ctime]::before{color:var(--amp-cur-fg,var(--amp-acc-fg,#fff));opacity:.8}';
+    const ctCss = () => { if (document.head && !document.getElementById('amp-ctime-css')) { const st = document.createElement('style'); st.id = 'amp-ctime-css'; st.textContent = CT_CSS; document.head.append(st); } };
+    const entryAt = (a, sid) => { try { const k = Object.keys(a).find(x => x.startsWith('__reactFiber')); let f = k ? a[k] : null; for (let n = 0; f && n < 30; n++, f = f.return) { const e = f.memoizedProps?.entry; if (e && typeof e === 'object' && e.id === sid) { const t = Date.parse(e.updatedAt || e.lastMessageAt || e.createdAt || ''); return Number.isFinite(t) ? t : null; } } } catch {} return null; };
+    const ctFmt = ms => { const d = new Date(ms), p = n => String(n).padStart(2, '0'); return (d.getFullYear() === new Date().getFullYear() ? '' : d.getFullYear() + '-') + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()); };
+    const ctEl = a => a.querySelector('[data-amp-local-title]') || a.querySelector('span.truncate,div.truncate');
+    let ctSet = new Set();
+    const ctPut = (el, text, isNew) => { if (el.getAttribute('data-amp-ctime') !== text) el.setAttribute('data-amp-ctime', text); el.toggleAttribute('data-amp-cnew', !!isNew); };
+    const ctOff = el => { el.removeAttribute('data-amp-ctime'); el.removeAttribute('data-amp-cnew'); };
     const titleOf = a => { const sp = a.querySelector('[data-amp-local-title]'); if (sp) return sp.getAttribute('data-amp-local-title');
       const tt = a.querySelector('span.truncate,div.truncate'); if (tt && !tt.querySelector('svg,button,[data-amp-vlogo],.sr-only')) return (tt.textContent || '').trim();
       let out = ''; const w = document.createTreeWalker(a, NodeFilter.SHOW_TEXT, { acceptNode: n => n.parentElement?.closest('[data-amp-vlogo],svg,button,.sr-only') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT });
@@ -5100,8 +5134,9 @@ const gachaUi = (() => {
       const kw = (keywords || []).map(k => k.toLowerCase());
       const links = [...document.querySelectorAll('a[href^="/agent/"]')].filter(a => a.closest('aside,nav,[data-sidebar]') && /^\/agent\/[0-9a-f-]{8,}/i.test(a.getAttribute('href')));
       progress.mark(links);
-      const key = sortOn + '|' + kw.join(',') + '|' + ranking.rev + '|' + vip.rev + '|' + brand.hint.rev() + '|' + links.map(a => a.getAttribute('href') + '=' + titleOf(a)).join(',');
-      if (key === stamp) { for (const r of lastRows) { if (!r.a.isConnected) continue; const n = r.a.getElementsByTagName('svg').length + r.a.getElementsByTagName('img').length; if (n === r.ic && (!r.vid || r.a.querySelector('[data-amp-vlogo]'))) continue; logo(r.a, r.vid); r.ic = r.a.getElementsByTagName('svg').length + r.a.getElementsByTagName('img').length; } return; } stamp = key; lastRows = [];
+      const sidOfA = a => (a.getAttribute('href').match(/[0-9a-f-]{36}/i) || [''])[0], ats = new Map(links.map(a => [a, entryAt(a, sidOfA(a))]));
+      const key = sortOn + '|' + kw.join(',') + '|' + ranking.rev + '|' + vip.rev + '|' + brand.hint.rev() + '|' + links.map(a => a.getAttribute('href') + '=' + titleOf(a) + '@' + (ats.get(a) || '')).join(',');
+      if (key === stamp) { for (const r of lastRows) { if (!r.a.isConnected) continue; if (r.ct) { ctCss(); const el = ctEl(r.a); if (el && el.getAttribute('data-amp-ctime') !== r.ct) { ctPut(el, r.ct, r.cnew); ctSet.add(el); } } const n = r.a.getElementsByTagName('svg').length + r.a.getElementsByTagName('img').length; if (n === r.ic && (!r.vid || r.a.querySelector('[data-amp-vlogo]'))) continue; logo(r.a, r.vid); r.ic = r.a.getElementsByTagName('svg').length + r.a.getElementsByTagName('img').length; } return; } stamp = key; lastRows = [];
       const groups = new Map();
       for (const a of links) {
         const item = a.closest('li') || a, list = item.parentElement; if (!list) continue; if (!groups.has(list)) groups.set(list, []);
@@ -5111,7 +5146,7 @@ const gachaUi = (() => {
         // 以前 luna-max 因为档位是 max 被镀金置顶，排到了 astra-medium / astra-low 前面
         const vid = brand.forSid(sid, title) || brand.of(vip.get(sid)), gpt = sortOn && vid === 'openai', gf = gpt ? gptFam(title) : 0;
         const hitNow = sortOn && kw.length > 0 && kw.some(k => title.includes(k)), isVip = hitNow && /(^|[-\s·(])(max|xhigh|high)(?=$|[-\s·)])/i.test(title) && !(gpt && gf > 1 && gf < 9);
-        groups.get(list).push({ a, item, vip: isVip, hit: hitNow, sc: sortOn ? ranking.score(title) : 0, gf, fam: sortOn && !gpt ? ranking.family(title) : 0, tier: sortOn ? ranking.tier(title) : 0, ver: brand.version(title), vid, nt: sortOn ? title.replace(/\s*·\s*\d+\s*$/, '') : '' });
+        groups.get(list).push({ a, item, at: ats.get(a) || null, vip: isVip, hit: hitNow, sc: sortOn ? ranking.score(title) : 0, gf, fam: sortOn && !gpt ? ranking.family(title) : 0, tier: sortOn ? ranking.tier(title) : 0, ver: brand.version(title), vid, nt: sortOn ? title.replace(/\s*·\s*\d+\s*$/, '') : '' });
       }
       const next = new Set();
       // 金色只给同厂商里版本号最高的那一代（有 5.5 时 5 的 high/max 不再是金色；gpt 有 6 时 5.6 不是金色）
@@ -5172,6 +5207,10 @@ const gachaUi = (() => {
       }
       for (const el of touched) if (!next.has(el) && el.isConnected) clear(el);
       touched = next;
+      // v1.11.78 目标模型卡片的时间小字（最新的一张加深）
+      { ctCss(); const rows = [...groups.values()].flat(), pins = rows.filter(r => (r.vip || r.hit) && r.at), newest = pins.length > 1 ? Math.max(...pins.map(r => r.at)) : null, nextCt = new Set();
+        for (const r of rows) { r.ct = ''; r.cnew = false; if (!((r.vip || r.hit) && r.at)) continue; const el = ctEl(r.a); if (!el) continue; r.ct = ctFmt(r.at); r.cnew = r.at === newest; ctPut(el, r.ct, r.cnew); nextCt.add(el); }
+        for (const el of ctSet) if (!nextCt.has(el)) ctOff(el); ctSet = nextCt; }
     }
     // 旧对话后台逐页加载：把侧栏底部的“加载更多”转圈临时贴在可视区底部（sticky），触发 Arena 自己的无限滚动拉下一页；
     // 每页加载完先取消，隔一会儿再贴，逐页慢慢拉，不滚动、不抢焦点，不影响其他操作。
@@ -5192,7 +5231,7 @@ const gachaUi = (() => {
       sp.setAttribute('data-amp-older', ''); older.el = sp; older.n = n; older.at = Date.now();
     }
     setInterval(() => { try { olderStep(); } catch {} }, 700);
-    return { sync, reset: () => { unflat(); for (const el of touched) if (el.isConnected) clear(el); touched = new Set(); stamp = ''; lastRows = []; } };
+    return { sync, reset: () => { unflat(); for (const el of touched) if (el.isConnected) clear(el); touched = new Set(); for (const el of ctSet) ctOff(el); ctSet = new Set(); stamp = ''; lastRows = []; } };
   })();
   const ICON_PATH = {"openai": "M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z", "anthropic": "M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z", "google": "M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81", "xai": "M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"};
   // Vendors outside the five targets get a coloured monogram badge (logo only; not selectable as a target).
@@ -5650,6 +5689,8 @@ const gachaUi = (() => {
     const ownNode = n => n.nodeType === 1 && !!(n.matches(OWN) || n.hasAttribute('data-amp-local-title'));
     let needComp = false, needSide = false;
     const syncSide = () => { try { const st = gacha.state(), cfg = gacha.running() && st ? st.settings : gacha.settings(); sidebar.sync(cfg.targetKeywords); } catch {} };
+    // v1.11.78 卡片时间：Arena 更新了某个对话的时间但卡片位置没变（DOM 不变、不触发观察器）时，每 20 秒对一次
+    setInterval(() => { if (!document.hidden && document.querySelector('[data-amp-ctime]')) syncSide(); }, 20000);
     new MutationObserver(recs => {
       for (const rec of recs) {
         const t = rec.target, e = t.nodeType === 1 ? t : t.parentElement; if (!e) continue;
@@ -5714,7 +5755,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.77', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.78', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -5782,7 +5823,7 @@ const gachaUi = (() => {
   }
   function hint(internal, request) {
     if(!internal)return {value:null,status:'未提供'};
-    const strip=s=>s.replace(/-(vertex|agent)$/i,'').replace(/-\d{8}$|-\d{4}$/,'');
+    const strip=s=>s.replace(/-(vertex|agent|public)$/i,'').replace(/-\d{8}$|-\d{4}$/,'');
     const s=strip(internal), m=/-(none|minimal|low|medium|high|xhigh|max)$/i.exec(s);
     if(!m)return {value:null,status:'无后缀'};
     const norm=s=>s.toLowerCase().replace(/[._]/g,'-'), base=s.slice(0,-m[0].length);
@@ -5810,7 +5851,7 @@ const gachaUi = (() => {
       const kind=m?'marker':/^ai\.(streamText\.doStream|generateText\.doGenerate)$/.test(msg)?'stream':msg==='token.usage.recorded'?'usage':msg==='spend.recorded'?'cost':null;
       if(seg.events.length<2400)seg.events.push({spanId:id,parentId:typeof e.parentId==='string'?e.parentId.slice(0,64):null,message:msg,at:toMs(e.startTime),durationMs:toDurationMs(e.duration),isPartial:e.isPartial!==false,isError:e.isError===true,isCancelled:e.isCancelled===true,level:label(e.level),model:pill('tabler-cube'),totalLabel:pill('tabler-hash'),icon:label(e.style?.icon),kind});
       if(!kind||kind==='marker'||!id)continue;
-      seg.items.push({id,kind,message:msg,at:toMs(e.startTime),turn:seg.turn,partial:e.isPartial!==false,model:pill('tabler-cube'),totalLabel:pill('tabler-hash'),properties:e.properties});
+      seg.items.push({id,kind,message:msg,at:toMs(e.startTime),turn:seg.turn,partial:e.isPartial!==false,error:e.isError===true,model:pill('tabler-cube'),totalLabel:pill('tabler-hash'),properties:e.properties});
     }
     segments.push(seg);
     const cur=segments.at(-1), spanIds=new Set();for(const s of segments)for(const x of s.items)spanIds.add(x.id);
@@ -5867,13 +5908,22 @@ const gachaUi = (() => {
     const records=pool.filter(x=>x.d?.available).slice(-TURN_CALL_LIMIT).map(({e,d})=>({id:e.id,at:e.at?new Date(e.at).toISOString():null,kind:e.kind,internal:d.internal||null,messageId:d.messageId||null,input:d.input[0]?.value??null,output:d.output[0]?.value??null,reasoning:d.reasoning[0]?.value??null,total:d.total[0]?.value??null,cacheRead:d.cacheRead?.[0]?.value??null,cacheWrite:d.cacheWrite?.[0]?.value??null}));
     // 花费记录单独列出（spend.recorded 的费用类字段），不混入用量记录
     const costs=recs.filter(x=>x.e.kind==='cost'&&x.d?.available).slice(-4).map(({e,d})=>({id:e.id,at:e.at?new Date(e.at).toISOString():null,internal:d.internal||null,messageId:d.messageId||null,fields:d.fields||[]}));
-    const partial=p.limited||calls.some(c=>c.partial)||[...p.streams,...p.records].some(e=>!details.get(e.id)?.available);
     const rt=p.route||[], sw=rt.find(x=>x.message==='model.resample.switched');
-    let routing=null;
-    if(sw){const nm=e=>e?(details.get(e.id)?.request||e.model||null):null,before=p.allStreams.filter(x=>x.at&&x.at<=sw.at).at(-1),after=p.allStreams.find(x=>x.at&&x.at>=sw.at),failAt=rt.find(x=>x.message==='model.resample.attempt_failed')?.at;
-      routing={from:nm(before),to:nm(after),waitMs:before?.at&&failAt?Math.max(0,failAt-before.at):null,at:new Date(sw.at).toISOString(),committed:rt.some(x=>x.message==='model.resample.committed'),reason:run.routeReason||null,cause:run.routeCause||null};}
     const outcome=rt.some(x=>x.message==='Agent turn failed')?'failed':rt.some(x=>x.message==='agent.empty_turn')?'empty':null;
-    return {routing,outcome,version:2,key:run.runId+':'+(p.allStreams[0]?.id||'s'+p.segment),sid:run.sid,runId:run.runId,turn:p.turn,attempt:p.attempt,segment:p.segment,resumed:p.resumed,at:new Date().toISOString(),startedAt:p.at?new Date(p.at).toISOString():null,revision:run.revision,prompt:run.prompt||null,sentAt:run.submittedAt?new Date(run.submittedAt).toISOString():null,calls,count:p.count,prior:p.prior,internalNames:names,records,costs,credits:run.credits||null,partial,raw:{events:p.events,spans:run.rawSpans?Object.fromEntries(run.rawSpans):{},probe:run.probe||null}};
+    // v1.11.78 故障转移：每个 attempt_failed 之前最后开始的那次调用 = 原模型失败的调用（failed，不算这一轮的模型）；
+    // 报错的调用后面还没有新调用、这一轮也还没有结论（Agent turn failed / 空回复）时同样先不认它（多半正在改派）。
+    // 失败的调用之后还没有新的调用 = 改派进行中、新模型还没出现在 Trace 里 → 记为部分记录、接着读，不拿原模型充数
+    const failAts=rt.filter(x=>x.message==='model.resample.attempt_failed'&&x.at).map(x=>x.at),failedIds=new Set();
+    for(const fa of failAts){const b=p.allStreams.filter(x=>x.at&&x.at<=fa).at(-1);if(b)failedIds.add(b.id);}
+    if(!outcome)for(const x of p.allStreams)if(x.error)failedIds.add(x.id);
+    const lastFailed=Math.max(0,...p.allStreams.filter(x=>failedIds.has(x.id)).map(x=>x.at||0)),pendingSwitch=failedIds.size>0&&!p.allStreams.some(x=>x.at&&x.at>lastFailed&&!failedIds.has(x.id));
+    for(const c of calls)if(failedIds.has(c.id))c.failed=true;
+    const partial=pendingSwitch||p.limited||calls.some(c=>c.partial&&!c.failed)||[...p.streams,...p.records].some(e=>!details.get(e.id)?.available&&!failedIds.has(e.id));
+    const failover=failedIds.size?{pending:pendingSwitch,at:new Date(Math.max(lastFailed,...failAts)).toISOString()}:null;
+    let routing=null;
+    if(sw){const nm=e=>e?(details.get(e.id)?.request||e.model||null):null,before=p.allStreams.filter(x=>x.at&&x.at<=sw.at).at(-1),after=p.allStreams.find(x=>x.at&&x.at>=sw.at&&!failedIds.has(x.id))||p.allStreams.find(x=>x.at&&x.at>lastFailed&&!failedIds.has(x.id)),failAt=rt.find(x=>x.message==='model.resample.attempt_failed')?.at;
+      routing={from:nm(before),to:nm(after),waitMs:before?.at&&failAt?Math.max(0,failAt-before.at):null,at:new Date(sw.at).toISOString(),committed:rt.some(x=>x.message==='model.resample.committed'),reason:run.routeReason||null,cause:run.routeCause||null};}
+    return {routing,failover,outcome,version:2,key:run.runId+':'+(p.allStreams[0]?.id||'s'+p.segment),sid:run.sid,runId:run.runId,turn:p.turn,attempt:p.attempt,segment:p.segment,resumed:p.resumed,at:new Date().toISOString(),startedAt:p.at?new Date(p.at).toISOString():null,revision:run.revision,prompt:run.prompt||null,sentAt:run.submittedAt?new Date(run.submittedAt).toISOString():null,calls,count:p.count,prior:p.prior,internalNames:names,records,costs,credits:run.credits||null,partial,raw:{events:p.events,spans:run.rawSpans?Object.fromEntries(run.rawSpans):{},probe:run.probe||null}};
   }
   // 原始数据精简：去掉提示词/回答/工具定义等正文键，长字符串截断。
   const RAW_DROP=/^(messages?|parts|text|content|delta|headers|authorization|cookie|password|secret|signature|tools|definitions|system|system_instructions|toolCalls|responseText|object|reasoningText)$/i;
@@ -6005,9 +6055,11 @@ const gachaUi = (() => {
   }
   // 本地标题取名：优先带推理强度后缀的内部名称，一旦取到就锁定；否则用首个内部名称，再退回请求型号。
   function pickName(s) {
-    const names=Array.isArray(s?.internalNames)?s.internalNames.filter(Boolean):[], withSuffix=names.find(n=>hint(n,null).value), internal=withSuffix||names[0]||null;
+    // v1.11.78 改派过的一轮只认改派后的调用（失败的原模型的请求名 / 内部名都不算）；请求名取最后一次回答的调用
+    const serving=servingCalls(s),routed=serving.length!==(s?.calls||[]).length||!!s?.routing;
+    const names=routed?[...new Set(serving.map(c=>c.internal).filter(Boolean))]:Array.isArray(s?.internalNames)?s.internalNames.filter(Boolean):[], withSuffix=names.find(n=>hint(n,null).value), internal=withSuffix||names[0]||null;
     if(internal)return {name:noVertex(internal),source:'internal',locked:!!withSuffix};
-    const request=(s?.calls||[]).map(c=>c.request||c.model).find(n=>n&&n!=='未提供');
+    const request=serving.slice().reverse().map(c=>c.request||c.model).find(n=>n&&n!=='未提供');
     return request?{name:request,source:'request',locked:false}:null;
   }
   function nextName(old,pick) {
@@ -6020,7 +6072,7 @@ const gachaUi = (() => {
     if(!s||![1,2].includes(s.version)||!/^\w[\w-]{0,127}$/.test(s.sid||'')||!RUN.test(s.runId||'')||!Array.isArray(s.calls))return null;
     const iso=v=>typeof v==='string'&&Number.isFinite(Date.parse(v))?new Date(v).toISOString():null;
     const evidence=items=>(Array.isArray(items)?items:[]).slice(0,128).flatMap(e=>{if(!e||typeof e.path!=='string'||e.path.length>2000||!/^\$[\w.-]*$/.test(e.path))return[];const x={source:['span','record','providerMetadata','页面请求'].includes(e.source)?e.source:'未知来源',path:e.path};if(e.kind==='effort')return[{...x,kind:'effort',value:LEVELS.includes(e.value)?e.value:null}];if(e.kind==='budget')return Number.isSafeInteger(e.value)&&e.value>=-1?[{...x,kind:'budget',value:e.value}]:[];if(e.kind==='mode')return['enabled','disabled','adaptive'].includes(e.value)?[{...x,kind:'mode',value:e.value}]:[];return number(e.value)!==null?[{...x,kind:['input','output','total','reasoning'].includes(e.kind)?e.kind:'token',value:e.value}]:[];});
-    const calls=s.calls.slice(0,TURN_CALL_LIMIT).filter(c=>c&&SPAN.test(c.id||'')).map(c=>{const request=label(c.request),internal=label(c.internal);return{id:c.id,at:iso(c.at),model:label(c.model)||'未提供',request,response:label(c.response),internal,internalScope:['call','turn'].includes(c.internalScope)?c.internalScope:internal?'turn':null,route:label(c.route),adapter:label(c.adapter),finish:label(c.finish),hint:hint(internal,request),effort:effort(evidence(c.effort?.evidence)),reasoning:reported(evidence(c.reasoning?.evidence)),tokens:{input:number(c.tokens?.input),output:number(c.tokens?.output),total:number(c.tokens?.total),cacheRead:number(c.tokens?.cacheRead),cacheWrite:number(c.tokens?.cacheWrite)},tokenSources:evidence(c.tokenSources),totalLabel:label(c.totalLabel),settings:Object.fromEntries(['temperature','topP','maxOutputTokens'].filter(k=>typeof c.settings?.[k]==='number'&&Number.isFinite(c.settings[k])).map(k=>[k,c.settings[k]])),cost:typeof c.cost==='number'&&Number.isFinite(c.cost)&&c.cost>=0?c.cost:null,partial:c.partial===true};});
+    const calls=s.calls.slice(0,TURN_CALL_LIMIT).filter(c=>c&&SPAN.test(c.id||'')).map(c=>{const request=label(c.request),internal=label(c.internal);return{id:c.id,at:iso(c.at),model:label(c.model)||'未提供',request,response:label(c.response),internal,internalScope:['call','turn'].includes(c.internalScope)?c.internalScope:internal?'turn':null,route:label(c.route),adapter:label(c.adapter),finish:label(c.finish),hint:hint(internal,request),effort:effort(evidence(c.effort?.evidence)),reasoning:reported(evidence(c.reasoning?.evidence)),tokens:{input:number(c.tokens?.input),output:number(c.tokens?.output),total:number(c.tokens?.total),cacheRead:number(c.tokens?.cacheRead),cacheWrite:number(c.tokens?.cacheWrite)},tokenSources:evidence(c.tokenSources),totalLabel:label(c.totalLabel),settings:Object.fromEntries(['temperature','topP','maxOutputTokens'].filter(k=>typeof c.settings?.[k]==='number'&&Number.isFinite(c.settings[k])).map(k=>[k,c.settings[k]])),cost:typeof c.cost==='number'&&Number.isFinite(c.cost)&&c.cost>=0?c.cost:null,partial:c.partial===true,failed:c.failed===true};});
     if(!calls.length)return null;
     const key=typeof s.key==='string'&&/^run_[\w-]{1,100}:[\w-]{1,40}$/.test(s.key)?s.key:s.runId+':'+calls[0].id;
     const rawRecords=Array.isArray(s.records)?s.records:s.turnUsage&&typeof s.turnUsage==='object'?[{...s.turnUsage,id:null,kind:'usage'}]:[];
@@ -6028,7 +6080,7 @@ const gachaUi = (() => {
     const records=rawRecords.slice(0,TURN_CALL_LIMIT).filter(r=>r&&typeof r==='object').map(r=>({id:SPAN.test(r.id||'')?r.id:null,at:iso(r.at),kind:r.kind==='cost'?'cost':'usage',internal:label(r.internal),messageId:mid(r.messageId),input:number(r.input),output:number(r.output),reasoning:number(r.reasoning),total:number(r.total),cacheRead:number(r.cacheRead),cacheWrite:number(r.cacheWrite)}));
     const costs=(Array.isArray(s.costs)?s.costs:[]).slice(0,4).filter(c=>c&&typeof c==='object').map(c=>({id:SPAN.test(c.id||'')?c.id:null,at:iso(c.at),internal:label(c.internal),messageId:mid(c.messageId),fields:(Array.isArray(c.fields)?c.fields:[]).slice(0,24).flatMap(f=>f&&typeof f.path==='string'&&/^\$[\w.-]{0,400}$/.test(f.path)&&typeof f.key==='string'&&f.key.length<=120&&(fnum(f.value)!==null||label(f.value))?[{path:f.path,key:f.key,value:fnum(f.value)??label(f.value)}]:[])}));
     const c=s.credits&&typeof s.credits==='object'?s.credits:null,credits=c?(()=>{const out={credits:fnum(c.credits),usd:fnum(c.usd),actualUsd:fnum(c.actualUsd),source:['message','new','session'].includes(c.source)?c.source:null,keys:(Array.isArray(c.keys)?c.keys:[]).filter(k=>typeof k==='string'&&/^[\w-]{1,128}$/.test(k)).slice(0,8),parts:(Array.isArray(c.parts)?c.parts:[]).slice(0,8).filter(p=>p&&typeof p==='object').map(p=>({key:typeof p.key==='string'&&/^[\w-]{1,128}$/.test(p.key)?p.key:null,credits:fnum(p.credits),usd:fnum(p.usd),actualUsd:fnum(p.actualUsd),strategy:label(p.strategy),multiplier:fnum(p.multiplier),margin:fnum(p.margin),fallback:p.fallback===true})),session:c.session&&typeof c.session==='object'?{credits:fnum(c.session.credits),chargedUsd:fnum(c.session.chargedUsd),actualUsd:fnum(c.session.actualUsd),messages:fnum(c.session.messages)}:null,balance:c.balance&&typeof c.balance==='object'?{before:fnum(c.balance.before),beforeAt:iso(c.balance.beforeAt),after:fnum(c.balance.after),afterAt:iso(c.balance.afterAt),delta:fnum(c.balance.delta)}:null,at:iso(c.at)};return out.credits!==null||out.session||out.balance?out:null;})():null;
-    return{version:2,key,sid:s.sid,runId:s.runId,turn:number(s.turn),attempt:number(s.attempt)||1,segment:number(s.segment)||0,resumed:s.resumed===true,at:iso(s.at)||new Date().toISOString(),startedAt:iso(s.startedAt),revision:number(s.revision)||0,prompt:typeof s.prompt==='string'?s.prompt.replace(/[\x00-\x1f\x7f]/g,' ').slice(0,40):null,sentAt:iso(s.sentAt),calls,count:number(s.count)??calls.length,prior:number(s.prior)||0,internalNames:(Array.isArray(s.internalNames)?s.internalNames:[]).map(label).filter(Boolean).slice(0,6),records,costs,credits,routing:s.routing&&typeof s.routing==='object'?{from:label(s.routing.from),to:label(s.routing.to),waitMs:number(s.routing.waitMs),at:iso(s.routing.at),committed:s.routing.committed===true,reason:typeof s.routing.reason==='string'?s.routing.reason.slice(0,300):null,cause:typeof s.routing.cause==='string'?s.routing.cause.slice(0,120):null}:null,outcome:['failed','empty'].includes(s.outcome)?s.outcome:null,partial:s.partial===true,raw:sanitizeRaw(s.raw)};
+    return{version:2,key,sid:s.sid,runId:s.runId,turn:number(s.turn),attempt:number(s.attempt)||1,segment:number(s.segment)||0,resumed:s.resumed===true,at:iso(s.at)||new Date().toISOString(),startedAt:iso(s.startedAt),revision:number(s.revision)||0,prompt:typeof s.prompt==='string'?s.prompt.replace(/[\x00-\x1f\x7f]/g,' ').slice(0,40):null,sentAt:iso(s.sentAt),calls,count:number(s.count)??calls.length,prior:number(s.prior)||0,internalNames:(Array.isArray(s.internalNames)?s.internalNames:[]).map(label).filter(Boolean).slice(0,6),records,costs,credits,routing:s.routing&&typeof s.routing==='object'?{from:label(s.routing.from),to:label(s.routing.to),waitMs:number(s.routing.waitMs),at:iso(s.routing.at),committed:s.routing.committed===true,reason:typeof s.routing.reason==='string'?s.routing.reason.slice(0,300):null,cause:typeof s.routing.cause==='string'?s.routing.cause.slice(0,120):null}:null,failover:s.failover&&typeof s.failover==='object'?{pending:s.failover.pending===true,at:iso(s.failover.at)}:null,outcome:['failed','empty'].includes(s.outcome)?s.outcome:null,partial:s.partial===true,raw:sanitizeRaw(s.raw)};
   }
 
   // 2. 逐行解析；一条坏消息不应终止整个读流循环。
@@ -6196,7 +6248,7 @@ const gachaUi = (() => {
     const r=[...runs.values()].filter(x=>x.sid===sid).at(-1);if(!r)return null;
     const fresh=r.data&&r.data.revision===r.revision;
     return {sid:r.sid,runId:r.runId,submittedAt:r.submittedAt||0,busy:!!r.busy||!!r.timer,phase:r.phase||'',
-      data:fresh?{calls:r.data.calls.map(c=>({model:c.model,request:c.request,response:c.response,internal:c.internal,effort:c.effort?.value||null})),internalNames:[...r.data.internalNames],partial:r.data.partial,routing:r.data.routing||null}:null,prompt:r.prompt||null};
+      data:fresh?{calls:r.data.calls.map(c=>({at:c.at,model:c.model,request:c.request,response:c.response,internal:c.internal,effort:c.effort?.value||null,failed:!!c.failed})),internalNames:[...r.data.internalNames],partial:r.data.partial,routing:r.data.routing||null,failover:r.data.failover||null}:null,prompt:r.prompt||null};
   }
   function huntLive(){
     const blocks=[quota.chat,quota.append].filter(q=>q?.blocked&&(!q.resetAt||q.resetAt>Date.now()));
@@ -6327,7 +6379,9 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       const cur=parseFloat(kbBox.style.getPropertyValue('--amp-kb-dy')||'0')||0,r=kbBox.getBoundingClientRect();
       const want=Math.max(8,Math.round(r.left)),bottom=r.bottom-cur;
       // 面板底边到键盘 = 面板到屏幕左边的距离；整块面板（含发送按钮）一起上下移动，位移参与点击命中
-      const dy=Math.max(-900,Math.min(600,Math.round(vb-want-bottom)));
+      // v1.11.78 模型信息抽屉开着（在页面里占位、输入框在它上面）：输入框只会往上让，不会往下挪到抽屉上
+      const dk=document.getElementById('amp-lite-dock'),sheetUnder=!!dk&&!dk.hidden&&dk.hasAttribute('data-compact')&&!dk.hasAttribute('data-full');
+      const dy=Math.max(-900,Math.min(sheetUnder?0:600,Math.round(vb-want-bottom)));
       kbBox.style.setProperty('--amp-kb-dy',dy+'px');kbBox.style.setProperty('transform',dy?'translateY('+dy+'px)':'none','important');kbPad(prefs.kbResize!==false&&dy<0?-dy:0);
       if(dy){if(getComputedStyle(kbBox).position==='static')kbBox.style.setProperty('position','relative');kbBox.style.setProperty('z-index','40');}
     }catch{}});};
@@ -6358,7 +6412,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
   function paint(){if(stopped||paintTimer)return;paintTimer=setTimeout(()=>{paintTimer=0;try{ui?.render();bar?.sync();}catch(e){console.warn('[AMP Lite] UI:',e?.name||'error',e?.message||'');}},100);}
   function selectedRun(){const sid=sidOf(location.href);return [...runs.values()].filter(r=>r.sid===sid).at(-1)||null;}
   const turnLabel=s=>!s?'':(s.turn?'第 '+s.turn+' 轮':'未标记轮次')+(s.attempt>1?' · 第 '+s.attempt+' 次':'')+(s.resumed?' · 续':'');
-  function save(s){if(!s?.calls.some(c=>c.model&&c.model!=='未提供'))return;const c=localSnapshot(s);if(c){history=[{...c,raw:{events:[],spans:{}}},...history.filter(x=>x.key!==c.key)].slice(0,20);store(KEY+'.history',history.slice(0,6));}try{onSnapshot?.(s);}catch{}}
+  function save(s){if(!s?.calls.some(c=>c.model&&c.model!=='未提供')||s.failover?.pending)return;const c=localSnapshot(s);if(c){history=[{...c,raw:{events:[],spans:{}}},...history.filter(x=>x.key!==c.key)].slice(0,20);store(KEY+'.history',history.slice(0,6));}try{onSnapshot?.(s);}catch{}}
   // 内存中保留最近 RAW_KEEP 轮的完整原始 Trace 与 Span（持久化的是精简版）
   function keepRaw(r){if(!r.data)return;const key=r.data.key;rawStore.delete(key);rawStore.set(key,{trace:r.rawTrace,spans:r.rawSpans,probe:r.probe,at:Date.now()});while(rawStore.size>RAW_KEEP)rawStore.delete(rawStore.keys().next().value);}
   // v1.11.73 抽卡进行中：Trace 读得更勤（0.5~2.5 秒一次），模型识别更快；平时保持原来的节奏
@@ -6469,6 +6523,8 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
   function flatProps(o,pre='',out=[],depth=0){if(!o||typeof o!=='object'||depth>4||out.length>200)return out;for(const [k,v] of Object.entries(o)){const p=pre?pre+'.'+k:k;if(v&&typeof v==='object')flatProps(v,p,out,depth+1);else out.push([p,v]);}return out;}
   async function noteRoute(r,p,signal){
     const sw=r.data?.routing;if(!sw)return;
+    // v1.11.78 改派后的新模型还没出现在 Trace 里：先不提醒，等下一次读取拿到它的名字（最多等 20 秒），不再先弹一个“→ 其他模型”
+    if(!sw.to&&r.data?.failover?.pending&&Date.now()-(Date.parse(sw.at)||0)<20000)return;
     const k=r.runId+'|'+(p.turn??'')+'|'+sw.at;if(r.routeNoted===k)return;r.routeNoted=k;
     // 读取故障转移事件本身的属性（原因、前后模型等），只读一次
     const bits=[],props={};
@@ -6483,7 +6539,8 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     r.routeCause=cause;if(r.data?.routing)r.data.routing.cause=cause;
     log('warn','路由',turnLabel(r.data)+' · '+(sw.from||'原模型')+' '+cause+'，Arena 自动改派 '+(sw.to||'其他模型')+(sw.committed?'（已写入本对话，后续轮次也会用新模型）':'')+(reason?' · '+reason:''),null,r);
     if(r.sid===sidOf(location.href)&&!gacha.quietTurn(r.sid))try{routeAlert.show('模型被 Arena 改派',sw.from||'原模型',sw.to||'其他模型','原模型'+cause+'，服务端自动故障转移'+(sw.committed?' · 本对话之后也会用新模型，想要原模型请新开对话':''),'drop');}catch{}
-    if(prefs.stopOnResample&&sidOf(location.href)===r.sid&&pageGenerating()){
+    // v1.11.78 抽卡的这一轮不自动停：让改派后的模型答完，它的用量记录才会给出带档位的内部名（这一抽才识别得准）
+    if(prefs.stopOnResample&&sidOf(location.href)===r.sid&&pageGenerating()&&!gacha.quietTurn(r.sid)){
       const b=document.querySelector('button[aria-label="Stop generating"],button[aria-label="Stop response"],button[aria-label="停止生成"]');
       if(b){b.click();log('info','路由','已自动停止生成：改派后的模型不是原来那个，继续等待只会消耗额度（设置里可关闭）',null,r);}
     }
@@ -6823,8 +6880,8 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
         this.seq=Math.max(this.seq,entry.seq);this.changed();try{this.channel?.postMessage({kind:'session',entry});}catch{}try{this.onentry?.(entry,before,s,job.quiet||job.importOnly);}catch{}
         if(!job.quiet&&(!before||before.title!==entry.title))log('info','本地标题',(this.persistent?'已保存':'临时记录')+' '+entry.title,null,{sid:s.sid,runId:s.runId});else if(!job.quiet&&applied)log('detail','本地缓存','已更新 #'+entry.seq+' '+turnLabel(s)+' 的快照',null,{sid:s.sid,runId:s.runId});return entry;});}).catch(()=>{this.fingerprints.delete(s.key);this.failure(s.sid);return null;});return this.queue;
     }
-    commit(s,importOnly=false){const models=[...new Set(s.calls.map(c=>c.request||c.model).filter(n=>n&&n!=='未提供'))],pick=pickName(s);
-      const make=(seq,old)=>{const newer=!old?.at||old.at<=s.at,follow=newer&&pick?.source==='internal'&&old?.name?.name&&pick.name!==old.name.name;const name=(follow?pick:nextName(old?.name||(old?.models?.length?{name:old.models.join(' / '),source:'request',locked:false}:null),pick))||{name:models.join(' / '),source:'request',locked:false};return {sid:s.sid,seq,models:[...new Set([...(old?.models||[]),...models])].slice(0,8),name,title:('#'+seq+' '+name.name).slice(0,100),vendor:brand.of(s.calls.map(c=>(c.internal||'')+' '+(c.response||'')).join(' ')+' '+(s.internalNames||[]).join(' '))||old?.vendor||null,vmodel:(()=>{const c=[...s.calls].reverse().find(c=>brand.of(c.internal)||brand.of(c.response));return c?(brand.of(c.internal)?c.internal:c.response):((s.internalNames||[]).find(n=>brand.of(n))||old?.vmodel||null);})(),at:old?.at&&old.at>s.at?old.at:s.at,partial:s.partial,temporary:!this.persistent,runId:s.runId,turn:s.turn,turns:old?.turns||1,cloud:old?.cloud||null};};
+    commit(s,importOnly=false){const serving=servingCalls(s),models=[...new Set(serving.map(c=>c.request||c.model).filter(n=>n&&n!=='未提供'))],pick=pickName(s),routed=serving.length!==s.calls.length||!!s.routing;
+      const make=(seq,old)=>{const newer=!old?.at||old.at<=s.at,follow=newer&&pick?.source==='internal'&&old?.name?.name&&pick.name!==old.name.name;const name=(follow?pick:nextName(old?.name||(old?.models?.length?{name:old.models.join(' / '),source:'request',locked:false}:null),pick))||{name:models.join(' / '),source:'request',locked:false};return {sid:s.sid,seq,models:[...new Set([...(old?.models||[]),...models])].slice(0,8),name,title:('#'+seq+' '+name.name).slice(0,100),vendor:brand.of(serving.map(c=>(c.internal||'')+' '+(c.response||'')).join(' ')+' '+(routed?'':(s.internalNames||[]).join(' ')))||old?.vendor||null,vmodel:(()=>{const c=[...serving].reverse().find(c=>brand.of(c.internal)||brand.of(c.response));return c?(brand.of(c.internal)?c.internal:c.response):((routed?[]:(s.internalNames||[])).find(n=>brand.of(n))||old?.vmodel||null);})(),at:old?.at&&old.at>s.at?old.at:s.at,partial:s.partial,temporary:!this.persistent,runId:s.runId,turn:s.turn,turns:old?.turns||1,cloud:old?.cloud||null};};
       if(!this.db){const old=this.entries.get(s.sid);if(importOnly&&old)return Promise.resolve({entry:old,applied:false,turnWritten:false});const entry=make(old?.seq||++this.seq,old);const applied=!old?.at||old.at<=s.at;return Promise.resolve({entry,applied,turnWritten:applied});}
       return new Promise((resolve,reject)=>{let entry,applied=true,turnWritten=false;const tx=this.db.transaction(['sessions','snapshots','turns','raw','meta'],'readwrite'),sessions=tx.objectStore('sessions'),turns=tx.objectStore('turns'),meta=tx.objectStore('meta'),req=sessions.get(s.sid);
         const put=(seq,old)=>{if(!Number.isSafeInteger(seq)||seq<1){tx.abort();return;}entry=make(seq,old);const prev=turns.get(s.key);prev.onsuccess=()=>{if(!prev.result?.at||prev.result.at<=s.at){turns.put(this.turnRow(s));turnWritten=true;this.writeRaw(tx,s);}const cnt=turns.index('sid').count(IDBKeyRange.only(s.sid));cnt.onsuccess=()=>{entry.turns=Math.max(1,cnt.result||0);sessions.put(entry);};};if(!old?.at||old.at<=s.at)tx.objectStore('snapshots').put({sid:s.sid,data:LocalCatalog.strip(s)});else applied=false;};
@@ -6870,7 +6927,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       st.fails=0;await catalog.setCloud(entry.sid,{title:want,at:new Date().toISOString()});log('info','云端标题','已同步 '+want,null,{sid:entry.sid});paint();return true;
     }catch(e){st.fails++;log('warn','云端标题','同步失败',e,{sid:entry.sid});return false;}
   }
-  catalog.onentry=(entry,before,snap,quiet)=>{try{if(snap?.calls?.length&&(!entry.at||!snap.at||snap.at>=entry.at)){const calls=snap.calls.filter(c=>c&&c.model!=='未提供'),reqs=[...new Set(calls.map(c=>c.request).filter(Boolean))],last=calls.at(-1)||{},resp=last.response||last.internal||last.request||null,label='#'+entry.seq+' · '+(entry.title||'').replace(/^#\d+\s*/,'');const v=vip.note(entry.sid,reqs);void v;if(resp)routeAlert.note(entry.sid,resp,label,quiet);}}catch{}const o=before?.name?.name,n=entry?.name?.name;if(o&&n&&o!==n&&entry.name.source==='internal'){log('info','模型变化',o+' → '+n,null,{sid:entry.sid});try{gacha.followModel(entry.sid,o,n);}catch{}if(entry.cloud?.title&&!gacha.ownsTitle(entry.sid))void syncTitle(entry,true);paint();}else void syncTitle(entry);try{window.dispatchEvent(new Event('amp-title-sync'));}catch{}};
+  catalog.onentry=(entry,before,snap,quiet)=>{try{if(snap?.calls?.length&&(!entry.at||!snap.at||snap.at>=entry.at)){const calls=servingCalls(snap).filter(c=>c.model!=='未提供'),reqs=[...new Set(calls.map(c=>c.request).filter(Boolean))],last=calls.at(-1)||{},resp=last.response||last.internal||last.request||null,label='#'+entry.seq+' · '+(entry.title||'').replace(/^#\d+\s*/,'');const v=vip.note(entry.sid,reqs);void v;if(resp)routeAlert.note(entry.sid,resp,label,quiet);}}catch{}const o=before?.name?.name,n=entry?.name?.name;if(o&&n&&o!==n&&entry.name.source==='internal'){log('info','模型变化',o+' → '+n,null,{sid:entry.sid});try{gacha.followModel(entry.sid,o,n);}catch{}if(entry.cloud?.title&&!gacha.ownsTitle(entry.sid))void syncTitle(entry,true);paint();}else void syncTitle(entry);try{window.dispatchEvent(new Event('amp-title-sync'));}catch{}};
   void catalog.ready.then(async()=>{for(const s of history.slice().reverse())await catalog.record(s,true,true);});
   const css=`
 :host{all:initial;position:relative;color-scheme:inherit;font:400 13px/1.55 var(--font-basel-grotesk,var(--font-inter,system-ui)),'PingFang SC','Microsoft YaHei',sans-serif;color:var(--fg);--bg:hsl(var(--surface-primary,36 45% 98%));--raised:hsl(var(--surface-tertiary,33 31% 94%));--line:hsl(var(--border-faint,30 5% 93%));--edge:hsl(var(--border-medium,30 9% 87%));--fg:hsl(var(--text-primary,24 6% 17%));--secondary:hsl(var(--text-tertiary,35 6% 38%));--heading:hsl(var(--header-primary,60 3% 14%));--green:hsl(var(--interactive-positive,125 49% 43%));--warn:hsl(var(--syntax-yellow,48 92% 38%));--mono:var(--font-basel-grotesk-mono,var(--font-dm-mono,ui-monospace)),Consolas,monospace}
@@ -7596,7 +7653,7 @@ details.mc-card .section.credits{margin-top:12px}
     document.addEventListener('touchcancel',e=>{if(wsSw&&wsSwTouch(e,wsSw))wsSwEnd(e,false);},{capture:true,passive:true});
     document.addEventListener('focusin',()=>{wsScan();if(wsHost.isConnected)wsSync();},true);addEventListener('resize',()=>setTimeout(wsSync,80),{passive:true});document.addEventListener('focusout',()=>{if(wsHost.isConnected)setTimeout(wsSync,0);},true);
     const drawerMo=new MutationObserver(()=>requestAnimationFrame(syncMode));let drawerMoOn=false;
-    const panel=el('section','panel',null,root),resizer=el('div','resizer',null,panel);resizer.title='拖动调整宽度，双击恢复';const sheetGrip=el('div','sheet-grip',null,panel);el('i','',null,sheetGrip);sheetGrip.title='上下拖动调整高度，停在哪都可以：顶到最上面全屏，拉到最底收起；轻点切换全屏';
+    const panel=el('section','panel',null,root),resizer=el('div','resizer',null,panel);resizer.title='拖动调整宽度，双击恢复';const sheetGrip=el('div','sheet-grip',null,panel);el('i','',null,sheetGrip);sheetGrip.title='上下拖动调整高度（对话像输入法弹出时一样被顶上去，不会被盖住），停在哪都可以：顶到最上面全屏，拉到最底收起；轻点切换全屏';
     dragger(resizer,{start:e=>({x:e.clientX,width:host.getBoundingClientRect().width}),move:(e,s)=>{const w=clamp(s.width+(s.x-e.clientX),280,Math.max(280,Math.min(720,innerWidth-480)),prefs.width);host.style.setProperty('--amp-width',w+'px');prefs.width=w;},end:()=>{savePrefs();paint();},reset:()=>{prefs.width=340;host.style.setProperty('--amp-width','340px');savePrefs();paint();}});
     const grip=el('div','grip',null,gripRoot);grip.hidden=true;grip.title='拖动调整 Arena 会话栏宽度，双击恢复';
     dragger(grip,{start:e=>{const sb=findSidebar();if(!sb?.panel)return null;return {x:e.clientX,width:sidebarWidth(sb)};},move:(e,s)=>{const w=clamp(s.width+(e.clientX-s.x),200,Math.max(200,Math.min(560,innerWidth-640)),s.width);prefs.sidebarWidth=w;applySidebar(w);placeGrip();},end:()=>{savePrefs();log('debug','侧栏','Arena 会话栏宽度 '+prefs.sidebarWidth+'px');paint();},reset:()=>{prefs.sidebarWidth=null;applySidebar(null);savePrefs();placeGrip();},tap:e=>forwardTap(grip,e)});
@@ -7606,24 +7663,38 @@ details.mc-card .section.credits{margin-top:12px}
     const compactToggle=button(compactTop,'','收起模型信息',()=>{expanded=false;render();},'sheet-btn');icon('close',compactToggle);
     const compactInfo=el('div','compact-info','',compactBar),compactText=el('span','ci-text','',compactInfo),compactChip=button(compactInfo,'','说明',()=>say(chipWhy(),4200),'chip');compactChip.hidden=true;
     // 手机底部抽屉：顶部把手（和标题行）上下拖动调高度，松手停在哪就是哪（不吸附）；顶到最上面 = 全屏，拉到最底 = 收起；轻点把手切换全屏。高度按屏幕比例记住。
-    // 比“输入框上方留白”更高时改成浮在页面上（盖住输入框），更矮时在页面里占位（输入框留在上面）。
+    // v1.11.78 不再浮在页面上盖住输入框：始终在页面里占位，再高就把整页往上推（见 applySheet 上面的说明）。
     const SHEET_MIN=96,SHEET_CLOSE=72;
     const sheetAvail=()=>Math.max(260,(window.innerHeight||640)-(parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--amp-bar-h'))||0));
     // 不全屏时抽屉在页面里占位，至少给上面留出顶栏 + 输入框 + 一小段对话
     function sheetInflowMax(){const avail=sheetAvail();let need=220;try{const m=document.querySelector('main'),ed=m&&[...m.querySelectorAll('div[contenteditable="true"],textarea')].filter(x=>!x.closest('[role="log"]')&&x.getClientRects().length).pop();if(ed){let c=ed;for(let i=0;i<7&&c.parentElement&&c.parentElement!==m;i++){const cs=getComputedStyle(c);if(parseFloat(cs.borderTopWidth)>=1&&parseFloat(cs.borderTopLeftRadius)>=8)break;c=c.parentElement;}need=Math.max(need,c.getBoundingClientRect().height+130);}}catch{}return Math.round(Math.max(SHEET_MIN,Math.min(avail-need,avail*0.8)));}
-    function applySheet(){if(!compact||!expanded||host.hidden){host.removeAttribute('data-full');host.removeAttribute('data-float');return;}if(host.hasAttribute('data-dragging'))return;const full=!!prefs.sheetFull;host.toggleAttribute('data-full',full);if(full){host.removeAttribute('data-float');return;}const avail=sheetAvail(),h=Math.round(Math.max(SHEET_MIN,Math.min(avail-8,prefs.sheetH*avail)));host.toggleAttribute('data-float',h>sheetInflowMax());const v=h+'px';if(host.style.getPropertyValue('--amp-sheet-h')!==v)host.style.setProperty('--amp-sheet-h',v);}
+    // v1.11.78 抽屉像输入法一样把对话“顶上去”，不再盖住：抽屉始终在页面里占位（main 的最后一块），对话区跟着变矮，
+    // 滚动位置同步补上被压掉的高度（贴底的继续贴底），最新内容始终紧挨在输入框 / 抽屉上方；抽屉高到放不下“顶栏 + 输入框 + 一小段对话”时，
+    // 整页继续往上推（顶栏先被推出屏幕），输入框始终贴在抽屉上沿。只有“全屏”才整个盖住页面。拖动时每一帧都这样跟手。
+    let shiftEl=null,sheetSig='';
+    const sheetWrap=()=>{const m=host.parentElement;if(!m||m.tagName!=='MAIN')return null;for(const c of m.children){if(c===host)continue;const cs=getComputedStyle(c);if(cs.display==='none'||cs.position==='absolute'||cs.position==='fixed')continue;return c;}return null;};
+    const composerBox=()=>{try{const m=host.parentElement,ed=m&&[...m.querySelectorAll('div[contenteditable="true"],textarea')].filter(x=>!x.closest('[role="log"]')&&x.getClientRects().length).pop();if(!ed)return null;let c=ed;for(let i=0;i<7&&c.parentElement&&c.parentElement!==m;i++){const cs=getComputedStyle(c);if(parseFloat(cs.borderTopWidth)>=1&&parseFloat(cs.borderTopLeftRadius)>=8)break;c=c.parentElement;}return c;}catch{return null;}};
+    function sheetShift(h,max){const w=compact&&h>0?sheetWrap():null;let x=w&&max>0?Math.max(0,Math.round(h-max)):0;
+      const put=v=>{if(shiftEl&&shiftEl!==w){shiftEl.style.removeProperty('margin-top');shiftEl=null;}if(!w)return;if(v>0){const s=(-v)+'px';if(w.style.getPropertyValue('margin-top')!==s)w.style.setProperty('margin-top',s,'important');shiftEl=w;}else if(shiftEl===w){w.style.removeProperty('margin-top');shiftEl=null;}};
+      put(x);if(!w)return;
+      // 输入框不在底部、而是居中的页面（新对话页）：按上面算的推完输入框仍被抽屉挡住，就再往上推到它露出来（居中布局推 2 倍才移动 1 倍，最多再试两次）
+      const cb=composerBox();if(!cb)return;const top=host.getBoundingClientRect().top;
+      for(let i=0;i<2;i++){const over=Math.round(cb.getBoundingClientRect().bottom-(top-6));if(over<=1)break;x=Math.min(Math.round(h),x+over*(i?2:1));put(x);}}
+    const chatSc=()=>{let s=null;try{s=errReload.findScroller?.();}catch{}if(s?.isConnected&&s.closest('main'))return s;const l=[...document.querySelectorAll('main [role="log"]')].find(e=>e.getClientRects().length);for(let e=l;e&&e.tagName!=='MAIN'&&e!==document.body;e=e.parentElement){const oy=getComputedStyle(e).overflowY;if(oy==='auto'||oy==='scroll'||oy==='overlay')return e;}return null;};
+    function sheetAnchor(fn){const sc=compact?chatSc():null,b=sc?sc.clientHeight:0,st=sc?sc.scrollTop:0,gap=sc?sc.scrollHeight-st-b:0;fn();if(!sc||!sc.isConnected)return;const d=b-sc.clientHeight;if(!d)return;sc._ampAnchorAt=Date.now();sc.scrollTop=gap<2?sc.scrollHeight:Math.max(0,st+d);}
+    function applySheet(){if(!compact||!expanded||host.hidden){host.removeAttribute('data-full');host.removeAttribute('data-float');sheetShift(0);return;}if(host.hasAttribute('data-dragging'))return;const full=!!prefs.sheetFull;host.toggleAttribute('data-full',full);host.removeAttribute('data-float');if(full){sheetShift(0);return;}const avail=sheetAvail(),h=Math.round(Math.max(SHEET_MIN,Math.min(avail-8,prefs.sheetH*avail)));const v=h+'px';if(host.style.getPropertyValue('--amp-sheet-h')!==v)host.style.setProperty('--amp-sheet-h',v);sheetShift(h,sheetInflowMax());}
     {let drag=null;
       const down=e=>{if(!compact||!expanded||drag||e.button>0||e.target.closest?.('button,select,input,textarea,a'))return;drag={id:e.pointerId,el:e.currentTarget,y:e.clientY,h:host.getBoundingClientRect().height,moved:false,pts:[[e.clientY,e.timeStamp]]};try{drag.el.setPointerCapture(e.pointerId);}catch{}};
       const move=e=>{if(!drag||e.pointerId!==drag.id)return;const dy=drag.y-e.clientY;if(!drag.moved){if(Math.abs(dy)<5)return;drag.moved=true;drag.max=sheetInflowMax();drag.avail=sheetAvail();host.setAttribute('data-dragging','');}
-        const h=Math.max(40,Math.min(drag.avail,drag.h+dy));drag.cur=h;drag.pts.push([e.clientY,e.timeStamp]);if(drag.pts.length>5)drag.pts.shift();host.removeAttribute('data-full');host.toggleAttribute('data-float',h>drag.max);host.style.setProperty('--amp-sheet-h',Math.round(h)+'px');if(e.cancelable)e.preventDefault();};
+        const h=Math.max(40,Math.min(drag.avail,drag.h+dy));drag.cur=h;drag.pts.push([e.clientY,e.timeStamp]);if(drag.pts.length>5)drag.pts.shift();sheetAnchor(()=>{host.removeAttribute('data-full');host.removeAttribute('data-float');host.style.setProperty('--amp-sheet-h',Math.round(h)+'px');sheetShift(h,drag.max);});if(e.cancelable)e.preventDefault();};
       const up=e=>{if(!drag||e.pointerId!==drag.id)return;const d=drag;drag=null;try{d.el.releasePointerCapture(e.pointerId);}catch{}host.removeAttribute('data-dragging');
-        if(!d.moved){if(d.el===sheetGrip&&e.type==='pointerup'){prefs.sheetFull=!prefs.sheetFull;savePrefs();applySheet();}return;}
+        if(!d.moved){if(d.el===sheetGrip&&e.type==='pointerup'){prefs.sheetFull=!prefs.sheetFull;savePrefs();sheetAnchor(applySheet);}return;}
         const h=d.cur;  // 随停：不看甩动速度、不吸附
         host.removeAttribute('data-float');
         if(h<SHEET_CLOSE){expanded=false;render();return;}
         if(h>=d.avail-8)prefs.sheetFull=true;
         else{prefs.sheetFull=false;prefs.sheetH=Math.min(1,Math.max(SHEET_MIN,h)/d.avail);}
-        savePrefs();applySheet();};
+        savePrefs();sheetAnchor(applySheet);};
       for(const hd of [sheetGrip,compactBar]){hd.addEventListener('pointerdown',down);hd.addEventListener('pointermove',move);hd.addEventListener('pointerup',up);hd.addEventListener('pointercancel',up);}
     }
     const head=el('header','head',null,panel),heading=el('div','grow',null,head);el('h2','','模型信息',heading);const numberLabel=el('span','local-number mono','',heading);numberLabel.title='本地会话编号（同一浏览器内统一递增）';
@@ -7706,7 +7777,7 @@ details.mc-card .section.credits{margin-top:12px}
     function restoreMark(a,m){m.span.removeAttribute('data-amp-local-title');m.span.removeAttribute('data-amp-short');if(m.tip!==undefined){if(m.tip===null)a.removeAttribute('title');else a.setAttribute('title',m.tip);}if(m.description===null)a.removeAttribute('aria-description');else a.setAttribute('aria-description',m.description);}
     // 自定义/代号型号（如 dxzui）本身看不出厂商：若响应型号/内部名已识别出厂商，就显示成 dxzui-Claude。
     // 显示完整识别型号：dxzui + claude-opus-5-5 → dxzui-claude-opus-5-5（内部名优先，其次响应型号）。
-    function modelOf(sid,record){if(record?.vmodel)return record.vmodel;const snap=catalog.snapshots.get(sid)||(sid===sidOf(location.href)?liveView(sid):null);if(!snap)return '';const c=[...(snap.calls||[])].reverse().find(c=>brand.of(c.internal)||brand.of(c.response));return c?(brand.of(c.internal)?c.internal:c.response):((snap.internalNames||[]).find(n=>brand.of(n))||'');}
+    function modelOf(sid,record){if(record?.vmodel)return record.vmodel;const snap=catalog.snapshots.get(sid)||(sid===sidOf(location.href)?liveView(sid):null);if(!snap)return '';const c=[...servingCalls(snap)].reverse().find(c=>brand.of(c.internal)||brand.of(c.response));return c?(brand.of(c.internal)?c.internal:c.response):((snap.internalNames||[]).find(n=>brand.of(n))||'');}
     function withVendor(sid,record,name){name=String(name||'');if(!name||brand.of(name))return name;
       // dxzui / clzui 请求名：不再有特殊地位，只作为短前缀 dx- / cl- 加上识别到的模型（去厂商名）：dx-opus-5.5
       const zp=name.match(/^(dx|cl)zui\b/i);if(zp){const m=modelOf(sid,record);if(m&&brand.of(m))return zp[1].toLowerCase()+'-'+brand.short(m).replace(/(^|-)(\d{1,2})-(\d{1,2})(?=$|-)/,'$1$2.$3');return zp[1].toLowerCase()+'zui';}const m=modelOf(sid,record);if(m&&brand.of(m)&&!name.includes(m))return name+'-'+m;const v=record?.vendor;return v&&brand.NAME[v]?name+'-'+brand.NAME[v].toLowerCase():name;}
@@ -7767,7 +7838,7 @@ details.mc-card .section.credits{margin-top:12px}
     function headerTitle(){
       const sid=sidOf(location.href);if(!sid){clearHeader();return;}
       let t=hdr.t;const tb=t&&t.isConnected&&t.closest('button,h1,h2'),mr_=tb&&t.closest('main')?.getBoundingClientRect();if(!t||!t.isConnected||!t.closest('main')||!tb||!mr_||tb.getBoundingClientRect().top>mr_.top+64||tb.closest('[role="log"],article,[data-message-id]')){clearHeader();t=findHeaderTitle(sid);if(!t)return;hdr.t=t;}
-      const r=selectedRun(),live=liveView(sid),c=live?.calls?.at(-1),meta=catalog.entries.get(sid);
+      const r=selectedRun(),live=liveView(sid),c=servingCalls(live).at(-1),meta=catalog.entries.get(sid);
       let p=0,done=false;
       if(r){const k=r.runId+'|'+r.revision;if(!hdrStart.has(k)){hdrStart.set(k,Date.now());if(hdrStart.size>20)hdrStart.delete(hdrStart.keys().next().value);}const el_=(Date.now()-hdrStart.get(k))/1000;
         if(r.data&&['已读取','部分记录','模型已识别 · 详情未提供'].includes(r.phase)&&r.data.revision===r.revision){p=100;done=true;}
@@ -7778,6 +7849,8 @@ details.mc-card .section.credits{margin-top:12px}
       const link=document.querySelector('a[href="/agent/'+sid+'"]'),lt=link?.querySelector('[data-amp-local-title]');
       // v1.11.77 抽卡刚定名：直接用抽卡定下的名字（手机上侧栏关着，拿不到左侧卡片的本地标题）
       const gt=(()=>{try{return gacha.ownsTitle(sid)?gacha.pendingTitle(sid):null;}catch{return null;}})();
+      // v1.11.78 抽卡的这一轮：不显示“换模型”徽标、不让实时监控的改派结论改写名字（抽卡给出的就是实际回答的那个模型）
+      const qt=(()=>{try{return gacha.quietTurn(sid);}catch{return false;}})();
       const shownName=noVertex(lt?.getAttribute('data-amp-local-title')||gt||withVendor(sid,meta,prefs.showSeq?meta?.title:meta?.name?.name)||(link&&link.textContent.trim())||t.textContent||'').trim();
       let nm=hdr.name;
       if(!nm||!nm.isConnected||t.nextElementSibling!==nm){nm?.remove();nm=document.createElement('span');nm.setAttribute('data-amp-hname','');nm.setAttribute('data-amp-htitle','');t.after(nm);hdr.name=nm;}
@@ -7785,8 +7858,8 @@ details.mc-card .section.credits{margin-top:12px}
       // 三段式：logo（厂商） · 名称（不带厂商前缀，与左侧卡片一致） · 档位小标签
       // v1.11.77 三样只在“完整身份”确定的同一时刻一起出现 / 一起更新（不再先出厂商、再出型号、最后补档位）；老虎机读的就是这里的结果。
       // 识别中：名称位置显示对话原标题、副标题“识别中…”，不出 logo 和档位；本对话之前已有完整结果的，新一轮识别中继续显示旧结果，等新结果完整了再整体换。
-      const rc0=r?.data?.calls?.at(-1),known=!!brand.of(shownName),TSPLIT=/^(.*?)[-\s·]+(none|minimal|low|medium|high|xhigh|max)$/i;
-      const split=n=>{const x=brand.of(n)?brand.short(n):n,m=x.match(TSPLIT);return m&&brand.of(n)?[m[1],m[2].toLowerCase()]:[x,''];};
+      const rc0=servingCalls(r?.data).at(-1),known=!!brand.of(shownName),TSPLIT=/^(.*?)[-\s·]+(none|minimal|low|medium|high|xhigh|max)$/i;
+      const split=n=>{n=noVertex(String(n||''));const x=brand.of(n)?brand.short(n):n,m=x.match(TSPLIT);return m&&brand.of(n)?[m[1],m[2].toLowerCase()]:[x,''];};
       const generating=!!document.querySelector('button[aria-label="Stop generating"],button[aria-label="Stop response"],button[aria-label="停止生成"]');
       // “完整”= Trace 已读完且不是部分记录（部分记录里往往只有请求名、没有带档位的内部名）；回复结束 12 秒仍只有部分记录就接受现有结果
       const idleMs=(()=>{if(!r)return 0;const k=r.runId;if(generating){hdrIdle.delete(k);return 0;}if(!hdrIdle.has(k)){hdrIdle.set(k,Date.now());if(hdrIdle.size>30)hdrIdle.delete(hdrIdle.keys().next().value);}return Date.now()-hdrIdle.get(k);})();
@@ -7797,7 +7870,7 @@ details.mc-card .section.credits{margin-top:12px}
       if(gt){idName=gt;idNew=true;}
       else if(known&&!provisional)idName=shownName;
       else if(r){const fin=(rc0?.internal||meta?.name?.name||'').replace(/^未提供$/,''),inOk=!!rc0?.internal&&rc0.internal!=='未提供'&&!r.data?.partial;if(fin&&(final||inOk||done&&!recent)){idName=withVendor(sid,meta,fin);idNew=true;}}
-      {const ms0=monState(sid);if(ms0.tone==='switch'&&ms0.to&&!forceEq(ms0.to,shownName))idName=ms0.to;}
+      {const ms0=monState(sid);if(ms0.tone==='switch'&&ms0.to&&!forceEq(ms0.to,shownName)&&!forceEq(ms0.to,idName)&&!qt)idName=ms0.to;}
       if(idName){hdrFull.delete(sid);hdrFull.set(sid,idName);if(hdrFull.size>40)hdrFull.delete(hdrFull.keys().next().value);}else if(hdrFull.has(sid))idName=hdrFull.get(sid);
       const full=!!idName,pending=!full&&((!!r&&!final&&(recent||!done))||generating);
       let fam='',tierTxt='';
@@ -7812,13 +7885,13 @@ details.mc-card .section.credits{margin-top:12px}
       if(tg.dataset.t!==tierTxt||tg.textContent!==tierTxt){tg.dataset.t=tierTxt;tg.replaceChildren();if(tierTxt){const lv=TIER_LV[tierTxt]??0;tg.dataset.lv=String(lv);tg.append(document.createTextNode(tierTxt));}tg.removeAttribute('data-pop');void tg.offsetWidth;if(tierTxt)tg.setAttribute('data-pop','');}
       tg.hidden=!tierTxt;tg.toggleAttribute('data-hi',/^(max|xhigh|high)$/.test(tierTxt));tg.toggleAttribute('data-amp-hdark',isDark());
       // 换模型徽标：本轮已确认（实心）/ 疑似（描边）；点一下打开“监控”页
-      {const ms_=monState(sid),show=ms_.tone==='switch'||ms_.tone==='suspect';let sw=hdr.swap;if(!sw||!sw.isConnected||tg.nextElementSibling!==sw){sw?.remove();sw=document.createElement('span');sw.setAttribute('data-amp-hswap','');sw.setAttribute('role','button');sw.tabIndex=0;sw.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>';const go=e=>{e.preventDefault();e.stopPropagation();ui?.show('detector');};sw.addEventListener('click',go,true);sw.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' ')go(e);});tg.after(sw);hdr.swap=sw;}
+      {const ms_=monState(sid),show=(ms_.tone==='switch'||ms_.tone==='suspect')&&!qt;let sw=hdr.swap;if(!sw||!sw.isConnected||tg.nextElementSibling!==sw){sw?.remove();sw=document.createElement('span');sw.setAttribute('data-amp-hswap','');sw.setAttribute('role','button');sw.tabIndex=0;sw.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>';const go=e=>{e.preventDefault();e.stopPropagation();ui?.show('detector');};sw.addEventListener('click',go,true);sw.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' ')go(e);});tg.after(sw);hdr.swap=sw;}
         sw.hidden=!show;if(show){sw.dataset.tone=ms_.tone;sw.title=ms_.text;sw.setAttribute('aria-label',ms_.text);}}
       nm.style.setProperty('--amp-hp',Math.round(p)+'%');nm.toggleAttribute('data-amp-hdone',!hold&&(final||(full&&idNew)||(done&&!recent)));nm.toggleAttribute('data-amp-hdark',isDark());
       // 副标题：识别中… → 识别模型为 claude-opus-5-5（8 秒后淡出）
       // v1.11.77 不再逐步透露“已确定厂商 / 识别：部分型号”：完整结果出来之前一律“识别中…”
       const VN={openai:'GPT',anthropic:'Claude',google:'Gemini',xai:'Grok',moonshot:'Kimi',deepseek:'DeepSeek',qwen:'Qwen',zhipu:'GLM',xiaomi:'MiMo',bytedance:'豆包',minimax:'MiniMax',mistral:'Mistral',meta:'Llama'};
-      const rc=r?.data?.calls?.at(-1),partial=rc?.internal||rc?.response||rc?.request||(rc?.model&&rc.model!=='未提供'?rc.model:'');
+      const rc=servingCalls(r?.data).at(-1),partial=rc?.internal||rc?.response||rc?.request||(rc?.model&&rc.model!=='未提供'?rc.model:'');
       const rn=rc?.response||rc?.request||(rc?.model&&rc.model!=='未提供'?rc.model:''),finalName=(rc?.internal||(rn&&brand.of(rn)&&brand.of(rn)!==brand.of(meta?.name?.name||'')?rn:'')||meta?.name?.name||c?.internal||c?.model||'').replace(/^未提供$/,'');
       let sub='',fresh=false;
       if(r&&showFull&&(done||idNew)){const key=r.runId+'|full';if(!hdrStart.has(key)){hdrStart.set(key,Date.now());if(hdrStart.size>60)hdrStart.delete(hdrStart.keys().next().value);}if(Date.now()-hdrStart.get(key)<8000){sub='识别模型为 '+brand.short(idName);fresh=true;}}
@@ -7864,7 +7937,9 @@ details.mc-card .section.credits{margin-top:12px}
         else if(m.display.includes('flex')&&m.flexDirection==='column'){mode='compact';if(host.parentNode!==main||host!==main.lastChild)main.append(host);compact=true;}
       }
       if(mode!==lastLayout){lastLayout=mode;if(mode==='compact')expanded=false;bodyStamp=[];paint();}
-      host.toggleAttribute('data-compact',compact);host.toggleAttribute('data-expanded',expanded);host.hidden=!eligible||mode==='none'||!compact&&!pref.open||compact&&!expanded;foldAt.on=eligible&&mode==='wide';placeFold();applySheet();
+      // v1.11.78 抽屉出现 / 收起 / 换高度时对话区底部保持不动（像输入法弹出、收起一样顶上去、落回来）
+      {const hide=!eligible||mode==='none'||!compact&&!pref.open||compact&&!expanded,sig=[compact,expanded,hide,prefs.sheetFull,prefs.sheetH,innerHeight].join('|'),go=()=>{host.toggleAttribute('data-compact',compact);host.toggleAttribute('data-expanded',expanded);host.hidden=hide;foldAt.on=eligible&&mode==='wide';placeFold();applySheet();};
+        if(sig!==sheetSig&&(compact||sheetSig)){sheetSig=sig;sheetAnchor(go);}else{sheetSig=sig;go();}}
       if(ready){placeGrip();localTitles();sentTimes();try{headerTitle();}catch{}try{docIcon();}catch{}if(!((attach.n=(attach.n||0)+1)%4))statusBar();}
     }
     function cacheTab(){
@@ -7902,7 +7977,7 @@ details.mc-card .section.credits{margin-top:12px}
       if(boundPath!==location.pathname){boundPath=location.pathname;historyView=null;turnKey=null;selected=null;rawSpan=null;tab='overview';bodyStamp=[];logKey='';}
       attach();const sid=sidOf(location.href),r=selectedRun();if(sid&&!catalog.snapshots.has(sid)&&!catalog.loading.has(sid))void catalog.getSnapshot(sid).then(()=>paint());
       if(r&&r.revision!==seenRevision){seenRevision=r.revision;if(!historyView){turnKey=null;selected=null;rawSpan=null;}}
-      const s=view(),c=s?.calls.find(x=>x.id===selected)||s?.calls.at(-1),live=liveView(sid),liveCall=live?.calls.at(-1),meta=catalog.entries.get(sid);
+      const s=view(),c=s?.calls.find(x=>x.id===selected)||servingCalls(s).at(-1)||s?.calls.at(-1),live=liveView(sid),liveCall=servingCalls(live).at(-1),meta=catalog.entries.get(sid);
       const originTag=r?.data&&r.data.revision!==r.revision?'上次':!r?.data&&live?'缓存':'';
       const shown=meta?.name?.name||liveCall?.internal||liveCall?.model||'模型信息',eff=liveCall?.effort,effortText=eff?.value||({conflict:'冲突',unsupported:'不支持'}[eff?.status])||'未知';
       triggerLabel.textContent=(prefs.showSeq&&seqLabel(sid)?seqLabel(sid)+' ':'')+shown;mini.textContent=liveCall?(originTag?originTag+' · ':'')+'推理 '+effortText:'';mini.hidden=true;
@@ -8319,7 +8394,7 @@ details.mc-card .section.credits{margin-top:12px}
         const rs=el('select','selector',null,wr);for(const v of [1,2,3]){const o=el('option','',v+' 次',rs);o.value=String(v);}rs.value=String(gs.watchdogRetries);rs.onchange=()=>gacha.saveSettings({watchdogRetries:+rs.value});}
       {const gs=gacha.settings();toggle(sec,'首包提示（实验）','默认关闭：手动发送的每条消息末尾自动追加一句，让模型先输出“思考中…”再继续。服务端尽早收到首包就不会因约 90 秒无输出而改派；看门狗也会看到输出而不去停止。抽卡时不追加。代价：模型的隐藏深度思考会变短，分析改为写在正文里；刷新页面后消息里能看到这句。',gs.warmup,v=>{gacha.saveSettings({warmup:v});});
         const pr=el('div','setting',null,sec),pg=el('div','grow',null,pr);el('span','','首包提示内容',pg);const inp=el('textarea','',null,pg);inp.rows=2;inp.value=gs.warmupText;inp.style.cssText='width:100%;margin-top:6px;resize:vertical;font:inherit;font-size:12px;padding:6px 8px;border-radius:8px;border:1px solid var(--amp-line,rgba(128,128,128,.35));background:transparent;color:inherit;box-sizing:border-box';inp.onchange=()=>gacha.saveSettings({warmupText:inp.value.trim()||WARMUP_DEFAULT});inp.onkeydown=e=>e.stopPropagation();}
-      toggle(sec,'模型被改派时自动停止生成','默认开启：原模型首包超时被 Arena 换成别的模型后立即停止，避免替补模型长时间推理白白消耗额度；关闭则让替补模型继续回答。',prefs.stopOnResample,v=>{prefs.stopOnResample=v;savePrefs();});
+      toggle(sec,'模型被改派时自动停止生成','默认开启：原模型首包超时被 Arena 换成别的模型后立即停止，避免替补模型长时间推理白白消耗额度；关闭则让替补模型继续回答。\n· 抽卡的那一轮不停：让改派后的模型答完，才能准确识别这一抽是哪个模型。',prefs.stopOnResample,v=>{prefs.stopOnResample=v;savePrefs();});
       toggle(sec,'页面底部信息栏','固定在页面最底部：美金额度、Pulse、credits、限流、当前模型、抽卡进度与更新时间。',prefs.showBar,v=>{prefs.showBar=v;bar?.sync();if(v)void refreshPulse(true);});
       toggle(sec,'为信息栏预留页面空间','把 Arena 的整屏容器高度减去信息栏高度，避免遮挡输入框；遇到布局异常时可关闭。',prefs.barOffset,v=>{prefs.barOffset=v;bar?.sync();});
       const ms=el('section','section',null,body);el('h3','section-heading','实时监控',ms);
@@ -8382,7 +8457,7 @@ details.mc-card .section.credits{margin-top:12px}
     const blocks=[quota.chat,quota.append].filter(q=>q?.blocked&&(!q.resetAt||q.resetAt>Date.now()));
     const blocked=Date.now()<cooldown?'接口限流冷却中':blocks.length?'消息额度或速率限制':balance?.remaining===0?'账户剩余额度为零':null;
     return {sid:r?.sid||null,runId:r?.runId||null,submittedAt:r?.submittedAt||0,busy:!!r?.busy,phase:r?.phase||'',finished:!!r?.huntFinishedAt,blocked,
-      data:r?.data?{calls:r.data.calls.map(c=>({request:c.request,response:c.response,internal:c.internal})),internalNames:[...r.data.internalNames],partial:r.data.partial,routing:r.data.routing||null}:null,prompt:r.prompt||null};
+      data:r?.data?{calls:r.data.calls.map(c=>({request:c.request,response:c.response,internal:c.internal,failed:!!c.failed})),internalNames:[...r.data.internalNames],partial:r.data.partial,routing:r.data.routing||null,failover:r.data.failover||null}:null,prompt:r.prompt||null};
   },show(){ui?.show();},snapshot:()=>JSON.parse(JSON.stringify(exported())),exportAll:withRaw=>catalog.exportAll(withRaw===true).then(x=>JSON.parse(JSON.stringify(x)))};
   setTimeout(()=>void refreshBalance(),4000);
   setTimeout(()=>void refreshPulse(),5000);setInterval(()=>{if(!document.hidden)void refreshPulse();},60000);
