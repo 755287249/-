@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.63
+// @version      1.11.64
 // @description  Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.63' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.64' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -4381,7 +4381,7 @@ const errReload = (() => {
   }
   function start() { afterLoad(); try { follow.init(); } catch {} setInterval(() => { try { tick(); } catch {} }, 2000); addEventListener('resize', () => { if (box && !box.hidden) place(); }); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
-  return { tick, findError, bottomOnce, follow };
+  return { tick, findError, bottomOnce, follow, reloadNow, draft, gachaBusy, toast, sidNow };
 })();
 
 // ====================================================================================
@@ -5398,7 +5398,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.63', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.64', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -5538,9 +5538,13 @@ const gachaUi = (() => {
     // 名称池取自全部用量与花费记录：用量记录缺名时仍可由花费记录提供
     const names=[...new Set(recs.map(x=>x.d?.internal).filter(Boolean))], single=p.count===1;
     const paired=pool.length>1&&pool.length===p.allStreams.length, one=pool.length===1;
+    // 用量记录按消息写入：记录之后才开始的调用属于下一条消息（如交互面板选择后继续、中途换了模型），不沿用前一条消息的名称；
+    // 多条记录且与调用数不一一对应时，每次调用取时间上最先落在它之后的那条记录
+    const lastRec=Math.max(0,...recs.map(x=>x.e.at||0));
     const calls=p.streams.map(e=>{
-      const d=details.get(e.id)||{}, i=p.allStreams.indexOf(e), rec=paired?pool[i]?.d:one?pool[0].d:null;
-      const internal=rec?.internal||(names.length===1?names[0]:null), scope=rec?.internal?(paired||single?'call':'turn'):internal?'turn':null;
+      const d=details.get(e.id)||{}, i=p.allStreams.indexOf(e), late=!paired&&!!lastRec&&!!e.at&&e.at>lastRec;
+      const rec=paired?pool[i]?.d:late?null:one?pool[0].d:pool.length>1&&e.at?pool.find(x=>x.e.at&&x.e.at>=e.at)?.d||null:null;
+      const internal=rec?.internal||(!late&&names.length===1?names[0]:null), scope=rec?.internal?(paired||single?'call':'turn'):internal?'turn':null;
       const first=k=>(d[k]?.length?d[k]:single&&rec?.[k]||[]), input=first('input'), output=first('output'), total=first('total');
       return {id:e.id,at:e.at?new Date(e.at).toISOString():null,model:d.request||e.model||'未提供',request:d.request||null,response:d.response||null,internal,internalScope:scope,route:d.route||rec?.route||null,adapter:d.adapter||null,finish:d.finish||null,hint:hint(internal,d.request),effort:effort([...(d.configs||[]),...(single?run.requestConfigs||[]:[])]),reasoning:reported([...(d.reasoning||[]),...(single&&rec?.reasoning||[])]),tokens:{input:input[0]?.value??null,output:output[0]?.value??null,total:total[0]?.value??null,cacheRead:first('cacheRead')[0]?.value??null,cacheWrite:first('cacheWrite')[0]?.value??null},tokenSources:[...input,...output,...total],totalLabel:e.totalLabel,settings:d.settings||{},cost:typeof d.aiCost==='number'?d.aiCost:null,partial:!d.available||d.partial===true};
     });
@@ -5748,7 +5752,7 @@ const gachaUi = (() => {
   // 3. 页面上下文原生 fetch：不使用 unsafeWindow、GM 请求或跨上下文桥。
   let native=window.fetch;
   for(let i=0;i<8&&native?.__orig&&native.__orig!==native;i++)native=native.__orig;
-  const rawFetch=native.bind(window), runs=new Map(), submissions=new Map(), readers=new Set(), logs=[], rawStore=new Map(), recentPosts=new Map();
+  const rawFetch=native.bind(window), runs=new Map(), submissions=new Map(), readers=new Set(), logs=[], rawStore=new Map(), recentPosts=new Map(), contSeen=new Map();
   const load=(key,fallback)=>{try{return JSON.parse(localStorage.getItem(key))??fallback;}catch{return fallback;}};
   const store=(key,value)=>{try{return ampStore.set(key,JSON.stringify(value));}catch{return false;}};
   const clamp=(v,min,max,fallback)=>Number.isFinite(v)?Math.min(max,Math.max(min,Math.round(v))):fallback;
@@ -5897,7 +5901,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       if(usd){const pct=usd.allowanceUsd>0?usd.balanceRemainingUsd/usd.allowanceUsd*100:null,state=usd.overLimit||usd.balanceRemainingUsd<0?'low':pct===null?'':pct>=50?'good':pct>=20?'warn':'low';
         out.push(item('usd',state,[['meter',pct===null?0:Math.max(0,Math.min(100,pct))],['t','美金 '],['b',fmtUsd(usd.balanceRemainingUsd)],['t',' / '+fmtUsd(usd.allowanceUsd)],['p',pct!==null?' · '+Math.round(pct)+'%':''],['t',usd.overLimit?' · 已超限':'']],
           '美元额度（来自 Trace spend.recorded，最新一轮最后一条已结算记录）\n剩余 '+exactUsd(usd.balanceRemainingUsd)+'\n总额度 '+exactUsd(usd.allowanceUsd)+(usd.chargedUserTotalUsd!==null?'\n窗口内已计费 '+exactUsd(usd.chargedUserTotalUsd):'')+(usd.allowanceTier?'\n档位 '+usd.allowanceTier:'')+(usd.allowanceSource?'\n来源 '+usd.allowanceSource:'')+(usd.windowStartAtMs?'\n窗口开始 '+new Date(usd.windowStartAtMs).toLocaleString('zh-CN',{hour12:false}):'')+(usd.chargedUsd!==null?'\n该条计费 '+exactUsd(usd.chargedUsd):'')+'\n记录于 '+new Date(usd.at).toLocaleString('zh-CN',{hour12:false})+'（'+ago(usd.at)+'）\n每次对话结束后自动更新；这是服务端快照，不是实时余额',miniBar()?()=>ui?.toggle():null));
-      }else out.push(item('usd','',[['t','美金 '],['b','—']],'尚无美元额度快照：完成一轮对话后，从该轮 Trace 的计费记录读取',null));
+      }else{let sb=null;try{sb=ui?.spendBrief?.()||null;}catch{}if(sb)out.push(item('spend','',[['t','本对话 '],['b',sb.text]],sb.title,()=>ui?.show('overview')));else out.push(item('usd','',[['t','美金 '],['b','—']],'尚无美元额度快照：完成一轮对话后，从该轮 Trace 的计费记录读取',null));}
       const mini=miniBar();
       // Pulse（GET /api/me/pulse，0–100 的整数）是 Arena 的独立指标，并非美元余额；两者数值相同时并入美金一项，不再重复显示。
       const usdPct=usd&&usd.allowanceUsd>0?Math.round(usd.balanceRemainingUsd/usd.allowanceUsd*100):null;
@@ -6013,7 +6017,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     if(!session){if(/^\/(api|ai-proxy|agent)\//.test(u.pathname)&&!/\/(events|spans)\b|telemetry|analytics|metrics|logs?\b|ping|heartbeat|presence/i.test(u.pathname))notePost(u.pathname,kind,sid);return;}
     notePost(u.pathname,kind,sid);
     const continuation=kind&&kind!=='message'||/regenerate/i.test(j.trigger||j.payload?.trigger||'');
-    if(continuation){for(const r of runs.values())if(r.sid===sid){r.tries=0;r.finalReads=0;r.phase='工作流继续';later(r);}return;}
+    if(continuation){if(sid&&!/^(stop|cancel|abort|interrupt)/i.test(kind||'')){const l=contSeen.get(sid)||[];l.push({at:Date.now(),kind:/regenerate/i.test(j.trigger||j.payload?.trigger||'')?'regenerate':kind||'continue'});contSeen.delete(sid);contSeen.set(sid,l.slice(-40));while(contSeen.size>20)contSeen.delete(contSeen.keys().next().value);}for(const r of runs.values())if(r.sid===sid){r.tries=0;r.finalReads=0;r.phase='工作流继续';later(r);}return;}
     const preview=promptPreview(j), entry={revision:++revision,at:Date.now(),configs:configs(j,'页面请求','$'),prompt:preview,balance:balance&&Date.now()-balance.at<180000?{remaining:balance.remaining,at:balance.at}:null};
     const mid=j.message?.id;if(typeof mid==='string'&&/^[\w-]{8,64}$/.test(mid)){try{onSent?.(mid,entry.at);}catch{}}
     if(sid){submissions.set(sid,entry);void costBaseline(sid,entry);}else pendingNew=entry;
@@ -6490,10 +6494,18 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
 .head-fold{margin-left:auto;flex:none;height:28px;padding:0 6px 0 10px;gap:2px;font-size:12px;color:var(--secondary);border:1px solid var(--edge);border-radius:14px}.head-fold svg{width:14px;height:14px}
 .upd.chentry{opacity:.55}.upd.chentry:hover{opacity:1}.chform{display:flex;align-items:center;gap:4px;padding:2px 0 1px}.chform input{width:118px;height:22px;box-sizing:border-box;padding:0 7px;border:1px solid var(--edge);border-radius:6px;background:var(--bg);color:var(--fg);font:11px var(--mono);outline:0}.chform input:focus{border-color:var(--secondary)}.chform input[data-bad]{border-color:#c0584f;animation:chshake .28s}.chform button{height:22px;padding:0 8px!important;border:1px solid var(--edge);border-radius:6px}@keyframes chshake{25%{transform:translateX(-3px)}75%{transform:translateX(3px)}}
 .section.spend{margin-top:0}.spend .section-heading{margin-bottom:8px}.unit{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--edge);border-radius:8px}.unit button{height:20px;padding:0 8px!important;border:0;border-radius:6px;font-size:11px;color:var(--secondary);background:none}.unit button[aria-pressed="true"],.unit button[aria-pressed="true"]:hover{background:var(--heading);color:var(--bg)}.spend-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.spend-cell{min-width:0;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--raised)}.spend-value{font:500 18px/1.35 var(--mono);letter-spacing:-.03em;color:var(--heading);margin:2px 0 1px;overflow-wrap:anywhere}.spend-sub{font-size:10.5px;line-height:1.45;color:var(--secondary);overflow-wrap:anywhere}.spend-sub span{display:inline-block}.spend+.empty{margin-top:10px}
+ .detect-card{padding:12px 13px;border:1px solid var(--line);border-radius:10px;background:var(--raised)}.detect-state{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--secondary)}.detect-state i{flex:none;width:7px;height:7px;border-radius:50%;background:var(--edge)}.detect-card[data-tone=same] .detect-state i{background:var(--green)}.detect-card[data-tone=changed] .detect-state,.detect-card[data-tone=error] .detect-state{color:var(--warn)}.detect-card[data-tone=changed] .detect-state i,.detect-card[data-tone=error] .detect-state i{background:var(--warn)}.detect-card[data-tone=busy] .detect-state i{background:var(--heading);animation:ampPulse 1s ease-in-out infinite}@keyframes ampPulse{50%{opacity:.2}}
+.detect-model{display:flex;align-items:center;gap:8px;margin:8px 0 4px;min-width:0}.detect-name{font:500 17px/1.35 var(--mono);letter-spacing:-.025em;color:var(--heading);overflow-wrap:anywhere;min-width:0}.detect-tier{flex:none;font-size:10.5px;line-height:1;padding:3px 7px;border-radius:999px;color:var(--secondary);box-shadow:inset 0 0 0 1px var(--edge)}.detect-sub{font-size:11px;line-height:1.6;color:var(--secondary);overflow-wrap:anywhere}
+.detect-changes{margin-top:10px;padding-top:8px;border-top:1px dashed var(--edge)}.detect-change+.detect-change{margin-top:7px}.detect-flow{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px;font:12.5px/1.5 var(--mono);min-width:0}.detect-flow .from{color:var(--secondary);overflow-wrap:anywhere}.detect-flow .arrow{color:var(--warn)}.detect-flow b{font-weight:500;color:var(--heading);overflow-wrap:anywhere}
+.detect-go{width:100%;height:36px;margin-top:10px;border-radius:8px;background:var(--heading);color:var(--bg);font-size:13px;font-weight:500;letter-spacing:.02em}.detect-go:hover{background:var(--heading);color:var(--bg);opacity:.9}.detect-go:disabled,.detect-go:disabled:hover{background:var(--heading);color:var(--bg);opacity:.45}
+.vlogo{flex:none;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#fff;color:#111;box-shadow:0 0 0 1px #0000001f}.vlogo svg{width:12px;height:12px;fill:currentColor}.vlogo[data-full]{background:none;box-shadow:none}.vlogo[data-full] svg{width:18px;height:18px}
+.tl-row{display:grid;grid-template-columns:12px minmax(0,1fr) auto;column-gap:8px;row-gap:1px;align-items:center;padding:8px 0;border-top:1px solid var(--line)}.tl-row:first-child{border-top:0;padding-top:2px}.tl-dot{width:7px;height:7px;border-radius:50%;background:var(--edge)}.tl-row[data-current] .tl-dot{background:var(--green);box-shadow:0 0 0 3px color-mix(in srgb,var(--green) 22%,transparent)}.tl-name{display:flex;align-items:center;gap:6px;min-width:0;font:12.5px/1.45 var(--mono);color:var(--heading)}.tl-name>span:last-child{overflow-wrap:anywhere;min-width:0}.tl-name .vlogo{width:16px;height:16px}.tl-name .vlogo svg{width:10px;height:10px}.tl-name .vlogo[data-full] svg{width:16px;height:16px}.tl-count{font:11px var(--mono);color:var(--secondary);white-space:nowrap}.tl-meta{grid-column:2/4;font-size:10.5px;line-height:1.5;color:var(--secondary);overflow-wrap:anywhere}.tl-more{font-size:10.5px;color:var(--secondary);padding:0 0 6px 20px}
+.config-value.legacy-state{font-family:inherit;font-size:12.5px}.legacy-state[data-tone=ok]{color:var(--green)}.legacy-state[data-tone=busy],.legacy-state[data-tone=bad]{color:var(--warn)}.legacy-raw{margin-top:8px}.legacy-raw+.log-actions{margin-top:8px}
+:host([data-reload]){display:inline-flex;flex:none;vertical-align:top;margin:0 0 0 4px}.reload-toggle{width:32px;height:32px;padding:0;border-radius:4px;color:var(--amp-reload-fg,hsl(var(--interactive-active,60 4% 11%)))}.reload-toggle:hover{background:none;color:var(--amp-reload-fg,hsl(var(--interactive-active,60 4% 11%)));opacity:.75}.reload-toggle svg{width:22px;height:22px;transition:transform .4s cubic-bezier(.34,1.6,.5,1)}.reload-toggle:active svg{transform:rotate(-90deg)}.reload-toggle[data-arm]{color:var(--warn);background:var(--raised)}.reload-toggle[data-spin] svg{animation:ampSpin .8s linear infinite}@keyframes ampSpin{to{transform:rotate(360deg)}}
 `;
   function el(tag,cls,text,parent){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined&&text!==null)e.textContent=text;if(parent)parent.append(e);return e;}
   function button(parent,text,title,fn,cls=''){const b=el('button',cls,text,parent);b.type='button';b.title=title;b.setAttribute('aria-label',title);b.dataset.focus=title;b.onclick=fn;return b;}
-  const paths={sun:['M12 4V2M12 22v-2M4 12H2M22 12h-2M5.6 5.6 4.2 4.2M19.8 19.8l-1.4-1.4M5.6 18.4l-1.4 1.4M19.8 4.2l-1.4 1.4','M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z'],moon:['M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z'],cube:['m12 3 9 5-9 5-9-5 9-5Z','M3 8v9l9 5 9-5V8M12 13v9'],chevron:['m9 5 7 7-7 7'],down:['m6 9 6 6 6-6'],copy:['M9 9h12v12H9z','M15 5V3H3v12h2'],download:['M12 3v12m-5-5 5 5 5-5','M4 16v5h16v-5']};
+  const paths={sun:['M12 4V2M12 22v-2M4 12H2M22 12h-2M5.6 5.6 4.2 4.2M19.8 19.8l-1.4-1.4M5.6 18.4l-1.4 1.4M19.8 4.2l-1.4 1.4','M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z'],moon:['M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z'],cube:['m12 3 9 5-9 5-9-5 9-5Z','M3 8v9l9 5 9-5V8M12 13v9'],chevron:['m9 5 7 7-7 7'],down:['m6 9 6 6 6-6'],copy:['M9 9h12v12H9z','M15 5V3H3v12h2'],download:['M12 3v12m-5-5 5 5 5-5','M4 16v5h16v-5'],reload:['M21.17 8A10 10 0 0 0 12 2 10 10 0 0 0 2.05 11','M17 8h4.4a.6.6 0 0 0 .6-.6V3','M2.88 16A10 10 0 0 0 12.05 22 10 10 0 0 0 22 13','M7.05 16H2.65a.6.6 0 0 0-.6.6V21']};
   function icon(name,parent,cls=''){const s=document.createElementNS('http://www.w3.org/2000/svg','svg');for(const [k,v]of Object.entries({viewBox:'0 0 24 24',fill:'none',stroke:'currentColor','stroke-width':'1.5','stroke-linecap':'round','stroke-linejoin':'round','aria-hidden':'true'}))s.setAttribute(k,v);if(cls)s.setAttribute('class',cls);for(const d of paths[name]||[]){const p=document.createElementNS(s.namespaceURI,'path');p.setAttribute('d',d);s.append(p);}parent?.append(s);return s;}
   function iconButton(parent,name,title,fn){const b=button(parent,'',title,fn,'icon-button');icon(name,b);return b;}
   function download(data,name='amp-lite-export.json'){const a=document.createElement('a'),u=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));a.href=u;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),10000);}
@@ -6502,6 +6514,132 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
   function exported(){const s=ui?.view(),snap=localSnapshot(s),sid=snap?.sid||sidOf(location.href),raw=rawOf(s);return{tool:'Arena Model Probe Lite',version:VERSION,at:new Date().toISOString(),sid,pageSid:sidOf(location.href),frames,queries,cooldown,snapshot:snap?{...snap,raw:undefined}:null,local:catalog.entries.get(sid)||null,turns:catalog.turnsOf(sid),persistent:catalog.persistent,quota,balance,credits:costState.get(sid)?.credits||null,raw:raw?{full:raw.full,events:raw.events,trace:raw.trace,spans:raw.spans,probe:raw.probe}:null,logs:logs.slice()};}
   function refresh(){const r=selectedRun();if(!r){log('info','重读','当前没有可用的运行读取权限');return;}if(Date.now()<cooldown){log('warn','重读','限流冷却中',null,r);return;}r.tries=0;r.finalReads=0;later(r,0,true);if(prefs.showCredits&&!(r.credits&&r.credits.source==='message'))scheduleCost(r.sid,300,true);}
   async function fetchSpan(r,id){if(!r?.token||r.busy||!SPAN.test(id))return;const ctrl=new AbortController();try{const d=await json(r,'spans/'+id,ctrl.signal);r.rawSpans.set(id,d);if(r.data)keepRaw(r);log('detail','Span','已按需读取 '+id,null,{sid:r.sid,runId:r.runId,spanId:id});}catch(e){log('warn','Span','按需读取失败',e,{sid:r.sid,runId:r.runId,spanId:id});}paint();}
+  // ---- 一键检测：立刻读取本对话此刻的完整 Trace（所有轮次）+ 本机记录，逐次调用核对模型，找出中途换模型的位置 ----
+  // 常规检测只看最新一段；交互面板选择等“续接”不写新的轮次标记，同一轮里前后两段可能由不同模型完成，所以这里逐次调用比对。
+  // 名称来源：内部名称（用量记录）> 响应型号 > 请求型号 > Trace 标签；只多了档位 / -vertex / 日期等后缀（brand.same）不算换模型。
+  const force={busy:false,step:'',sid:null,serial:0,bySid:new Map(),abort:null},forceSpans=new Map();
+  const FORCE_SRC=['internal','response','request','pill'],FORCE_SRC_TEXT={internal:'内部名称',response:'响应型号',request:'请求型号',pill:'Trace 标签'};
+  const forceEq=(a,b)=>a===b||brand.same(a,b);
+  const forceBest=c=>c.internal||c.response||c.request||c.pill||null;
+  // 两次调用是否同一模型：共同具备的名称来源逐一比较，任何一项不同就算换了；没有共同来源时比较各自最可靠的名称
+  function forceSame(a,b){let common=0;for(const k of FORCE_SRC)if(a[k]&&b[k]){common++;if(!forceEq(a[k],b[k]))return false;}if(common)return true;const x=forceBest(a),y=forceBest(b);return !x||!y||forceEq(x,y);}
+  function forceRun(sid){for(const r of [...runs.values()].filter(r=>r.sid===sid&&r.token).reverse()){try{authorized(r.token,r.sid);return r;}catch{}}return null;}
+  // 按 "chat turn N" 切段：每段收集模型调用（Trace 标签、起止时间）、用量记录（带内部名称）与服务端改派事件
+  function forceSegments(trace,runId){
+    if(!Array.isArray(trace?.events))throw Error('Trace 缺少 events 数组');
+    const segs=[],attempts={};let seg=null;
+    const open=(turn,at)=>{seg={turn,attempt:turn===null?1:(attempts[turn]=(attempts[turn]||0)+1),at,streams:[],records:[],route:[]};segs.push(seg);};
+    for(const e of trace.events){
+      if(!e||typeof e!=='object'||e.runId&&e.runId!==runId)continue;
+      const at=toMs(e.startTime),msg=label(e.message)||'',m=/^chat turn (\d+)$/.exec(msg);
+      if(m){open(+m[1],at);continue;}
+      if(!seg)open(null,at);
+      if(/^(model\.resample\.(attempt_failed|switched|committed)|failover\.record_inserted)$/.test(msg)){seg.route.push({message:msg,at});continue;}
+      const id=SPAN.test(e.spanId||'')?e.spanId:null;if(!id)continue;
+      if(/^ai\.(streamText\.doStream|generateText\.doGenerate)$/.test(msg)){const dur=toDurationMs(e.duration),pill=(e.style?.accessory?.items||[]).map(x=>x?.icon==='tabler-cube'?label(x.text):null).find(Boolean)||null;seg.streams.push({id,kind:'stream',message:msg,at,end:at&&dur!==null&&e.isPartial===false?at+dur:null,partial:e.isPartial!==false,error:e.isError===true,pill,properties:e.properties});}
+      else if(msg==='token.usage.recorded')seg.records.push({id,kind:'usage',message:msg,at,partial:e.isPartial!==false,properties:e.properties});
+    }
+    return segs.filter(s=>s.streams.length||s.records.length);
+  }
+  // 每次调用的内部名称：本段里时间上最先落在它之后的用量记录（按消息写入，同一条消息里的多次调用共用一个名称；进行中的调用还没有）
+  function forceNames(seg,det){
+    const recs=seg.records.map(x=>({at:x.at,name:det.get(x.id)?.internal||null})).filter(x=>x.name);
+    return seg.streams.map((s,i)=>{if(!recs.length)return null;if(s.at!==null)return recs.find(x=>x.at!==null&&x.at>=s.at)?.name||null;return recs.length===seg.streams.length?recs[i].name:null;});
+  }
+  function forceTraceCalls(segs,det,runId,local){
+    const out=[];
+    segs.forEach((seg,si)=>{const names=forceNames(seg,det),ls=local.find(s=>s.runId===runId&&s.turn===seg.turn&&s.attempt===seg.attempt&&s.prompt);
+      seg.streams.forEach((s,i)=>{const d=det.get(s.id)||{};out.push({src:'trace',id:s.id,seg:si,turn:seg.turn,attempt:seg.attempt,n:i+1,at:s.at,end:s.end,partial:s.partial,error:s.error,internal:names[i],response:d.response||null,request:d.request||null,pill:s.pill,prompt:ls?.prompt||null});});});
+    return out;
+  }
+  // 本机记录里的调用（更早的 run，或读不到 Trace 时的全部记录）
+  function forceLocalCalls(local,skipRun){
+    const out=[],seen=new Set();
+    for(const s of local){if(skipRun&&s.runId===skipRun)continue;
+      s.calls.forEach((c,i)=>{if(seen.has(c.id))return;seen.add(c.id);out.push({src:'local',id:c.id,seg:null,run:s.runId,turn:s.turn,attempt:s.attempt,n:(s.prior||0)+i+1,at:Date.parse(c.at||'')||Date.parse(s.startedAt||s.at||'')||null,end:null,partial:false,error:false,internal:c.internal||null,response:c.response||null,request:c.request||null,pill:c.request?null:c.model&&c.model!=='未提供'?c.model:null,prompt:s.prompt||null,routing:s.routing||null});});}
+    return out;
+  }
+  // 连续同一模型的调用合为一段；和段内已知名称（每种来源取最新）比较，避免某次调用缺名称时漏判
+  function forceGroups(calls){
+    const gs=[];
+    for(const c of calls){let g=gs.at(-1);if(g&&forceSame(g.agg,c)){g.calls.push(c);g.last=c;}else{g={calls:[c],first:c,last:c,agg:{}};gs.push(g);}for(const k of FORCE_SRC)if(c[k])g.agg[k]=c[k];}
+    for(const g of gs){g.names=Object.fromEntries(FORCE_SRC.map(k=>[k,g.agg[k]||null]));g.count=g.calls.length;g.turns=[...new Set(g.calls.map(c=>c.turn).filter(t=>t!==null&&t!==undefined))];g.local=g.calls.every(c=>c.src==='local');}
+    gs.forEach((g,i)=>{g.title=forceTitle(g,[gs[i-1],gs[i+1]].filter(Boolean));});
+    return gs;
+  }
+  // 段的显示名：按来源优先级取第一个能和相邻段区分开的名称（内部名称相同而请求型号不同时显示请求型号）
+  function forceTitle(g,nb){for(const k of FORCE_SRC){const v=g.names[k];if(v&&nb.every(n=>!n.names[k]||!forceEq(n.names[k],v)))return {name:v,src:k};}const k=FORCE_SRC.find(k=>g.names[k]);return {name:k?g.names[k]:'未提供',src:k||null};}
+  const forceGap=ms=>ms<120000?Math.round(ms/1000)+' 秒':ms<7200000?Math.round(ms/60000)+' 分钟':Math.round(ms/3600000)+' 小时';
+  function forceTags(sid,a,b,segs){
+    const tags=[],lo=a.at,hi=b.at,both=a.src==='trace'&&b.src==='trace';
+    if(both){tags.push(a.seg===b.seg?'同一轮中途':a.turn===b.turn?'重试':'新一轮');
+      if(lo!==null&&hi!==null&&segs.slice(a.seg,b.seg+1).some(s=>s.route.some(x=>x.at!==null&&x.at>=lo-1000&&x.at<=hi+1000)))tags.push('服务端改派');}
+    else if(b.src==='local'&&b.routing?.to&&forceEq(b.routing.to,b.request||b.pill||''))tags.push('服务端改派');
+    const cont=lo!==null&&hi!==null?(contSeen.get(sid)||[]).find(x=>x.at>=lo-15000&&x.at<=hi+15000):null;
+    if(cont)tags.push(cont.kind==='regenerate'?'重新生成后':'交互选择后');
+    else if(both&&a.seg===b.seg&&a.end&&hi!==null&&hi-a.end>20000)tags.push('停顿 '+forceGap(hi-a.end)+'后');
+    return tags;
+  }
+  async function forceFetch(r,list,det,ctrl,out,limit){
+    let n=0;
+    for(const x of list){
+      if(n>=limit||stopped||ctrl.signal.aborted)break;
+      if(det.has(x.id))continue;n++;
+      try{const d=await json(r,'spans/'+x.id,ctrl.signal),v=detail(d,x,r.runId);det.set(x.id,v);out.fetched++;if(v.available&&!v.partial){forceSpans.set(x.id,v);while(forceSpans.size>800)forceSpans.delete(forceSpans.keys().next().value);}}
+      catch(e){if(e.status===429||e.status===401||e.status===403||e.name==='AbortError')break;}
+    }
+  }
+  async function forceDetect(){
+    const sid=sidOf(location.href);if(!sid||force.busy||stopped)return null;
+    force.busy=true;force.sid=sid;const step=t=>{force.step=t;force.serial++;paint();};step('读取本机记录');
+    const out={sid,at:Date.now(),runId:null,events:0,fetched:0,localTurns:0,notes:[],calls:[],groups:[],changes:[],current:null,error:null};
+    const ctrl=new AbortController();force.abort=ctrl;
+    try{
+      await catalog.ready;
+      const rows=await catalog.rows('turns','sid',sid,'next',400).catch(()=>[]),local=[];
+      for(const row of rows){try{const s=localSnapshot(row?.data);if(s)local.push(s);}catch{}}
+      const mem=selectedRun()?.data;if(mem?.sid===sid){try{const s=localSnapshot(mem);if(s&&!local.some(x=>x.key===s.key))local.push(s);}catch{}}
+      let r=forceRun(sid);
+      if(!r&&typeof window.__ARENA_RUN_TOKEN__==='string'){accept(window.__ARENA_RUN_TOKEN__,sid);r=forceRun(sid);}
+      let trace=null,segs=[];const det=new Map();
+      if(!r)out.notes.push('没有这个对话的运行读取权限（页面只在收到回复流时下发，有效期有限）：只核对了本机记录。发一条消息后再检测，可读取完整记录。');
+      else{
+        out.runId=r.runId;step('读取此刻的 Trace');
+        try{trace=await json(r,'events',ctrl.signal);}catch(e){if(e.name==='AbortError')throw e;out.notes.push('读取 Trace 失败（'+(e.status===429?'接口限流，稍后再试':e.status===401||e.status===403?'读取权限已失效，发一条消息后再试':errorText(e))+'）：只核对了本机记录。');}
+        if(trace){
+          segs=forceSegments(trace,r.runId);out.events=trace.events.length;
+          for(const x of segs.flatMap(s=>[...s.records,...s.streams])){
+            if(x.properties){try{det.set(x.id,detail({runId:r.runId,spanId:x.id,message:x.message,isPartial:x.partial,properties:x.properties},x,r.runId));}catch{}continue;}
+            const c=r.cache.get(x.id);if(c?.available&&!c.partial&&!x.partial)det.set(x.id,c);else if(forceSpans.has(x.id)&&!x.partial)det.set(x.id,forceSpans.get(x.id));
+          }
+          // 先读用量记录（带内部名称，从最新一段往前），再读最近两段的模型调用（响应 / 请求型号）
+          step('补读调用详情');
+          const todo=[];for(let i=segs.length-1;i>=0;i--)todo.push(...[...segs[i].records].reverse());
+          for(let i=segs.length-1;i>=Math.max(0,segs.length-2);i--)todo.push(...[...segs[i].streams].reverse().slice(0,8));
+          await forceFetch(r,todo,det,ctrl,out,18);
+          // 第二遍：初步分段后，补读每个变更点前后两次调用的详情，确认实际型号
+          const first=forceGroups(forceTraceCalls(segs,det,r.runId,local)),edge=[];
+          for(let i=1;i<first.length;i++)for(const c of [first[i-1].last,first[i].first]){const s=segs[c.seg]?.streams[c.n-1];if(s)edge.push(s);}
+          if(edge.length)await forceFetch(r,edge,det,ctrl,out,8);
+        }
+      }
+      step('比对模型');
+      const traced=trace?forceTraceCalls(segs,det,r.runId,local):[],ids=new Set(traced.map(c=>c.id));
+      const older=forceLocalCalls(local,trace?r.runId:null).filter(c=>!ids.has(c.id));
+      out.localTurns=new Set(older.map(c=>c.run+':'+c.turn+':'+c.attempt)).size;
+      let last=null;for(const c of traced){if(c.at===null)c.at=last;else last=c.at;}
+      const calls=[...older,...traced].map((c,i)=>({c,i})).sort((x,y)=>((x.c.at??0)-(y.c.at??0))||x.i-y.i).map(x=>x.c),groups=forceGroups(calls);
+      out.calls=calls;out.groups=groups.map(g=>({title:g.title,names:g.names,count:g.count,from:g.first.at,to:g.last.at,turns:g.turns,local:g.local,partial:g.last.partial}));
+      for(let i=1;i<groups.length;i++){const a=groups[i-1].last,b=groups[i].first;out.changes.push({from:groups[i-1].title.name,to:groups[i].title.name,at:b.at,turn:b.turn,attempt:b.attempt,n:b.n,local:b.src==='local',tags:forceTags(sid,a,b,segs)});}
+      const lc=calls.at(-1),lg=groups.at(-1);
+      if(lc)out.current={name:lg.title.name,src:lg.title.src,internal:lc.internal||lg.names.internal,response:lc.response,request:lc.request,pill:lc.pill,at:lc.at,turn:lc.turn,attempt:lc.attempt,n:lc.n,partial:lc.partial,local:lc.src==='local'};
+      else if(!out.notes.length)out.notes.push('这个对话还没有模型调用记录。');
+      log('info','一键检测',(out.changes.length?'中途换过 '+out.changes.length+' 次模型：'+out.changes.map(c=>c.from+' → '+c.to).join('；'):calls.length?'全程同一模型':'没有模型调用记录')+(out.current?' · 当前 '+out.current.name:'')+' · '+calls.length+' 次调用'+(out.events?' · Trace '+out.events+' 条事件':'')+(out.fetched?' · 补读 '+out.fetched+' 个详情':''),null,{sid,runId:out.runId});
+    }catch(e){out.error=e?.name==='AbortError'?'已取消':errorText(e);log('warn','一键检测','检测失败',e,{sid});}
+    finally{force.busy=false;force.abort=null;force.step='';force.bySid.delete(sid);force.bySid.set(sid,out);while(force.bySid.size>12)force.bySid.delete(force.bySid.keys().next().value);force.serial++;paint();}
+    if(out.runId&&out.events&&!out.error)refresh();
+    return out;
+  }
   function dragger(handle,hooks){
     handle.addEventListener('pointerdown',e=>{if(e.button!==0)return;e.preventDefault();const start=hooks.start(e);if(!start)return;try{handle.setPointerCapture(e.pointerId);}catch{}handle.dataset.active='';const shield=el('div','drag-shield',null,handle.getRootNode());let moved=false;
       const move=ev=>{if(Math.abs(ev.clientX-start.x)>2)moved=true;if(moved)hooks.move(ev,start);},up=ev=>{handle.removeEventListener('pointermove',move);handle.removeEventListener('pointerup',up);handle.removeEventListener('pointercancel',up);delete handle.dataset.active;shield.remove();if(moved)hooks.end(ev,start);else hooks.tap?.(ev);};
@@ -6523,8 +6661,9 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     const host=el('aside');host.id='amp-lite-dock';host.setAttribute('data-dock','');host.setAttribute('aria-label','模型信息');document.body.append(host);host.style.setProperty('--amp-width',prefs.width+'px');
     const gripHost=el('div');gripHost.id='amp-lite-grip';gripHost.setAttribute('data-grip','');document.body.append(gripHost);
     const foldHost=el('div');foldHost.id='amp-lite-fold';foldHost.setAttribute('data-fold','');foldHost.hidden=true;document.body.append(foldHost);
-    const entryRoot=entry.attachShadow({mode:'open'}),root=host.attachShadow({mode:'open'}),gripRoot=gripHost.attachShadow({mode:'open'}),foldRoot=foldHost.attachShadow({mode:'open'});let sheet;
-    try{sheet=new CSSStyleSheet();sheet.replaceSync(css);entryRoot.adoptedStyleSheets=[sheet];root.adoptedStyleSheets=[sheet];gripRoot.adoptedStyleSheets=[sheet];foldRoot.adoptedStyleSheets=[sheet];}catch{el('style','',css,entryRoot);el('style','',css,root);el('style','',css,gripRoot);el('style','',css,foldRoot);}
+    const reloadHost=el('div');reloadHost.id='amp-lite-reload';reloadHost.setAttribute('data-reload','');reloadHost.hidden=true;
+    const entryRoot=entry.attachShadow({mode:'open'}),root=host.attachShadow({mode:'open'}),gripRoot=gripHost.attachShadow({mode:'open'}),foldRoot=foldHost.attachShadow({mode:'open'}),reloadRoot=reloadHost.attachShadow({mode:'open'});let sheet;
+    try{sheet=new CSSStyleSheet();sheet.replaceSync(css);entryRoot.adoptedStyleSheets=[sheet];root.adoptedStyleSheets=[sheet];gripRoot.adoptedStyleSheets=[sheet];foldRoot.adoptedStyleSheets=[sheet];reloadRoot.adoptedStyleSheets=[sheet];}catch{el('style','',css,entryRoot);el('style','',css,root);el('style','',css,gripRoot);el('style','',css,foldRoot);el('style','',css,reloadRoot);}
     // 右侧“模型信息”的收起 / 展开把手：展开时贴在侧栏左边缘（›），收起后贴在屏幕右边缘（‹ 模型信息）
     const fold=button(foldRoot,'','收起模型信息',()=>{pref.open=!pref.open;persist();render();},'fold');icon('chevron',fold);el('span','fold-label','模型信息',fold);const foldAt={on:false};
     function placeFold(){const on=foldAt.on;foldHost.hidden=!on;if(!on)return;const open=!!pref.open&&!host.hidden;fold.toggleAttribute('data-open',open);const t=open?'收起模型信息':'展开模型信息';if(fold.title!==t){fold.title=t;fold.setAttribute('aria-label',t);}fold.setAttribute('aria-expanded',String(open));
@@ -6543,6 +6682,14 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     const trigger=button(entryRoot,'','切换深色 / 浅色模式',flipTheme,'trigger theme-toggle');const sunIcon=icon('sun',trigger),moonIcon=icon('moon',trigger);const triggerLabel=el('span','trigger-label','',trigger),mini=el('span','trigger-mini','',trigger);triggerLabel.hidden=true;mini.hidden=true;
     function paintTheme(){const dk=pageDark();sunIcon.style.display=dk?'':'none';moonIcon.style.display=dk?'none':'';trigger.title=dk?'切换到浅色模式':'切换到深色模式';trigger.setAttribute('aria-label',trigger.title);}
     paintTheme();new MutationObserver(paintTheme).observe(document.documentElement,{attributes:true,attributeFilter:['class','data-theme','style']});
+    // 手机顶栏：左上角抽屉按钮旁的“强制刷新页面”。输入框有未发送内容 / 待发附件 / 抽卡进行中时，3 秒内连点两次才刷新
+    const reloadBtn=button(reloadRoot,'','强制刷新页面',()=>reloadTap(),'reload-toggle');icon('reload',reloadBtn);let reloadArm=0,reloadArmTimer=0;
+    function reloadTap(){
+      let risky=false;try{risky=errReload.draft()||errReload.gachaBusy()||[...document.querySelectorAll('main button[aria-label^="Remove "]')].some(b=>!b.closest('[role="log"]')&&b.getClientRects().length>0);}catch{}
+      if(risky&&Date.now()>reloadArm){reloadArm=Date.now()+3500;reloadBtn.setAttribute('data-arm','');clearTimeout(reloadArmTimer);reloadArmTimer=setTimeout(()=>{reloadArm=0;reloadBtn.removeAttribute('data-arm');},3500);try{errReload.toast('输入框有未发送的内容（或抽卡进行中），刷新会丢失：3 秒内再点一次确认刷新',3500);}catch{}return;}
+      clearTimeout(reloadArmTimer);reloadBtn.removeAttribute('data-arm');reloadBtn.setAttribute('data-spin','');
+      try{errReload.reloadNow(errReload.sidNow(),false);}catch{location.reload();}
+    }
     const panel=el('section','panel',null,root),resizer=el('div','resizer',null,panel);resizer.title='拖动调整宽度，双击恢复';
     dragger(resizer,{start:e=>({x:e.clientX,width:host.getBoundingClientRect().width}),move:(e,s)=>{const w=clamp(s.width+(s.x-e.clientX),280,Math.max(280,Math.min(720,innerWidth-480)),prefs.width);host.style.setProperty('--amp-width',w+'px');prefs.width=w;},end:()=>{savePrefs();paint();},reset:()=>{prefs.width=340;host.style.setProperty('--amp-width','340px');savePrefs();paint();}});
     const grip=el('div','grip',null,gripRoot);grip.hidden=true;grip.title='拖动调整 Arena 会话栏宽度，双击恢复';
@@ -6565,7 +6712,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     const actions=el('div','log-actions',null,logBar),read=button(actions,'重读记录','重新读取当前运行记录',refresh);const clearLogs=button(actions,'清理日志','清理全部本地日志（不影响编号与缓存）',async()=>{if(!confirmLogClear){confirmLogClear=true;render();return;}await catalog.clearLogs();confirmLogClear=false;logKey='';bodyStamp=[];render();}),cancelClear=button(actions,'取消','取消清理日志',()=>{confirmLogClear=false;render();});
     const body=el('div','body',null,panel);body.setAttribute('role','tabpanel');
     const toast=el('div','toast','',panel);toast.hidden=true;toast.setAttribute('role','status');
-    const footer=el('footer','footer',null,panel),exportButton=button(footer,'','导出当前视图的记录、原始数据和日志',async()=>{if(tab==='hunt'){download(gacha.state()||{},'arena-gacha-'+Date.now()+'.json');return;}if(tab==='detector'){download(legacyDisplay.snapshot(),'arena-independent-detector-'+Date.now()+'.json');return;}const data=exported();data.logs=await catalog.readLogs(data.sid);download(data,'amp-lite-'+(data.sid||'export').slice(0,8)+'-'+Date.now()+'.json');});icon('download',exportButton);el('span','','导出记录',exportButton);(()=>{const cmp=(x,y)=>{const p=String(x).split('.').map(Number),q=String(y).split('.').map(Number);for(let i=0;i<Math.max(p.length,q.length);i++){const d=(p[i]||0)-(q[i]||0);if(d)return d>0?1:-1;}return 0;};const box=el('div','upds',null,footer);const BASE='https://raw.githubusercontent.com/755287249/-/main/';const mk=(label,file,getCur)=>{const RAW=BASE+file,CK='amp.native.upd.'+file;let latest=null,busy=false,fresh=null;const ub=el('button','footer-note upd','',box);ub.type='button';const paint=(msg)=>{const cur=getCur();ub.dataset.new=cur&&latest&&cmp(latest,cur)>0?'1':'';ub.dataset.miss=cur?'':'1';ub.title=(cur?label+' 当前 v'+cur:label+' 未检测到（未安装或未启用）')+(latest?'，GitHub 最新 v'+latest+(ub.dataset.src?'（'+ub.dataset.src+'）':''):'')+'。点击'+(ub.dataset.new||!cur?'打开安装页':'重新检查');const old=!cur&&file.includes('Switch')&&!!document.querySelector('[data-amp-switch],[data-amp-login],[data-amp-switcher],#amp-switcher-css');const ahead=cur&&latest&&cmp(cur,latest)>0;ub.textContent=label+' '+(msg||(!cur?(old?'旧版（≤1.0.17）· 安装 v'+(latest||'新版'):latest?'未检测到 · 安装 v'+latest:'未检测到 · 安装'):ub.dataset.new?'v'+cur+' → v'+latest+' · 更新':ahead?'v'+cur+' · GitHub 仍是 v'+latest:latest?'v'+cur+' · 已是最新':'v'+cur+' · 检查更新'));if(!cur&&!msg)ub.title=label+' 未检测到版本号：可能是 v1.0.17 及更早的版本（不会上报版本），或未安装/未启用。安装最新版后即可显示。'+(latest?'GitHub 最新 v'+latest+'。':'');if(ahead&&!msg)ub.title=label+' 本地 v'+cur+' 比 GitHub 上的 v'+latest+' 新，请把新版上传到 GitHub。';};const check=async(force)=>{if(busy)return;try{const c=JSON.parse(localStorage.getItem(CK)||'null');if(!force&&c&&Date.now()-c.at<5*60e3&&!(getCur()&&cmp(getCur(),c.v)>0)){latest=c.v;paint();return;}}catch{}busy=true;paint('检查中…');try{const F=window.__ampNativeFetch||fetch,vOf=t=>(String(t).match(/\/\/\s*@version\s+([\d.]+)/)||[])[1]||null,errs=[];let best=null,src='';const take=(v,from)=>{if(v&&(!best||cmp(v,best)>0)){best=v;src=from;}};
+    const footer=el('footer','footer',null,panel),exportButton=button(footer,'','导出当前视图的记录、原始数据和日志',async()=>{if(tab==='hunt'){download(gacha.state()||{},'arena-gacha-'+Date.now()+'.json');return;}if(tab==='detector'){download({...legacyDisplay.snapshot(),oneClick:force.bySid.get(sidOf(location.href))||null},'arena-independent-detector-'+Date.now()+'.json');return;}const data=exported();data.logs=await catalog.readLogs(data.sid);download(data,'amp-lite-'+(data.sid||'export').slice(0,8)+'-'+Date.now()+'.json');});icon('download',exportButton);el('span','','导出记录',exportButton);(()=>{const cmp=(x,y)=>{const p=String(x).split('.').map(Number),q=String(y).split('.').map(Number);for(let i=0;i<Math.max(p.length,q.length);i++){const d=(p[i]||0)-(q[i]||0);if(d)return d>0?1:-1;}return 0;};const box=el('div','upds',null,footer);const BASE='https://raw.githubusercontent.com/755287249/-/main/';const mk=(label,file,getCur)=>{const RAW=BASE+file,CK='amp.native.upd.'+file;let latest=null,busy=false,fresh=null;const ub=el('button','footer-note upd','',box);ub.type='button';const paint=(msg)=>{const cur=getCur();ub.dataset.new=cur&&latest&&cmp(latest,cur)>0?'1':'';ub.dataset.miss=cur?'':'1';ub.title=(cur?label+' 当前 v'+cur:label+' 未检测到（未安装或未启用）')+(latest?'，GitHub 最新 v'+latest+(ub.dataset.src?'（'+ub.dataset.src+'）':''):'')+'。点击'+(ub.dataset.new||!cur?'打开安装页':'重新检查');const old=!cur&&file.includes('Switch')&&!!document.querySelector('[data-amp-switch],[data-amp-login],[data-amp-switcher],#amp-switcher-css');const ahead=cur&&latest&&cmp(cur,latest)>0;ub.textContent=label+' '+(msg||(!cur?(old?'旧版（≤1.0.17）· 安装 v'+(latest||'新版'):latest?'未检测到 · 安装 v'+latest:'未检测到 · 安装'):ub.dataset.new?'v'+cur+' → v'+latest+' · 更新':ahead?'v'+cur+' · GitHub 仍是 v'+latest:latest?'v'+cur+' · 已是最新':'v'+cur+' · 检查更新'));if(!cur&&!msg)ub.title=label+' 未检测到版本号：可能是 v1.0.17 及更早的版本（不会上报版本），或未安装/未启用。安装最新版后即可显示。'+(latest?'GitHub 最新 v'+latest+'。':'');if(ahead&&!msg)ub.title=label+' 本地 v'+cur+' 比 GitHub 上的 v'+latest+' 新，请把新版上传到 GitHub。';};const check=async(force)=>{if(busy)return;try{const c=JSON.parse(localStorage.getItem(CK)||'null');if(!force&&c&&Date.now()-c.at<5*60e3&&!(getCur()&&cmp(getCur(),c.v)>0)){latest=c.v;paint();return;}}catch{}busy=true;paint('检查中…');try{const F=window.__ampNativeFetch||fetch,vOf=t=>(String(t).match(/\/\/\s*@version\s+([\d.]+)/)||[])[1]||null,errs=[];let best=null,src='';const take=(v,from)=>{if(v&&(!best||cmp(v,best)>0)){best=v;src=from;}};
           // 1) GitHub API 查这个文件最新提交的 sha，再按 sha 取原文（路径唯一，不会被 CDN/镜像缓存）；2) 兜底直接取 main
           try{const c=await F.call(window,'https://api.github.com/repos/755287249/-/commits?sha=main&per_page=1&path='+encodeURIComponent((/\/test\/$/.test(BASE)?'test/':'')+file),{cache:'no-store',credentials:'omit'});if(!c.ok)throw new Error('API HTTP '+c.status);const sha=(await c.json())?.[0]?.sha;if(!sha)throw new Error('API 无提交');const r=await F.call(window,BASE.replace('/main/','/'+sha+'/')+file,{cache:'no-store',credentials:'omit',headers:{Range:'bytes=0-4095'}});if(!r.ok)throw new Error('sha HTTP '+r.status);take(vOf(await r.text()),'commit '+sha.slice(0,7));fresh=BASE.replace('/main/','/'+sha+'/')+file;}catch(e){errs.push(e.message||String(e));}
           try{const r=await F.call(window,RAW+'?t='+Date.now(),{cache:'no-store',credentials:'omit',headers:{Range:'bytes=0-4095'}});if(!r.ok)throw new Error('raw HTTP '+r.status);take(vOf(await r.text()),'raw');}catch(e){errs.push(e.message||String(e));}
@@ -6698,7 +6845,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       const generating=!!document.querySelector('button[aria-label="Stop generating"],button[aria-label="Stop response"],button[aria-label="停止生成"]');
       const VN={openai:'GPT',anthropic:'Claude',google:'Gemini',xai:'Grok',moonshot:'Kimi',deepseek:'DeepSeek',qwen:'Qwen',zhipu:'GLM',xiaomi:'MiMo',bytedance:'豆包',minimax:'MiniMax',mistral:'Mistral',meta:'Llama'};
       const rc=r?.data?.calls?.at(-1),partial=rc?.internal||rc?.response||rc?.request||(rc?.model&&rc.model!=='未提供'?rc.model:'');
-      const finalName=(rc?.internal||meta?.name?.name||c?.internal||c?.model||'').replace(/^未提供$/,'');
+      const rn=rc?.response||rc?.request||(rc?.model&&rc.model!=='未提供'?rc.model:''),finalName=(rc?.internal||(rn&&brand.of(rn)&&brand.of(rn)!==brand.of(meta?.name?.name||'')?rn:'')||meta?.name?.name||c?.internal||c?.model||'').replace(/^未提供$/,'');
       let sub='',fresh=false;
       if(r&&!done){const exact=rc?.internal||rc?.response,bv=brand.of(partial);sub=exact?'识别：'+brand.short(exact):bv?'识别中 · 已确定厂商':partial?'识别：'+noVertex(partial):'识别中…';}
       else if(r&&done){const key=r.runId+'|'+r.revision+'|done';if(!hdrStart.has(key))hdrStart.set(key,Date.now());if(Date.now()-hdrStart.get(key)<8000&&finalName){sub='识别模型为 '+brand.short(withVendor(sid,meta,finalName));fresh=true;}}
@@ -6732,6 +6879,8 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       if(stopped||!document.body)return;const cooling=Date.now()<cooldown;if(cooling!==lastCooling){lastCooling=cooling;paint();}const main=document.querySelector('main'),ready=document.readyState==='complete';
       const anchor=ready?[...document.querySelectorAll('main button[aria-label="Toggle workspace sidebar"],main button[aria-label="Open workspace"],main button[aria-label="Close workspace"],main button[aria-label="打开工作区"],main button[aria-label="切换工作区侧边栏"]')].find(b=>{const r=b.getBoundingClientRect(),m=b.closest('main').getBoundingClientRect();return r.width>0&&r.height>0&&r.top<m.top+100;}):null;
       if(anchor){if(entry.parentNode!==anchor.parentNode||entry.nextSibling!==anchor)anchor.before(entry);entry.removeAttribute('data-floating');}else{if(entry.parentNode!==document.body)document.body.append(entry);entry.setAttribute('data-floating','');}
+      const drawer=ready&&main&&innerWidth<768?[...main.querySelectorAll('button[aria-label="Open sidebar"],button[aria-label="Toggle sidebar"],button[aria-label="Expand sidebar"],button[aria-label="打开侧边栏"],button[aria-label="展开侧边栏"]')].find(b=>{const r=b.getBoundingClientRect(),m=main.getBoundingClientRect();return r.width>0&&r.height>0&&r.top<m.top+100&&r.left<m.left+m.width/2;}):null;
+      if(drawer){if(drawer.nextSibling!==reloadHost)drawer.after(reloadHost);reloadHost.hidden=false;const fg=getComputedStyle(drawer).color;if(fg&&reloadHost.style.getPropertyValue('--amp-reload-fg')!==fg)reloadHost.style.setProperty('--amp-reload-fg',fg);}else reloadHost.hidden=true;
       const eligible=/^\/agent(?:\/|$)/.test(location.pathname);entry.hidden=!eligible;let mode='none';
       if(eligible&&ready&&main){const parent=main.parentElement,p=getComputedStyle(parent),m=getComputedStyle(main),isSibling=host.parentNode===parent&&!host.hidden,available=main.getBoundingClientRect().width+(isSibling?host.getBoundingClientRect().width+(parseFloat(p.columnGap)||0):0),wide=innerWidth>=1024&&available>=900&&p.display.includes('flex')&&p.flexDirection==='row';
         if(wide){mode='wide';if(host.parentNode!==parent||host.previousSibling!==main)main.after(host);compact=false;}
@@ -6785,27 +6934,51 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       pickers.hidden=turnPicker.hidden&&picker.hidden;
       if(tab==='logs'){const logSid=historyView?.sid||sid,key=(logSid||'')+':'+catalog.logRevision;if(logKey!==key){logKey=key;void catalog.readLogs(logSid).then(rows=>{if(logKey!==key)return;logItems=rows;logSerial++;paint();});}}
       if(tab==='settings'&&Date.now()-usageAt>5000){usageAt=Date.now();void catalog.usage().then(u=>{usageInfo=u;settingsSerial++;paint();});}
-      const next=[tab,tab==='detector'?legacyDisplay.revision:tab==='hunt'?gacha.revision:0,s,c,historical,moreOpen,tab==='cache'?catalog.revision:0,cacheLimit,openSid,tab==='logs'?logSerial:0,tab==='logs'?pref.level:null,!!r?.busy,Date.now()<cooldown,rawFilter,rawSpan,tab==='raw'?rawStore.get(s?.key)?.spans.size:0,tab==='settings'?settingsSerial:0,confirmRawClear,tab==='settings'?JSON.stringify(prefs):'',tab==='raw'?JSON.stringify(rawOf(s)?.probe&&Object.keys(rawOf(s).probe)):'',tab==='overview'?spendSerial:0];
+      const next=[tab,tab==='detector'?legacyDisplay.revision+'|'+force.serial+'|'+(sid||''):tab==='hunt'?gacha.revision:0,s,c,historical,moreOpen,tab==='cache'?catalog.revision:0,cacheLimit,openSid,tab==='logs'?logSerial:0,tab==='logs'?pref.level:null,!!r?.busy,Date.now()<cooldown,rawFilter,rawSpan,tab==='raw'?rawStore.get(s?.key)?.spans.size:0,tab==='settings'?settingsSerial:0,confirmRawClear,tab==='settings'?JSON.stringify(prefs):'',tab==='raw'?JSON.stringify(rawOf(s)?.probe&&Object.keys(rawOf(s).probe)):'',tab==='overview'?spendSerial:0];
       if(next.some((x,i)=>x!==bodyStamp[i])||!bodyStamp.length){const scroll=body.scrollTop,sameTab=bodyStamp[0]===tab,focus=root.activeElement?.dataset.focus;bodyStamp=next;body.replaceChildren();if(tab==='hunt')huntTab();else if(tab==='detector')detectorTab();else if(tab==='cache')cacheTab();else if(tab==='logs')logTab();else if(tab==='settings')settingsTab();else if(!c){if(tab==='overview'&&turnSid)spendCard({sid:turnSid});empty(turnKey?'正在读取此轮缓存':'尚无模型记录',turnKey?'如长时间无内容，说明此轮快照不可用。':'发送一条新消息后，型号与配置会自动填入。');}else if(tab==='sources')sources(s,c);else if(tab==='raw')rawTab(s,c);else overview(s,c);body.scrollTop=sameTab?scroll:0;if(focus)[...body.querySelectorAll('[data-focus]')].find(e=>e.dataset.focus===focus)?.focus({preventScroll:true});}
     }
-    // Display adapter only. The original detector engine is not rewritten or fed Probe data.
+    // 独立检测页：上半“一键检测”（立刻读取本对话此刻的全部记录，看中途有没有换模型、换成了谁），下半“原脚本检测”（v8.1.0 原样结果，只换排版）
+    const posText=c=>!c?'':(c.turn?'第 '+c.turn+' 轮':'未标记轮次')+(c.attempt>1?'（第 '+c.attempt+' 次）':'')+' · 第 '+c.n+' 次调用';
+    function vlogo(parent,names){const vid=names.map(n=>brand.of(n)).find(Boolean);if(!vid)return null;let ic='';try{ic=gachaUi.vendorIcon(vid,12);}catch{}if(!ic)return null;const s=el('span','vlogo',null,parent);s.innerHTML=ic;if(!ic.includes('gpVIcon'))s.setAttribute('data-full','');s.title=brand.NAME[vid]||vid;return s;}
+    let legacyRawOpen=false;
     function detectorTab(){
-      const data=legacyDisplay.snapshot();
-      const section=el('section','section',null,body);
-      el('h3','section-heading','独立检测 · 原脚本 v8.1.0',section);
-      el('p','note','这里显示原脚本的最新状态和结果，与概览的检测逻辑独立，不跟随会话缓存或历史轮次选择。',section);
-      const state=el('div','config-row',null,section);
-      state.style.marginTop='14px';
-      el('span','config-label','状态',state);
-      el('span','config-value',data.state||'等待初始化',state);
-      const text=el('pre','json',data.text||'等待发送内容',section);
-      text.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;max-height:none;user-select:text;margin-top:14px;';
-      text.tabIndex=0;
-      const actions=el('div','log-actions',null,section);
-      button(actions,'复制原始显示','复制原脚本完整显示文本',()=>copy(data.text,'独立检测信息'));
-      button(actions,'导出本页','仅导出本页显示，不含运行令牌',()=>download(legacyDisplay.snapshot(),'arena-independent-detector-'+Date.now()+'.json'));
-      if(data.at)el('p','note','显示更新时间：'+new Date(data.at).toLocaleString(),section);
-      el('p','note','保留原脚本的 New Chat 自动刷新行为。两套检测分别请求数据，可能增加读取次数；本页不代表历史轮次结论。',section);
+      const sid=sidOf(location.href),busy=force.busy&&force.sid===sid,res=sid?force.bySid.get(sid)||null:null,calls=res?.calls?.length||0,changed=!!res?.changes?.length,cur=res?.current;
+      const sec=el('section','section detect',null,body),head=el('div','section-heading',null,sec);el('h3','','一键检测',head);el('span','eyebrow',res?'检测于 '+clock(res.at):'核对此刻模型',head);
+      const card=el('div','detect-card',null,sec);card.dataset.tone=busy?'busy':!res?'idle':!calls?(res.error||res.notes.length?'error':'idle'):changed?'changed':'same';
+      const st=el('div','detect-state',null,card);el('i','',null,st);
+      el('span','grow',busy?(force.step||'检测中')+'…':!res?'尚未检测':!calls?(res.error?'检测未完成':'没有找到模型调用记录'):changed?'中途换过 '+res.changes.length+' 次模型':'全程同一模型，未发现变更',st);
+      if(cur){
+        const m=el('div','detect-model',null,card);vlogo(m,[cur.name,cur.internal,cur.response,cur.request,cur.pill]);el('span','detect-name',cur.name,m);
+        const tier=brand.tierOf(cur.internal||'')||brand.tierOf(cur.name);if(tier)el('span','detect-tier',tier,m);
+        const alt=FORCE_SRC.filter(k=>k!==cur.src&&cur[k]&&!forceEq(cur[k],cur.name)).slice(0,2).map(k=>FORCE_SRC_TEXT[k]+' '+cur[k]);
+        el('div','detect-sub',['按'+(FORCE_SRC_TEXT[cur.src]||'名称'),...alt].join(' · '),card);
+        el('div','detect-sub',(cur.partial?'正在进行':'最近一次')+' · '+clock(cur.at)+' · '+posText(cur)+(cur.local?' · 本机记录':''),card);
+      }else if(!res)el('div','detect-sub','立刻读取本对话此刻的全部记录（包括交互面板选择后继续的部分），逐次调用核对模型：中途有没有换模型、换成了谁。',card);
+      if(changed){const box=el('div','detect-changes',null,card);
+        for(const c of res.changes.slice(-4).reverse()){const row=el('div','detect-change',null,box),flow=el('div','detect-flow',null,row);el('span','from',c.from,flow);el('span','arrow','→',flow);el('b','',c.to,flow);el('div','detect-sub',[clock(c.at),posText(c)+'起',...c.tags].join(' · '),row);}
+        if(res.changes.length>4)el('div','detect-sub','更早还有 '+(res.changes.length-4)+' 次，见下方时间线',box);}
+      const go=button(sec,busy?'检测中…':res?'重新检测':'一键检测',sid?'立刻读取本对话此刻的 Trace 与本机记录，逐次调用核对模型':'先打开一个对话',()=>{void forceDetect();},'detect-go');go.disabled=force.busy||!sid;
+      for(const n of res?.notes||[])el('p','note warning',n,sec);
+      if(res?.error)el('p','note warning','检测出错：'+res.error,sec);
+      if(calls)el('p','note',['依据：'+(res.events?'Trace '+res.events+' 条事件':'本机记录'),calls+' 次调用',res.fetched?'补读 '+res.fetched+' 个详情':'',res.localTurns?'本机更早 '+res.localTurns+' 轮':'','档位 / -vertex 等后缀不同不算换模型'].filter(Boolean).join(' · '),sec);
+      if(res?.groups?.length){
+        const ts=el('section','section',null,body),th=el('div','section-heading',null,ts);el('h3','','模型时间线',th);el('span','eyebrow',res.groups.length+' 段 · '+calls+' 次调用',th);
+        const tl=el('div','tl',null,ts),gs=res.groups,shown=gs.slice(-8);if(gs.length>8)el('div','tl-more','更早 '+(gs.length-8)+' 段未显示',tl);
+        shown.forEach((g,i)=>{const row=el('div','tl-row',null,tl),now=i===shown.length-1;if(now)row.setAttribute('data-current','');el('i','tl-dot',null,row);const nm=el('div','tl-name',null,row);vlogo(nm,[g.title.name,g.names.internal,g.names.response,g.names.request,g.names.pill]);el('span','',g.title.name,nm);el('span','tl-count','× '+g.count,row);
+          const t=g.turns,turns=t.length?'第 '+(t.length>1?Math.min(...t)+'–'+Math.max(...t):t[0])+' 轮':'';
+          el('div','tl-meta',[clock(g.from)+(g.to&&g.to!==g.from?' – '+clock(g.to):''),turns,g.title.src?'按'+FORCE_SRC_TEXT[g.title.src]:'',g.local?'本机记录':'',now&&g.partial?'进行中':''].filter(Boolean).join(' · '),row);});
+      }
+      legacySection(res);
+    }
+    // 原脚本 v8.1.0：把 “Key: value” 显示拆成配置行，原文收进“原始显示”
+    function legacySection(res){
+      const data=legacyDisplay.snapshot(),text=String(data.text||''),state=data.state||'等待初始化',waiting=text.startsWith(state+'：');
+      const ls=el('section','section',null,body),lh=el('div','section-heading',null,ls);el('h3','','原脚本检测',lh);el('span','eyebrow','v8.1.0 · 只看最新一轮',lh);
+      const cfg=el('div','config',null,ls),sr=el('div','config-row',null,cfg);el('span','config-label','状态',sr);const sv=el('span','config-value legacy-state',state,sr);if(waiting){const pr=el('div','config-row',null,cfg);el('span','config-label','进度',pr);el('span','config-value legacy-state',text.slice(state.length+1),pr);}sv.dataset.tone=/检测结果/.test(state)?'ok':/进行中/.test(state)?'busy':/错误/.test(state)?'bad':'';
+      if(!waiting)for(const line of text.split('\n')){const m=/^([^:：]{1,24})[:：]\s*(.+)$/.exec(line.trim());if(!m)continue;const r=el('div','config-row',null,cfg);el('span','config-label',m[1]==='Model'?'模型':m[1],r);el('span','config-value',m[2],r);}
+      const raw=el('details','legacy-raw',null,ls),sm=el('summary','',null,raw);icon('chevron',sm);el('span','','原始显示',sm);raw.open=legacyRawOpen;raw.ontoggle=()=>{legacyRawOpen=raw.open;};const pre=el('pre','json',text||'等待发送内容',raw);pre.tabIndex=0;
+      const actions=el('div','log-actions',null,ls);button(actions,'复制原始显示','复制原脚本完整显示文本',()=>copy(text,'独立检测信息'));button(actions,'导出本页','导出本页显示与一键检测结果，不含运行令牌',()=>download({...legacyDisplay.snapshot(),oneClick:res||null},'arena-independent-detector-'+Date.now()+'.json'));
+      el('p','note',(data.at?'显示更新于 '+clock(data.at)+' · ':'')+'与概览的检测互相独立；保留原脚本的 New Chat 自动刷新。',ls);
     }
     // 概览第一行“消耗”卡片：当前对话总量 / 最近一次，Token ↔ 美金 切换（选择会记住）。
     // 美金：Arena 费用接口的会话累计计费（含其他设备的消耗）与本轮计费；没有接口数据时用本机记录的每轮 credits 合计（标 ≈）。
@@ -6929,6 +7102,19 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       usd.prices=[...ps.values()];
       return {total:have?total:null,input,output,turns:all.size,approx,loading:hit.loading&&!hit.byKey,credits:cHave?credits:null,creditTurns:cHave,usd};
     }
+    // 底部信息栏：没有美元额度快照时显示本对话花费（Arena 会话计费 > 本机按轮合计 / token × 单价估算），点开看“消耗”
+    let briefMemo={k:'',v:null};
+    function spendBrief(){
+      const sid=sidOf(location.href);if(!sid)return null;
+      const latest=spendLatest(sid),turns=catalog.turnsOf(sid),st=costState.get(sid),rm=spendRemote.get(sid);
+      const k=[sid,spendSerial,latest?.key,latest?.at,latest?.credits?.at,turns.length,turns.at(-1)?.at,st?.latest?.at,rm?.at,priceLoad().at].join('|');
+      if(briefMemo.k===k)return briefMemo.v;
+      const cands=[[latest?.credits?.session,Date.parse(latest?.credits?.at||'')||0],[st?.latest?.summary?.session,st?.latest?.at||0],[rm?.session,rm?.at||0]].filter(x=>x[0]).sort((a,b)=>b[1]-a[1]);
+      const money=u=>'$'+(u>=0.1?u.toFixed(2):u.toFixed(4)),su=spendNum(cands[0]?.[0]?.chargedUsd);let v=null;
+      if(su!==null)v={text:money(su),title:'本对话累计花费（Arena 会话计费）\n点击查看消耗'};
+      else{const eu=sessionSpend(sid,latest).usd;if(eu.have){if(eu.estimated)priceRefresh();v={text:'≈'+money(eu.usd),title:'本对话花费约 $'+eu.usd.toFixed(4)+'（本机记录的 '+eu.have+' 轮'+(eu.estimated?'，其中 '+eu.estimated+' 轮按 token × 单价估算':'')+'）\n其他设备上的轮次不在内 · 点击查看消耗'};}}
+      briefMemo={k,v};return v;
+    }
     function spendCard(s){
       const sid=s.sid,latest=spendLatest(sid)||s,unit=prefs.spendUnit==='usd'?'usd':'token';
       const sec=el('section','section spend',null,body),head=el('div','section-heading',null,sec);el('h3','','消耗',head);
@@ -6961,7 +7147,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       spendCard(s);
       const model=el('section','section model',null,body),cap=el('div','section-heading',null,model);el('span','eyebrow',c.request?'请求型号':'Trace 模型标签',cap);el('span','eyebrow',turnLabel(s)+' · '+s.count+' 次调用'+(s.prior?'（此前 '+s.prior+' 次）':''),cap);
       const title=el('div','model-title',null,model);el('div','name',c.model,title);iconButton(title,'copy','复制型号',()=>copy(c.model));
-      const internal=c.internal||(s.internalNames.length?s.internalNames.join(' / '):null), ir=row(model,'内部名称',internal);if(internal&&(c.internalScope==='turn'||!c.internal)&&s.count>1)el('span','pill','轮次级',ir.lastChild);
+      const later=!c.internal&&s.calls.some(x=>x.internal),internal=c.internal||(s.internalNames.length&&!later?s.internalNames.join(' / '):null), ir=row(model,'内部名称',later?'尚未读到本条消息的记录':internal);if(internal&&(c.internalScope==='turn'||!c.internal)&&s.count>1)el('span','pill','轮次级',ir.lastChild);
       if(s.routing){const rr=row(model,'路由改派',(s.routing.from||'原模型')+' → '+(s.routing.to||'其他模型'),true);el('span','pill',s.routing.cause?(/内容审核/.test(s.routing.cause)?'内容审核拦截':/空内容/.test(s.routing.cause)?'原模型空响应':/首包超时/.test(s.routing.cause)?'首包超时':'原模型失败'):s.routing.waitMs?'原模型 '+Math.round(s.routing.waitMs/1000)+' 秒无输出':'原模型失败',rr.lastChild);if(s.routing.cause)row(model,'改派类型',s.routing.cause);if(s.routing.reason)row(model,'改派原因',s.routing.reason);}
       if(s.outcome){const lc=s.calls.at(-1);row(model,'本轮结果',(s.outcome==='failed'?'Arena 记录失败':'空回复')+(lc?.finish==='length'?' · 推理用尽输出上限':''),false);}
       if(s.prompt)row(model,'提问开头','“'+s.prompt+'”',false);if(s.sentAt)row(model,'发送时间',fullStamp(Date.parse(s.sentAt)));
@@ -7117,7 +7303,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       if(need.length)void catalog.sentAt(need).then(()=>{for(const id of need)sentPending.delete(id);paint();});
       if(changed)log('debug','发送时间','标注 '+changed+' 条消息');
     }
-    ui={host,entry,attach,render,view,show(){if(compact)expanded=true;else pref.open=true;persist();render();},toggle(){if(compact)expanded=!expanded;else pref.open=!pref.open;persist();render();},destroy(){clearTimeout(toastTimer);try{clearHeader();}catch{}for(const [a,m]of marks)restoreMark(a,m);marks.clear();clearSent();if(aliasSheet)document.adoptedStyleSheets=document.adoptedStyleSheets.filter(s=>s!==aliasSheet);aliasStyle?.remove();applySidebar(null);entry.remove();host.remove();gripHost.remove();foldHost.remove();}};render();
+    ui={host,entry,attach,render,view,spendBrief,show(t){if(typeof t==='string'&&tabs.some(x=>x[0]===t)){tab=t;historyView=null;turnKey=null;}if(compact)expanded=true;else pref.open=true;persist();render();},toggle(){if(compact)expanded=!expanded;else pref.open=!pref.open;persist();render();},destroy(){clearTimeout(toastTimer);try{clearHeader();}catch{}for(const [a,m]of marks)restoreMark(a,m);marks.clear();clearSent();if(aliasSheet)document.adoptedStyleSheets=document.adoptedStyleSheets.filter(s=>s!==aliasSheet);aliasStyle?.remove();applySidebar(null);entry.remove();host.remove();gripHost.remove();foldHost.remove();reloadHost.remove();}};render();
   }
   const mountAll=()=>{mount();mountBar();gachaUi.mount();};
   if(document.body)mountAll();else{const observer=new MutationObserver(()=>{if(document.body){observer.disconnect();mountAll();}});observer.observe(document.documentElement||document,{childList:true,subtree:true});}
