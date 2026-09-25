@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.72
+// @version      1.11.73
 // @description  【测试版】Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.72' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.73' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -3431,7 +3431,9 @@ const continueWork = (() => {
   const allowed = () => location.origin === 'https://arena.ai' && /^\/agent(?:\/[0-9a-f-]{36})?\/?$/i.test(location.pathname);
   const state = { url: '', sent: false, at: 0, absentAt: null, serial: 0, confirmed: 0, clicks: 0 };
   let onClick = null;
-  const enabled = () => true; // always on (v1.5): the only choice clicked is Keep working
+  // v1.11.73 抽卡进行中 / 抽卡产生的对话：不点“继续工作”，只把反馈卡片收起（避免模型接着干活、页面跳动）
+  const quietNow = () => { try { return !!window.__AMP_GACHA_QUIET__?.(); } catch { return false; } };
+  const enabled = () => !quietNow(); // otherwise always on (v1.5): the only choice clicked is Keep working
   function candidates() {
     const out = [];
     const pre = [...document.querySelectorAll('button,[role="button"],[role="menuitem"],[role="menuitemradio"],[role="option"],[role="radio"]')].filter(b => continueText.test(norm(b.getAttribute('aria-label') || b.textContent)));
@@ -3472,15 +3474,17 @@ const continueWork = (() => {
     b.click(); try { onClick?.(); } catch {}
     return { status: 'clicked', pending: true, serial: state.serial, confirmed: state.confirmed };
   }
-  let scheduled = false;
-  const auto = () => { if (scheduled) return; scheduled = true; setTimeout(() => { scheduled = false; if (enabled()) tick(); else inspect(); }, 250); };
+  function quiet() { let n = 0; for (const { root } of candidates()) if (!root.hasAttribute('data-amp-cw-quiet')) { root.setAttribute('data-amp-cw-quiet', ''); n++; } return n; }
+  let scheduled = false, qRaf = 0;
+  const auto = () => { if (quietNow()) { if (!qRaf) qRaf = requestAnimationFrame(() => { qRaf = 0; quiet(); }); return; } if (scheduled) return; scheduled = true; setTimeout(() => { scheduled = false; if (enabled()) tick(); else { quiet(); inspect(); } }, 250); };
   function start() {
     if (!document.documentElement) return;
+    try { const st = document.createElement('style'); st.textContent = '[data-amp-cw-quiet]{display:none!important}'; (document.head || document.documentElement).append(st); } catch {}
     new MutationObserver(auto).observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden', 'aria-hidden', 'style', 'class'] });
     setInterval(auto, 2000);
   }
-  const api = { version: 2, inspect, tick, enabled, set(v) { try { localStorage.setItem(KEY, v ? '1' : '0'); } catch {} if (v) auto(); }, onClick(fn) { onClick = fn; }, get clicks() { return state.clicks; } };
-  if (!window.__arenaContinueWork || window.__arenaContinueWork.version < 2) window.__arenaContinueWork = api;
+  const api = { version: 3, inspect, tick, quiet, enabled, set(v) { try { localStorage.setItem(KEY, v ? '1' : '0'); } catch {} if (v) auto(); }, onClick(fn) { onClick = fn; }, get clicks() { return state.clicks; } };
+  if (!window.__arenaContinueWork || window.__arenaContinueWork.version < 3) window.__arenaContinueWork = api;
   if (document.documentElement) start(); else document.addEventListener('DOMContentLoaded', start, { once: true });
   return api;
 })();
@@ -3517,22 +3521,22 @@ const gacha = (() => {
   const T = { newChat: 20000, sendReady: 5000, postSeen: 15000, urlSeen: 45000, settle: 500, idleWait: 90000,
     resendNoRun: 15000, resendPending: 45000, resendDefault: 30000, maxResends: 5, genStall: 600000, skipNap: 800 };
   const REASONS = {
-    RATE_LIMIT: '当前 IP 被限流（HTTP 429），已暂停；请切换 IP 后点「我已更换 IP」',
-    AUTH: '登录状态失效（HTTP 401/403），请先登录 Arena 后再继续',
-    HTTP: '发送请求失败，已暂停',
+    RATE_LIMIT: '当前 IP 被限流（HTTP 429），抽卡已停止；切换 IP 后点「我已更换 IP」重新开始',
+    AUTH: '登录状态失效（HTTP 401/403），请先登录 Arena 后重新开始',
+    HTTP: '发送请求失败，抽卡已停止',
     LOGIN: '请先登录 Arena',
-    CAPTCHA: '需要人机验证，已暂停（请手动完成，本脚本不处理验证）',
-    TERMS: '网站弹出首次使用条款，请手动确认后点“继续”',
-    ALERT_LIMIT: '页面提示限流或额度用尽，已暂停',
+    CAPTCHA: '需要人机验证，抽卡已停止（请手动完成，本脚本不处理验证）',
+    TERMS: '网站弹出首次使用条款，请手动确认后重新开始',
+    ALERT_LIMIT: '页面提示限流或额度用尽，抽卡已停止',
     ATTACHMENT: '输入框中有附件，已保留；抽卡不会夹带附件',
-    DRAFT: '输入框中有其他草稿，已保留；请清空后继续',
-    LEFT: '已离开抽卡对话，已暂停',
-    QUOTA: '额度或限流状态显示当前不可发送，已暂停',
-    USD: '美元额度快照显示已用尽/超限，已暂停',
-    SKIPS: '连续 8 次未能完成一轮，页面可能异常，已暂停（点 START 继续补抽）',
-    STEP: '抽卡步骤未能完成，已暂停（点 START 继续）',
+    DRAFT: '输入框中有其他草稿，已保留；请清空后重新开始',
+    LEFT: '已离开抽卡对话，抽卡已停止',
+    QUOTA: '额度或限流状态显示当前不可发送，抽卡已停止',
+    USD: '美元额度快照显示已用尽/超限，抽卡已停止',
+    SKIPS: '连续 8 次未能完成一轮，页面可能异常，抽卡已停止',
+    STEP: '抽卡步骤未能完成',
     NO_CORE: '模型识别核心尚未就绪',
-    RELOADED: '页面刷新后已暂停，点“继续”恢复'
+    RELOADED: '页面已刷新，本次抽卡已结束（再点 START 从 0 开始）'
   };
   const nap = ms => new Promise(r => setTimeout(r, ms));
   const now = () => Date.now();
@@ -3571,22 +3575,24 @@ const gacha = (() => {
 
   // ---------------- run state (sessionStorage: one tab, one run) ----------------
   let run = readJSON(sessionStorage, RUN, null);
+  // v1.11.73 停止就是结束：刷新页面 = 本次抽卡结束（不再有“暂停 / 继续”）。只有抽卡自己发起的页面跳转才接着同一轮跑。
   if (run && typeof run === 'object' && Array.isArray(run.attempts)) {
     const navResume = run.status === 'running' && run.resumeNavUntil && run.resumeNavUntil > now();
-    if (!navResume) {
-      // A page refresh starts a clean log. Only the paused progress (count + archive queue) survives.
-      if (!['running', 'stopping', 'paused'].includes(run.status)) run = null;
-      else { run.archiveQueue = [...(run.archiveQueue || []), ...run.attempts.filter(a => a.verdict === 'archive' && a.sid && !a.archived).map(a => a.sid)].slice(-200); run.attempts = []; run.log = []; }
-    }
-  }
-  if (run && typeof run === 'object' && Array.isArray(run.attempts)) {
-    if (['running', 'stopping'].includes(run.status)) {
-      if (run.resumeNavUntil && run.resumeNavUntil > now() && run.status === 'running') { run.resumeNavUntil = 0; run.autoResume = true; }
-      else { run.status = 'paused'; run.reason = REASONS.RELOADED; run.code = 'RELOADED'; }
-    }
+    const pending = [...new Set([...(run.archiveQueue || []), ...run.attempts.filter(a => a.verdict === 'archive' && a.sid && !a.archived).map(a => a.sid)])].slice(-200);
+    if (navResume) { run.resumeNavUntil = 0; run.autoResume = true; }
+    else if (['running', 'stopping', 'paused'].includes(run.status)) { run.status = 'stopped'; run.reason = REASONS.RELOADED; run.code = 'RELOADED'; run.phase = ''; run.endedAt = run.endedAt || now(); run.archiveQueue = pending; run.attempts = []; run.log = []; }
+    else if (pending.length) { run.archiveQueue = pending; run.attempts = []; run.log = []; }
+    else run = null;
     // An attempt interrupted by a reload is abandoned; it is never counted.
-    const last = run.attempts.at(-1); if (last && !last.done) { last.done = true; last.verdict = 'abandoned'; last.note = '页面刷新中断'; }
+    const last = run?.attempts.at(-1); if (last && !last.done) { last.done = true; last.verdict = 'abandoned'; last.note = '页面刷新中断'; }
   } else run = null;
+  // 结束状态立即写回：再刷新一次就不再重复提示“页面已刷新”
+  try { if (run) writeJSON(sessionStorage, RUN, run); else sessionStorage.removeItem(RUN); } catch {}
+  // v1.11.73 抽卡产生的对话（探测用）：之后再打开也不自动点“继续工作”、反馈卡片直接收起
+  const QSIDS = 'amp.native.gacha.sids.v1';
+  let gSids = new Set(Array.isArray(readJSON(localStorage, QSIDS, [])) ? readJSON(localStorage, QSIDS, []) : []);
+  function noteSid(sid) { if (!sid || gSids.has(sid)) return; gSids.add(sid); if (gSids.size > 300) gSids = new Set([...gSids].slice(-300)); writeJSON(localStorage, QSIDS, [...gSids]); }
+  try { window.__AMP_GACHA_QUIET__ = () => !!run && ['running', 'stopping'].includes(run.status) || gSids.has(sidOf(location.href)); } catch {}
   const persist = () => { if (run) { run.log = run.log.slice(-200); writeJSON(sessionStorage, RUN, run); } };
   function changed() { rev++; persist(); try { paintFn?.(); } catch {} try { window.dispatchEvent(new CustomEvent('amp-native-gacha')); } catch {} }
   function log(text, level = 'info') { if (!run) return; run.log.push({ at: now(), level, text: String(text).slice(0, 300) }); run.phase = level === 'phase' ? text : run.phase; changed(); }
@@ -3895,7 +3901,8 @@ const gacha = (() => {
     if (usd && (usd.overLimit === true || usd.balanceRemainingUsd <= 0) && now() - usd.at < 600000) fatal('USD', '剩余 $' + (+usd.balanceRemainingUsd).toFixed(2));
   }
   // During a draw the feedback card must never stall the run, even if auto-continue is off for manual chats.
-  function tickContinue() { try { const r = window.__arenaContinueWork?.tick?.(location.href); if (r?.status === 'clicked') log('任务反馈窗口：已自动选择 Keep working'); } catch {} skipQuestion(); }
+  // v1.11.73 抽卡时不再点“继续工作”（会让模型接着干活、页面跳来跳去、还白耗额度）：把“此任务成功了吗？”卡片收起即可，不影响识别
+  function tickContinue() { try { window.__arenaContinueWork?.quiet?.(); } catch {} skipQuestion(); }
   // 模型有时会弹出“选项卡片”（带 Skip / Submit 的提问）：抽卡时直接点 Skip 结束这一问，不影响识别。
   let lastSkip = 0;
   function skipQuestion() {
@@ -3912,22 +3919,36 @@ const gacha = (() => {
     if (!ok) { page.clickStop(); log('当前页面持续生成 ' + pace.sec(T.idleWait) + ' 秒，已停止并开新对话', 'warn'); await nap(800); }
   }
   function clickNewChat(link) { suppressReloadUntil = now() + 3000; try { window.__AMP_NATIVE_GACHA_NAV__ = suppressReloadUntil; } catch {} link.click(); }
+  // v1.11.73 新建对话不再拉开左侧抽屉：桌面端点侧栏里看得见的 New Chat；手机端直接用 Next.js 路由切到 /agent（同一页面内，不刷新）
+  function routerNew() {
+    try { const r = window.next?.router; if (typeof r?.push !== 'function') return false; suppressReloadUntil = now() + 3000; try { window.__AMP_NATIVE_GACHA_NAV__ = suppressReloadUntil; } catch {} r.push('/agent'); return true; } catch { return false; }
+  }
+  // 兜底（路由不可用时）：仍要借侧栏里的 New Chat，但侧栏和遮罩全程透明，用户看不到抽屉弹出
+  async function quietSidebarNew(my) {
+    const d = document.documentElement, esc = () => { try { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true })); } catch {} };
+    const x = page.expander(); if (!x) return false;
+    d.setAttribute('data-amp-quietnav', ''); let ok = false;
+    try { x.click(); await waitFor(() => page.newChatLinks().length === 1, 3000, my, 100); const l = page.newChatLinks(); if (l.length === 1) { clickNewChat(l[0]); ok = true; } }
+    finally { setTimeout(() => { if (document.querySelector('[role="dialog"][data-mobile="true"][data-state="open"]')) esc(); setTimeout(() => d.removeAttribute('data-amp-quietnav'), 700); }, ok ? 900 : 0); }
+    return ok;
+  }
   async function openNewChat(my) {
     phase('打开新对话');
     for (let round = 1; ; round++) {
       if (blank(page.view())) return;
-      let links = page.newChatLinks();
-      if (links.length !== 1 && page.expander()) { page.expander().click(); await waitFor(() => page.newChatLinks().length === 1, 3000, my); links = page.newChatLinks(); }
-      if (links.length === 1) clickNewChat(links[0]);
-      else {
-        // No unique sidebar link: fall back to one controlled navigation; the run resumes automatically after load.
-        log('未找到唯一的 New Chat 按钮，改用页面跳转', 'warn'); run.resumeNavUntil = now() + 30000; persist();
+      const links = page.newChatLinks(); let ok = false;
+      if (links.length === 1) { clickNewChat(links[0]); ok = true; }
+      else if (round <= 2 && routerNew()) ok = true;
+      else ok = await quietSidebarNew(my);
+      if (!ok) {
+        // 实在没有入口：一次受控的页面跳转，加载后自动接着这一轮
+        log('未找到新建对话入口，改用页面跳转', 'warn'); run.resumeNavUntil = now() + 30000; persist();
         location.assign('/agent'); await nap(60000); throw new Stop('CANCEL', '', 'cancel');
       }
       const t0 = now();
       if (await waitFor(() => { const v = page.view(); guard(v); return blank(v); }, pace.ms(T.newChat), my)) { pace.note(now() - t0, 2500); return; }
       if (round >= 3) skip('新对话连续 3 次未就绪（每次等待 ' + pace.sec(T.newChat) + ' 秒）');
-      log('新对话未就绪，重新点击 New Chat（第 ' + (round + 1) + ' 次）', 'warn');
+      log('新对话未就绪，重新打开新对话（第 ' + (round + 1) + ' 次）', 'warn');
     }
   }
   async function fillAndSend(my, attempt, fresh) {
@@ -3981,7 +4002,7 @@ const gacha = (() => {
         log('页面仍在生成，继续等待新对话地址', 'warn');
       }
       pace.note(now() - attempt.sentAt, 4000);
-      attempt.sid = sid; attempt.url = location.origin + '/agent/' + sid;
+      attempt.sid = sid; attempt.url = location.origin + '/agent/' + sid; noteSid(sid);
     }
     changed();
   }
@@ -4040,7 +4061,7 @@ const gacha = (() => {
     try {
       await ensureIdle(my); guard(); await openNewChat(my); await fillAndSend(my, attempt, true);
       const id = await monitor(my, attempt), verdict = classify(id, s);
-      attempt.verdict = verdict; attempt.done = true; run.completed++; run.skips = 0; run.recovered = false;
+      attempt.verdict = verdict; attempt.done = true; run.completed++; attempt.draw = run.completed; try { attempt.shown = core?.shown?.(attempt.sid) || null; } catch {} run.skips = 0; run.recovered = false;
       log('#' + run.completed + ' ' + id.name + (id.tier ? ' · ' + id.tier : '') + ' → ' + ({ hit: '命中目标', keep: '保留', archive: '归档' }[verdict]));
       await settle(attempt, verdict, id);
       // 次数优先：命中只记录，不提前结束，直到抽满设定次数。
@@ -4048,7 +4069,7 @@ const gacha = (() => {
     } catch (e) {
       attempt.done = true;
       if (e instanceof Stop && e.kind === 'fatal' && e.code === 'STEP') { e.kind = 'skip'; }
-      if (e instanceof Stop && e.kind === 'skip') { attempt.verdict = 'skipped'; attempt.note = e.message; run.skips++; run.skipTotal = (run.skipTotal || 0) + 1; log('本轮未完成，不计次数，换新对话补抽：' + e.message.replace(/^SKIP · /, '').replace(/^抽卡步骤未能完成，已暂停（点 START 继续） · /, ''), 'warn'); changed(); await nap(T.skipNap); return; }
+      if (e instanceof Stop && e.kind === 'skip') { attempt.verdict = 'skipped'; attempt.note = e.message; run.skips++; run.skipTotal = (run.skipTotal || 0) + 1; log('本轮未完成，不计次数，换新对话补抽：' + e.message.replace(/^SKIP · /, '').replace(/^抽卡步骤未能完成(?:，已暂停（点 START 继续）)? · /, ''), 'warn'); changed(); await nap(T.skipNap); return; }
       attempt.verdict = e instanceof Stop && e.kind === 'cancel' ? 'cancelled' : 'error'; attempt.note = e.message; throw e;
     } finally { changed(); }
   }
@@ -4066,13 +4087,14 @@ const gacha = (() => {
         phase('间隔等待'); await nap(s.intervalMs);
       }
     } catch (e) { if (my === token) await halt(e); }
-    finally { if (my === token && run?.status === 'stopping') { run.status = 'paused'; run.reason = '已手动停止'; changed(); } if (run && !['running'].includes(run.status)) void archiveQueued(false); }
+    finally { if (my === token && run?.status === 'stopping') { run.status = 'stopped'; run.reason = '已手动停止'; run.endedAt = now(); changed(); } if (run && !['running'].includes(run.status)) void archiveQueued(false); }
   }
   async function halt(e) {
     if (!run || !['running', 'stopping'].includes(run.status)) return;
     token++;
-    if (e instanceof Stop && e.kind === 'cancel') { run.status = 'paused'; run.reason = run.reason || '已手动停止'; }
-    else { run.status = 'paused'; run.code = e?.code || 'ERROR'; run.reason = e?.message || String(e); log(run.reason, 'error'); }
+    if (e instanceof Stop && e.kind === 'cancel') { run.status = 'stopped'; run.reason = run.reason || '已手动停止'; }
+    else { run.status = 'stopped'; run.code = e?.code || 'ERROR'; run.reason = e?.message || String(e); log(run.reason, 'error'); }
+    run.endedAt = now();
     run.phase = ''; run.ipOld = null;
     if (ipLimited()) {
       // 429 限流按 IP 计：提示切换 IP，并记下当前（Arena 看到的）IP，用来确认之后是否真的换了
@@ -4081,7 +4103,7 @@ const gacha = (() => {
     }
     changed();
   }
-  const ipLimited = () => !!run && run.status === 'paused' && (run.code === 'RATE_LIMIT' || run.code === 'ALERT_LIMIT' || (run.code === 'QUOTA' && /429|速率|限流/.test(run.reasonRaw || run.reason || '') && !/余额/.test(run.reasonRaw || run.reason || '')));
+  const ipLimited = () => !!run && ['stopped', 'paused'].includes(run.status) && (run.code === 'RATE_LIMIT' || run.code === 'ALERT_LIMIT' || (run.code === 'QUOTA' && /429|速率|限流/.test(run.reasonRaw || run.reason || '') && !/余额/.test(run.reasonRaw || run.reason || '')));
   // Arena 实际看到的出口 IP：同域 Cloudflare trace；取不到再用 ipify
   async function ipNow() {
     try { const r = await fetch('/cdn-cgi/trace', { cache: 'no-store', credentials: 'omit' }); const m = /(?:^|\n)ip=([^\n]+)/.exec(await r.text()); if (m) return m[1].trim(); } catch {}
@@ -4096,8 +4118,8 @@ const gacha = (() => {
     try { const r = await fetch('/api/me', { cache: 'no-store', credentials: 'same-origin' }); if (r.status === 429) return { ok: false, error: '新 IP ' + (ip || '') + ' 仍被限流（HTTP 429），请再换一个' }; }
     catch (e) { return { ok: false, error: '无法连接 Arena：' + (e?.message || e) }; }
     try { core?.clearLimits?.(); } catch {}
-    const msg = 'IP 已从 ' + (old || '未知') + ' 更换为 ' + (ip || '未知') + '，检测正常，继续抽卡';
-    log(msg); const res = start(true); return res.ok ? { ok: true, msg } : res;
+    const msg = 'IP 已从 ' + (old || '未知') + ' 更换为 ' + (ip || '未知') + '，检测正常，重新开始抽卡（从 0 开始）';
+    const res = start(); if (res.ok) log(msg); return res.ok ? { ok: true, msg } : res;
   }
   function finish(status, reason) { if (!run) return; token++; run.status = status; run.reason = reason; run.phase = ''; run.endedAt = now(); log(reason); changed(); }
   async function archiveQueued(manual) {
@@ -4112,8 +4134,10 @@ const gacha = (() => {
     if (!core) return { ok: false, error: REASONS.NO_CORE };
     if (run && ['running', 'stopping'].includes(run.status)) return { ok: false, error: '抽卡正在进行' };
     const s = settings();
-    if (resume && run && run.status === 'paused') { run.settings = { ...s, maxAttempts: run.settings?.maxAttempts ?? s.maxAttempts }; run.status = 'running'; run.reason = ''; run.code = ''; run.skips = 0; run.skipTotal = 0; log('继续抽卡 · 提示词“' + s.prompt.slice(0, 20) + '”'); }
-    else run = { id: Math.random().toString(36).slice(2), status: 'running', startedAt: now(), settings: s, completed: 0, skips: 0, skipTotal: 0, hits: [], attempts: [], log: [], phase: '', reason: '' };
+    // v1.11.73 每次开始都是全新的一轮（从 0 开始），不接着旧进度；只把上一轮还没归档完的对话带过来继续归档
+    const carry = run ? [...new Set([...(run.archiveQueue || []), ...(run.attempts || []).filter(a => a.verdict === 'archive' && a.sid && !a.archived).map(a => a.sid)])].slice(-200) : [];
+    run = { id: Math.random().toString(36).slice(2), status: 'running', startedAt: now(), settings: s, completed: 0, skips: 0, skipTotal: 0, hits: [], attempts: [], log: [], phase: '', reason: '', archiveQueue: carry };
+    log('开始抽卡 · 共 ' + s.maxAttempts + ' 抽 · 从 0 开始');
     if (!/^\/agent(\/|$)/.test(location.pathname)) {
       // Not on an Agent page: go to /agent (a fresh chat) and let the run resume automatically after load.
       log('当前不是 Agent 页面，正在前往 arena.ai/agent 新建对话'); run.resumeNavUntil = now() + 30000; run.autoResume = false; token++; persist(); changed();
@@ -4121,16 +4145,16 @@ const gacha = (() => {
     }
     run.autoResume = false; const my = ++token; changed(); void loop(my); return { ok: true };
   }
-  function stop() { if (!run || !['running'].includes(run.status)) return; run.status = 'stopping'; run.reason = '已手动停止'; token++; changed(); setTimeout(() => { if (run?.status === 'stopping') { run.status = 'paused'; changed(); } }, 300); }
-  // 抽卡中用户亲手点了 Arena 的“停止生成”（isTrusted，脚本自己的 click() 不算）→ 视为暂停抽卡
+  function stop() { if (!run || !['running'].includes(run.status)) return; run.status = 'stopping'; run.reason = '已手动停止'; token++; changed(); setTimeout(() => { if (run?.status === 'stopping') { run.status = 'stopped'; run.endedAt = now(); changed(); } }, 300); }
+  // 抽卡中用户亲手点了 Arena 的“停止生成”（isTrusted，脚本自己的 click() 不算）→ 视为停止抽卡（停止就是结束）
   try { document.addEventListener('click', e => {
     if (!e.isTrusted || run?.status !== 'running') return;
     const b = e.target?.closest?.('button'); if (!b || b.closest('[role="log"]')) return;
     if (!['Stop generating', '停止生成', 'Stop response'].includes((b.getAttribute('aria-label') || b.textContent || '').trim())) return;
-    log('检测到手动停止生成，抽卡已暂停'); stop();
+    log('检测到手动停止生成，抽卡已停止'); stop();
   }, true); } catch {}
   function reset() { if (run && ['running', 'stopping'].includes(run.status)) return; run = null; try { sessionStorage.removeItem(RUN); } catch {} changed(); }
-  function bindCore(c) { core = c; if (run?.autoResume && run.status === 'running') { run.autoResume = false; const my = ++token; setTimeout(() => void loop(my), 1500); } }
+  function bindCore(c) { core = c; if (run?.autoResume && run.status === 'running') { run.autoResume = false; const my = ++token; setTimeout(() => void loop(my), 1500); } else if (run && !['running', 'stopping'].includes(run.status) && run.archiveQueue?.length) setTimeout(() => { if (run && !['running', 'stopping'].includes(run.status)) void archiveQueued(false); }, 4000); }
   // v8.1 detector reloads the page on sidebar New Chat clicks; gacha clicks set a short-lived flag to bypass it.
   const reloadSuppressed = () => now() < suppressReloadUntil || (run?.status === 'running');
   // 老虎机动画用：当前这一抽的实时识别进度（不复制整个 run，便宜，可高频调用）
@@ -4139,7 +4163,10 @@ const gacha = (() => {
     const a = run.attempts.at(-1) || null; let partial = '', exact = '';
     if (a?.sid && core?.runFor && !a.done) { try { const live = core.runFor(a.sid), rc = live?.data?.calls?.at(-1); if (live && live.sid === a.sid && !(a.sentAt && live.submittedAt && live.submittedAt < a.sentAt - 3000)) { exact = rc?.internal || rc?.response || ''; partial = exact || rc?.request || (rc?.model && rc.model !== '未提供' ? rc.model : ''); } } catch {} }
     const ok = !!a?.done && ['hit', 'keep', 'archive'].includes(a.verdict);
-    return { id: run.id, status: run.status, reason: run.reason || '', completed: run.completed || 0, max: run.settings?.maxAttempts || 0, hits: (run.hits || []).length, no: a?.no || 0, phase: run.phase || '', sid: a?.sid || null, sent: !!a?.sentAt, done: !!a?.done, ok, verdict: a?.verdict || '', model: a?.model || '', tier: a?.tier || null, partial: validName(partial) ? partial : '', exact: validName(exact) ? exact : '' };
+    // v1.11.73 显示用的“第几抽”只按真正完成的抽数算（补抽 / 页面没加载好的轮次不涨号）；shown = 顶部标题此刻显示的厂商 / 型号 / 档位
+    const max0 = run.settings?.maxAttempts || 1, draw = a?.draw || Math.max(1, Math.min(max0, (run.completed || 0) + 1));
+    let shown = a?.shown || null; if (a?.sid && !a.done && core?.shown) { try { shown = core.shown(a.sid) || null; } catch {} }
+    return { draw, shown, id: run.id, status: run.status, reason: run.reason || '', completed: run.completed || 0, max: run.settings?.maxAttempts || 0, hits: (run.hits || []).length, no: a?.no || 0, phase: run.phase || '', sid: a?.sid || null, sent: !!a?.sentAt, done: !!a?.done, ok, verdict: a?.verdict || '', model: a?.model || '', tier: a?.tier || null, partial: validName(partial) ? partial : '', exact: validName(exact) ? exact : '' };
   }
   return {
     QUANTITIES, DEFAULTS, REASONS, settings, saveSettings, saveOk: () => saveOk, VENDORS, vendorFromText, setVendor, noteChatId, ownsTitle: sid => owned.has(sid), waitIdle, pendingTitle: sid => { const t = renameWant.get(sid); return t && Date.now() - (renameAt.get(sid) || 0) < 600000 ? t : null; }, followModel, start, stop, reset, bindCore, ipLimited, ipRetry, notePost, reloadSuppressed, archiveQueued: () => archiveQueued(true), running: () => run?.status === 'running',
@@ -4196,7 +4223,7 @@ const errReload = (() => {
     const m = mainEl(); return (runVal = !!m && [...m.querySelectorAll('button')].some(b => STOP_RE.test(norm(b.getAttribute('aria-label') || b.textContent)) && visible(b)));
   }
   const draft = () => [...document.querySelectorAll('main div[contenteditable="true"], main textarea')].filter(visible).some(e => norm(e.value ?? e.innerText ?? e.textContent).length > 0);
-  const gachaBusy = () => { try { const pk = gacha.peek(); return !!pk && ['running', 'stopping', 'paused'].includes(pk.status); } catch { return false; } };
+  const gachaBusy = () => { try { const pk = gacha.peek(); return !!pk && ['running', 'stopping'].includes(pk.status); } catch { return false; } };
   const limited = () => { try { return [...document.querySelectorAll('[role="alert"]')].some(e => visible(e) && /too many requests|rate limit|try again later|quota exceeded|limit reached|429/i.test(e.textContent || '')); } catch { return false; } };
   function budget(sid) { const now = Date.now(), list = read(LOG_KEY, []).filter(x => x && now - x.at < WINDOW); return { list, ok: !list.some(x => x.sid === sid && now - x.at < PER_SID_GAP) && list.length < MAX_IN_WINDOW, n: list.length }; }
 
@@ -4771,11 +4798,11 @@ const gachaSlot = (() => {
   }
   function land(r, label, t) {
     // 目标项放在滚轮背面（看不见的位置），减速转过去停住；初速度与匀速旋转衔接
-    const to = Math.ceil(r.pos) + N / 2 + 1, idx = wrapI(to);
+    const to = Math.ceil(r.pos) + 4, idx = wrapI(to); // 4 格外完全透明（opacity 0），换字看不见
     setItem(r, r.items[idx], label);
     r.mode = 'land'; r.label = label; r.from = r.pos; r.to = to; r.t0 = t;
     // 慢速落位：三次缓出的初速度 = 3·距离/时长，与当前转速衔接；追赶模式下短一些
-    r.dur = disp?.fast ? 520 : Math.max(1000, Math.min(1700, 3 * (to - r.pos) / Math.max(4, r.v || SPIN) * 1000));
+    r.dur = disp?.fast ? 220 : 280; // v1.11.73 快速落位（原来 1~1.7 秒，明显落后于顶部标题）
   }
   function show() {
     clearTimeout(hideT); hideT = 0;
@@ -4790,20 +4817,22 @@ const gachaSlot = (() => {
   }
   function newDisp(no) { disp = { no, t0: performance.now(), targets: ['', '', ''], ok: false, verdict: '', endAt: 0 }; resetReels(); badgeEl.className = 'badge'; wrap.classList.remove('hit', 'legend', 'dim'); }
   function frame(t, dt) {
-    if (t - lastPeek > 110) { lastPeek = t; try { p = gacha.peek(); } catch { p = null; } }
+    if (t - lastPeek > 60) { lastPeek = t; try { p = gacha.peek(); } catch { p = null; } }
     if (!p) { hide(); return; }
-    if (!disp) newDisp(p.no);
+    if (!disp) newDisp(p.draw);
     const running = p.status === 'running' || p.status === 'stopping';
     // 当前这一抽的识别目标
-    if (p.no === disp.no) {
-      const cur = p.done ? p.model : (p.partial || '');
-      if (cur) {
-        const pr = parts(cur, p.tier);
-        if (brand.of(cur) || p.done) disp.targets[0] = pr.vendor;
-        if (p.exact || p.ok) disp.targets[1] = pr.family;
-        if (p.ok) disp.targets[2] = pr.tier;
-      }
-      if (p.done && !p.ok) { disp.verdict = p.verdict; if (p.verdict === 'cancelled') disp.coast = true; else disp.targets = disp.targets.map(x => x || '—'); }
+    // v1.11.73 与顶部标题同源同步：顶部标题此刻显示的厂商 / 型号 / 档位，老虎机就同时停在同样的内容；补抽不换号、不重转
+    if (p.draw === disp.no) {
+      const skipped = p.done && p.verdict === 'skipped', sh = skipped ? null : p.shown;
+      const cur = skipped ? '' : p.done ? p.model : (p.partial || ''), pr = cur ? parts(cur, p.tier) : null;
+      if (sh && sh.vid) disp.targets[0] = brand.NAME[sh.vid] || (pr ? pr.vendor : '') || disp.targets[0];
+      else if (pr && (brand.of(cur) || p.done)) disp.targets[0] = pr.vendor;
+      if (sh && sh.fam) disp.targets[1] = sh.fam;
+      else if (pr && (p.exact || p.ok)) disp.targets[1] = pr.family;
+      if (sh && sh.tier) disp.targets[2] = sh.tier;
+      else if (p.ok) disp.targets[2] = pr ? pr.tier : '标准';
+      if (p.done && !p.ok && !skipped) { disp.verdict = p.verdict; if (p.verdict === 'cancelled') disp.coast = true; else disp.targets = disp.targets.map(x => x || '—'); }
       if (p.ok) { disp.ok = true; disp.verdict = p.verdict; }
     } else if (!disp.endAt) {
       // 已经开始下一抽：把这一抽没停的轮子快速停下（结果已知的沿用，未知的显示 —）
@@ -4811,11 +4840,13 @@ const gachaSlot = (() => {
     }
     // 依次停轮：前一轮停稳后，下一轮才开始减速
     for (const r of reels) {
-      const prev = reels[r.k - 1], gap = disp.fast ? 80 : 200;
-      const ready = r.k === 0 ? t - disp.t0 > (disp.fast ? 0 : 500) : (prev.mode === 'stop' && t - prev.stopAt > gap) || (!disp.fast && prev.mode === 'land' && !prev.coast && t - prev.t0 > prev.dur * .6);
+      const prev = reels[r.k - 1], gap = disp.fast ? 40 : 60;
+      // v1.11.73 识别到就停：不再先等 0.5 秒和满速；前一格落到三成下一格就跟上；标题里的名字变了就立刻重新落位
+      if (r.mode === 'stop' && !disp.endAt && r.label && disp.targets[r.k] && disp.targets[r.k] !== r.label) { r.mode = 'spin'; r.v = SPIN * .6; r.el.classList.remove('stop'); }
+      const ready = r.k === 0 ? t - disp.t0 > (disp.fast ? 0 : 60) : (prev.mode === 'stop' && t - prev.stopAt > gap) || (!disp.fast && prev.mode === 'land' && !prev.coast && t - prev.t0 > prev.dur * .3);
       if (r.mode === 'spin' && (disp.coast || (!running && !disp.targets[r.k]))) { r.mode = 'land'; r.coast = true; r.from = r.pos; r.to = Math.ceil(r.pos) + 2; r.t0 = t; r.dur = 600; }
       // 每一抽：先慢慢转起来（错开启动），加速到全速，再慢速落位
-      if (r.mode === 'spin') { const age = (t - disp.t0) / 1000 - r.k * .12; if (disp.fast) r.v = SPIN; else if (age > 0) r.v = Math.min(SPIN, (r.v || 0) + SPIN / .7 * dt); r.pos += (r.v || 0) * dt; if (disp.targets[r.k] && ready && (disp.fast || r.v >= SPIN * .95)) land(r, disp.targets[r.k], t); }
+      if (r.mode === 'spin') { const age = (t - disp.t0) / 1000 - r.k * .12; if (disp.fast) r.v = SPIN; else if (age > 0) r.v = Math.min(SPIN, (r.v || 0) + SPIN / .7 * dt); r.pos += (r.v || 0) * dt; if (disp.targets[r.k] && ready && (disp.fast || r.v >= SPIN * .15)) land(r, disp.targets[r.k], t); }
       if (r.mode === 'land') {
         const q = Math.min(1, (t - r.t0) / r.dur); r.pos = r.from + (r.to - r.from) * (1 - Math.pow(1 - q, 3));
         if (q >= 1 && r.coast) { r.mode = 'stop'; r.stopAt = t; r.pos = r.to; r.coast = false; }
@@ -4824,7 +4855,7 @@ const gachaSlot = (() => {
       paintReel(r);
     }
     const allStop = reels.every(r => r.mode === 'stop');
-    if (allStop && !disp.endAt) {
+    if (allStop && !disp.endAt && (disp.verdict || !running || disp.fast)) {
       disp.endAt = t;
       const v = disp.verdict, txt = { hit: '命中！', keep: '保留', archive: '归档', skipped: '未完成 · 补抽', cancelled: '已停止', error: '出错' }[v] || '';
       // 命中目标厂商且档位为 max / xhigh / high → 金色传说；抽到归档词里的模型 → 整体变暗变灰
@@ -4834,11 +4865,12 @@ const gachaSlot = (() => {
       wrap.classList.toggle('hit', v === 'hit' && !legend); wrap.classList.toggle('legend', legend); wrap.classList.toggle('dim', dim);
       if (legend) { try { navigator.vibrate?.([12, 60, 12, 60, 30]); } catch {} }
       // 金色传说 / 命中 / 归档 多停留一会儿再切到下一抽（即使下一抽已经开始）
-      // 抽到具体模型：停留 3 秒展示（只影响显示，后台下一抽照常进行；显示落后时直接跳到最新一抽）
-      disp.hold = ['hit', 'keep', 'archive'].includes(v) ? (legend ? 3500 : 3000) : disp.fast ? 250 : 650;
+      // v1.11.73 抽到具体模型：停留约 1.4 秒展示；下一抽顶部标题一出现厂商 / 型号就立刻切过去，保证和标题一致
+      disp.hold = ['hit', 'keep', 'archive'].includes(v) ? (legend ? 2000 : 1400) : disp.fast ? 250 : 500;
     }
     // 展示完这一抽（停稳后停留一下）再切到下一抽
-    if (p.no !== disp.no && disp.endAt && t - disp.endAt > (disp.hold || 650)) newDisp(p.no);
+    // 下一抽的顶部标题一出现厂商 / 型号就立刻切过去（与标题保持一致），否则按停留时间
+    if (p.draw !== disp.no && disp.endAt && (t - disp.endAt > (disp.hold || 650) || !!(p.shown && (p.shown.vid || p.shown.fam)))) newDisp(p.draw);
     // 头部与进度
     noEl.textContent = '第 ' + (disp.no || Math.max(1, Math.min(p.max || 1, p.completed + 1))) + ' / ' + p.max + ' 抽';
     hitEl.textContent = p.hits ? '· 命中 ' + p.hits : '';
@@ -4847,9 +4879,9 @@ const gachaSlot = (() => {
     const pct = p.max ? Math.min(100, (p.completed + (running ? frac : 0)) / p.max * 100) : 0;
     const w = pct.toFixed(1) + '%'; if (fillEl.style.width !== w) fillEl.style.width = w;
     wrap.classList.toggle('idle', !running);
-    let ph = running ? (p.phase || '准备中') : (p.reason || ({ done: '已完成', hit: '已完成', paused: '已暂停' }[p.status] || ''));
+    let ph = running ? (p.phase || '准备中') : (p.reason || ({ done: '已完成', hit: '已完成', paused: '已停止', stopped: '已停止' }[p.status] || ''));
     if (phEl.textContent !== ph) phEl.textContent = ph;
-    root.querySelector('.head span').textContent = running ? '抽卡中' : p.status === 'paused' ? '已暂停' : '抽卡结束';
+    root.querySelector('.head span').textContent = running ? '抽卡中' : ['paused', 'stopped'].includes(p.status) ? '已停止' : '抽卡结束';
     root.querySelector('.stop').style.display = running ? '' : 'none';
   }
   function tick() {
@@ -4858,7 +4890,7 @@ const gachaSlot = (() => {
     if (running && q.id !== hiddenRun) { endShown = ''; show(); return; }
     if (wrap?.classList.contains('on') && q && !running) {
       // 结束：停留几秒展示结果再淡出
-      const key = q.id + q.status; if (endShown !== key) { endShown = key; hide(q.status === 'paused' || q.status === 'stopping' ? 0 : 4500); }
+      const key = q.id + q.status; if (endShown !== key) { endShown = key; hide(['paused', 'stopped', 'stopping'].includes(q.status) ? 900 : 4500); }
     } else if (wrap?.classList.contains('on') && (!q || q.id === hiddenRun)) hide();
   }
   setInterval(() => { try { tick(); } catch {} }, 250);
@@ -4907,7 +4939,7 @@ const routeAlert = (() => {
     ampStore.set(KEY, JSON.stringify(Object.fromEntries(last)));
     // 只在当前打开的这个对话里弹提醒（后台对话的变化静默记下），切换对话不会误报
     const here = (location.pathname.match(/^\/agent\/([\w-]{1,128})\/?$/) || [])[1] === sid;
-    if (old && !quiet && !refine && here) show('模型变更提醒', old, model, sub, '');
+    if (old && !quiet && !refine && here && !gacha.running()) show('模型变更提醒', old, model, sub, '');
   }
   return { note, show };
 })();
@@ -5247,25 +5279,25 @@ const gachaUi = (() => {
       const start = $('[data-a="start"]'), stop = $('[data-a="stop"]'), reset = $('[data-a="reset"]');
       { const ipb = $('[data-a="ipok"]'); if (ipb) { const on = !active && gacha.ipLimited(); ipb.hidden = !on; if (!on) { ipb.disabled = false; ipb.textContent = '我已更换 IP'; } } }
       start.hidden = active; stop.hidden = !active; stop.disabled = st?.status === 'stopping'; reset.hidden = active || !st;
-      start.textContent = 'START'; start.title = st?.status === 'paused' ? '继续抽卡' : st && ['hit', 'done'].includes(st.status) ? '重新抽卡' : '开始抽卡';
+      start.textContent = 'START'; start.title = '开始抽卡（每次都从 0 开始）';
       const total = st ? st.settings.maxAttempts : s.maxAttempts, done = st?.completed || 0;
       if (active) text('count', done + ' / ' + total + '张');
-      const statusLabel = !st ? '' : active ? (st.status === 'stopping' ? '正在停止' : st.phase || '抽卡中') : ({ paused: '已暂停', hit: '已命中目标', done: '已完成' }[st.status] || st.status);
-      text('status', statusLabel + (st && !active && st.status === 'paused' ? ' · ' + done + '/' + total : ''));
+      const statusLabel = !st ? '' : active ? (st.status === 'stopping' ? '正在停止' : st.phase || '抽卡中') : ({ paused: '已停止', stopped: '已停止', hit: '已命中目标', done: '已完成' }[st.status] || st.status);
+      text('status', statusLabel + (st && !active && ['paused', 'stopped'].includes(st.status) ? ' · ' + done + '/' + total : ''));
       const lastModel = st?.attempts?.filter(a => a.model).at(-1)?.model || ''; text('model', lastModel ? ' · ' + lastModel : '');
       $('.gpStatus').hidden = !st || (!active && !st.status);
       const reason = message || (st && !active && st.reason ? st.reason : '');
-      const box = $('[data-s="reason"]'); box.textContent = reason; box.hidden = !reason; box.dataset.error = String(messageError || (st?.status === 'paused' && !!st.code && !message));
+      const box = $('[data-s="reason"]'); box.textContent = reason; box.hidden = !reason; box.dataset.error = String(messageError || (['paused', 'stopped'].includes(st?.status) && !!st.code && st.code !== 'RELOADED' && !message));
       const logBox = $('[data-s="log"]'), rows = (st?.attempts || []).slice(-30).reverse(), key = JSON.stringify(rows.map(a => [a.no, a.verdict, a.model, a.archived, a.note]));
       logBox.hidden = !rows.length;
       if (key !== logStamp) {
         logStamp = key; logBox.replaceChildren(...rows.map(a => { const d = document.createElement('div'), t = document.createElement('time'), sp = document.createElement('span');
-          t.textContent = clock(a.at); sp.textContent = '#' + a.no + ' ' + (a.model || '') + (a.tier ? ' · ' + a.tier : '') + ' ' + ({ hit: '命中', keep: '保留', archive: a.archived ? '已归档' : '待归档', other: '保留', skipped: '跳过', error: '中断', cancelled: '取消', abandoned: '中断' }[a.verdict] || '进行中') + (a.resends ? ' · 重发 ' + a.resends : '') + (a.note ? ' · ' + a.note : '');
+          t.textContent = clock(a.at); sp.textContent = (a.draw ? '#' + a.draw + ' ' : a.done ? '' : '#' + Math.min(total, done + 1) + ' ') + (a.model || '') + (a.tier ? ' · ' + a.tier : '') + ' ' + ({ hit: '命中', keep: '保留', archive: a.archived ? '已归档' : '待归档', other: '保留', skipped: '未完成·不计数', error: '中断', cancelled: '取消', abandoned: '中断' }[a.verdict] || '进行中') + (a.resends ? ' · 重发 ' + a.resends : '') + (a.note ? ' · ' + a.note : '');
           d.dataset.v = a.verdict === 'hit' ? 'hit' : ['skipped', 'error'].includes(a.verdict) ? 'warn' : ''; d.title = sp.textContent; d.append(t, sp); return d; }));
       }
       const name = vend ? vend.name : customOn ? cfg.customKeyword : '不限', tgt = vend ? vend.id : customOn ? 'custom' : '';
       for (const b of document.querySelectorAll('[data-amp-native-gacha="1"]')) {
-        b.title = active ? '抽卡中 ' + done + '/' + total + (st.phase ? ' · ' + st.phase : '') + ' · 点击查看' : st?.status === 'paused' ? '抽卡已暂停 · ' + (st.reason || '') : '目标模型：' + name + ' · 点击设置并抽卡';
+        b.title = active ? '抽卡中 ' + done + '/' + total + (st.phase ? ' · ' + st.phase : '') + ' · 点击查看' : ['paused', 'stopped'].includes(st?.status) ? '抽卡已停止 · ' + (st.reason || '') : '目标模型：' + name + ' · 点击设置并抽卡';
         b.setAttribute('aria-label', active ? '抽卡进度 ' + done + '/' + total + '，目标 ' + name : '抽卡，目标模型 ' + name);
         b.dataset.running = String(active); b.toggleAttribute('data-empty', !tgt);
         const n = b.querySelector('[data-amp-name]'); if (n && n.textContent !== name) n.textContent = name;
@@ -5273,7 +5305,7 @@ const gachaUi = (() => {
         b.toggleAttribute('data-empty', !tgt);
         const lab = b.querySelector('[data-amp-progress]'); if (lab) { lab.hidden = !active; lab.textContent = done + '/' + total; }
         const bar = b.querySelector('[data-amp-progress-bar]'); if (bar) { bar.hidden = !active; bar.style.width = (total ? Math.min(100, done / total * 100) : 0) + '%'; }
-        const dot = b.querySelector('[data-amp-dot]'); if (dot) dot.hidden = active || st?.status !== 'paused';
+        const dot = b.querySelector('[data-amp-dot]'); if (dot) dot.hidden = active || !(['paused', 'stopped'].includes(st?.status) && st.code && !['RELOADED', 'CANCEL'].includes(st.code));
         if (!b.querySelector('[data-amp-ring]')) b.insertAdjacentHTML('beforeend', '<i data-amp-ring aria-hidden="true"></i><span data-amp-land aria-hidden="true"></span>');
         b.style.setProperty('--amp-p', String(total ? Math.round(Math.min(100, done / total * 100)) : 0)); spinLand(b, st, active);
       }
@@ -5383,9 +5415,7 @@ const gachaUi = (() => {
         + '[data-amp-revolver] .rv-it.sel{background:transparent;box-shadow:none;font-weight:700;color:var(--rv-acc)}[data-amp-revolver] .rv-it.sel .rv-ic{color:var(--rv-fg)}[data-amp-revolver] .rv-it .rv-ic{display:inline-flex;width:18px;height:18px;align-items:center;justify-content:center;flex:none}[data-amp-revolver] .rv-it .rv-ic svg{width:16px;height:16px}'
         + '[data-amp-revolver] .rv-it .rv-nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}[data-amp-revolver] .rv-it .rv-ck{opacity:0;font-size:12px;color:var(--rv-acc)}[data-amp-revolver] .rv-it.cur .rv-ck{opacity:1}'
         + '[data-amp-revolver] .rv-hint{position:absolute;left:0;right:0;top:4px;text-align:center;font-size:11px;font-weight:400;color:var(--rv-mut)}'
-        + '[data-amp-native-gacha="1"]{touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}[data-amp-native-gacha="1"][data-amp-rv]{transform:scale(.94)!important}'
-        // v1.11.71 波轮：玻璃面板 + 指向按钮的尖角 + 背景压暗；手机布局下按钮里的图标跟着滚轮一格格滚
-        + '[data-amp-revolver]{width:176px!important;border-radius:22px;background:color-mix(in srgb,var(--rv-card) 92%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.5);backdrop-filter:blur(18px) saturate(1.5);box-shadow:0 18px 48px rgba(0,0,0,.28),0 2px 8px rgba(0,0,0,.08),inset 0 0 0 1px var(--rv-line)}[data-amp-revolver]::after{content:"";position:absolute;left:var(--rv-stem,50%);bottom:-6px;width:13px;height:13px;margin-left:-6.5px;background:var(--rv-card);transform:rotate(45deg);border-radius:0 0 4px 0;box-shadow:1px 1px 0 var(--rv-line)}[data-amp-revolver] .rv-drum{perspective:520px;-webkit-mask:linear-gradient(transparent 0,#000 24%,#000 76%,transparent 100%);mask:linear-gradient(transparent 0,#000 24%,#000 76%,transparent 100%)}[data-amp-revolver] .rv-it{background:transparent!important;box-shadow:none!important}[data-amp-revolver] .rv-win{left:8px!important;right:8px!important;border-radius:14px!important;box-shadow:inset 0 0 0 1.5px var(--rv-acc),0 4px 14px rgba(0,0,0,.1)!important}[data-amp-rv-shade]{position:fixed;inset:0;z-index:2147483645;background:rgb(0 0 0/.16);-webkit-backdrop-filter:blur(1.5px);backdrop-filter:blur(1.5px);opacity:0;transition:opacity .18s ease;pointer-events:none}[data-amp-rv-shade].on{opacity:1}html[data-amp-gem] [data-amp-native-gacha="1"]:has([data-amp-rvicon]) [data-amp-icon]{visibility:hidden}html[data-amp-gem] [data-amp-native-gacha="1"]:has([data-amp-rvicon])::after{opacity:0!important}html:not([data-amp-gem]) [data-amp-rvicon]{display:none!important}[data-amp-rvicon]{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;perspective:120px}[data-amp-rvicon] svg{width:19px!important;height:19px!important}[data-amp-rvicon][data-dir=up]{animation:ampRvUp .2s cubic-bezier(.2,.9,.3,1)}[data-amp-rvicon][data-dir=down]{animation:ampRvDown .2s cubic-bezier(.2,.9,.3,1)}@keyframes ampRvUp{from{transform:translateY(75%) rotateX(-60deg);opacity:0}to{transform:none;opacity:1}}@keyframes ampRvDown{from{transform:translateY(-75%) rotateX(60deg);opacity:0}to{transform:none;opacity:1}}@media (prefers-reduced-motion:reduce){[data-amp-rvicon]{animation:none!important}[data-amp-rv-shade]{transition:none}}';
+        + '[data-amp-native-gacha="1"]{touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}[data-amp-native-gacha="1"][data-amp-rv]{transform:scale(.94)!important}';
       (document.head || document.documentElement).append(st);
     }
     function revItems() {
@@ -5393,16 +5423,6 @@ const gachaUi = (() => {
       for (const v of gacha.VENDORS) out.push({ id: v.id, name: v.name, icon: vendorIcon(v.id, 16) });
       if (s.customKeyword) out.push({ id: 'custom', kw: s.customKeyword, name: s.customKeyword, icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h10M4 17h7"/></svg>' });
       return out;
-    }
-    // v1.11.71 波轮：滚轮转到哪一格，圆形厂商按钮里的图标就跟着上下滚到哪一格（手机 Gemini 布局；松手后换回正式图标）
-    const RV_DICE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="4.5"/><g fill="currentColor" stroke="none"><circle cx="8.6" cy="8.6" r="1.5"/><circle cx="15.4" cy="15.4" r="1.5"/><circle cx="15.4" cy="8.6" r="1.5"/><circle cx="8.6" cy="15.4" r="1.5"/><circle cx="12" cy="12" r="1.5"/></g></svg>';
-    function rvIcon(b, it, dir) {
-      let x = b.querySelector('[data-amp-rvicon]');
-      if (!it) { x?.remove(); return; }
-      if (!document.documentElement.hasAttribute('data-amp-gem')) return;
-      if (!x) { x = document.createElement('span'); x.setAttribute('data-amp-rvicon', ''); x.setAttribute('aria-hidden', 'true'); b.append(x); }
-      x.innerHTML = it.id === '' ? RV_DICE : it.id === 'custom' ? it.icon : vendorIcon(it.id, 19);
-      if (dir) { x.dataset.dir = dir > 0 ? 'up' : 'down'; x.style.animation = 'none'; void x.offsetWidth; x.style.animation = ''; } else delete x.dataset.dir;
     }
     function wheelOpen(b) {
       revCss();
@@ -5414,9 +5434,9 @@ const gachaUi = (() => {
       root.innerHTML = '<div class="rv-win"></div><div class="rv-drum"></div><div class="rv-hint">滚轮选择 · 停下或移开确认</div>';
       const drum = root.querySelector('.rv-drum');
       const els = items.map((it, i) => { const d = document.createElement('div'); d.className = 'rv-it' + (i === cur ? ' cur' : ''); d.innerHTML = '<span class="rv-ic">' + it.icon + '</span><span class="rv-nm"></span><span class="rv-ck">当前</span>'; d.querySelector('.rv-nm').textContent = it.name; drum.append(d); return d; });
-      document.body.append(root); const rvShade = document.createElement('div'); rvShade.dataset.ampRvShade = '1'; root.before(rvShade); requestAnimationFrame(() => rvShade.classList.add('on'));
-      const r = b.getBoundingClientRect(), W = 176, H = REV_H * 5;
-      root.style.left = Math.max(8, Math.min(innerWidth - W - 8, r.left + r.width / 2 - W / 2)) + 'px'; root.style.setProperty('--rv-stem', Math.max(20, Math.min(W - 20, r.left + r.width / 2 - parseFloat(root.style.left))) + 'px');
+      document.body.append(root);
+      const r = b.getBoundingClientRect(), W = 200, H = REV_H * 5;
+      root.style.left = Math.max(8, Math.min(innerWidth - W - 8, r.left + r.width / 2 - W / 2)) + 'px';
       root.style.top = Math.max(8, r.top - H - 14) + 'px';
       b.setAttribute('data-amp-rv', ''); b._ampRv = true;
       const n = els.length, wrapI = k => ((k % n) + n) % n;
@@ -5426,7 +5446,7 @@ const gachaUi = (() => {
           d.style.transform = 'translateY(' + (off * REV_H * 0.92) + 'px) rotateX(' + (-off * 24) + 'deg) translateZ(' + (-a * a * 6) + 'px) scale(' + Math.max(.72, 1 - a * .07) + ')';
           d.style.opacity = String(Math.max(0, 1 - a * .3)); d.style.zIndex = String(100 - Math.round(a * 10));
         });
-        const k = wrapI(Math.round(pos)); if (k !== shown) { const dir = shown < 0 ? 0 : Math.sign(pos - (root._p ?? pos)) || 1; shown = k; els.forEach((d, i) => d.classList.toggle('sel', i === k)); rvIcon(b, items[k], dir); } root._p = pos;
+        const k = wrapI(Math.round(pos)); if (k !== shown) { shown = k; els.forEach((d, i) => d.classList.toggle('sel', i === k)); }
       };
       paint(); requestAnimationFrame(() => root.classList.add('on'));
       const loop = () => { raf = 0; pos += (target - pos) * .3; if (Math.abs(target - pos) < .003) pos = target; paint(); if (pos !== target) raf = requestAnimationFrame(loop); };
@@ -5435,7 +5455,7 @@ const gachaUi = (() => {
         b.removeEventListener('mouseleave', leave); b.removeEventListener('click', clk, true); removeEventListener('keydown', esc, true); removeEventListener('blur', away); document.removeEventListener('visibilitychange', away);
         const kr = Math.round(target), k = wrapI(kr);
         const from = pos, t0 = performance.now(); const snap = t => { const p = Math.min(1, (t - t0) / 160); pos = from + (kr - from) * (1 - Math.pow(1 - p, 3)); paint(); if (p < 1) requestAnimationFrame(snap); }; requestAnimationFrame(snap);
-        root.classList.add('out'); setTimeout(() => root.remove(), 420); rvShade.classList.remove('on'); setTimeout(() => rvShade.remove(), 240); setTimeout(() => rvIcon(b, null), 260);
+        root.classList.add('out'); setTimeout(() => root.remove(), 420);
         b.removeAttribute('data-amp-rv'); b._ampRv = false; b._ampWh = null; b._ampRvSkip = Date.now();
         if (pick) { const it = items[k]; if (it.id !== curId || it.id === 'custom') { if (it.id === 'custom') gacha.setVendor('custom', it.kw); else gacha.setVendor(it.id); try { window.dispatchEvent(new CustomEvent('amp-native-gacha')); } catch {} } }
       };
@@ -5490,9 +5510,9 @@ const gachaUi = (() => {
           root.innerHTML = '<div class="rv-win"></div><div class="rv-drum"></div><div class="rv-hint">上下推动 · 松开选中</div>';
           const drum = root.querySelector('.rv-drum');
           const els = items.map((it, i) => { const d = document.createElement('div'); d.className = 'rv-it' + (i === cur ? ' cur' : ''); d.innerHTML = '<span class="rv-ic">' + it.icon + '</span><span class="rv-nm"></span><span class="rv-ck">当前</span>'; d.querySelector('.rv-nm').textContent = it.name; drum.append(d); return d; });
-          document.body.append(root); const rvShade = document.createElement('div'); rvShade.dataset.ampRvShade = '1'; root.before(rvShade); requestAnimationFrame(() => rvShade.classList.add('on'));
-          const r = b.getBoundingClientRect(), W = 176, H = REV_H * 5;
-          root.style.left = Math.max(8, Math.min(innerWidth - W - 8, r.left + r.width / 2 - W / 2)) + 'px'; root.style.setProperty('--rv-stem', Math.max(20, Math.min(W - 20, r.left + r.width / 2 - parseFloat(root.style.left))) + 'px');
+          document.body.append(root);
+          const r = b.getBoundingClientRect(), W = 200, H = REV_H * 5;
+          root.style.left = Math.max(8, Math.min(innerWidth - W - 8, r.left + r.width / 2 - W / 2)) + 'px';
           root.style.top = Math.max(8, r.top - H - 14) + 'px';
           b.setAttribute('data-amp-rv', ''); b._ampRv = true;
           const wrap = k => ((k % items.length) + items.length) % items.length;
@@ -5503,7 +5523,7 @@ const gachaUi = (() => {
               d.style.transform = 'translateY(' + (off * REV_H * 0.92) + 'px) rotateX(' + (-off * 24) + 'deg) translateZ(' + (-a * a * 6) + 'px) scale(' + Math.max(.72, 1 - a * .07) + ')';
               d.style.opacity = String(Math.max(0, 1 - a * .3)); d.style.zIndex = String(100 - Math.round(a * 10));
             });
-            const k = wrap(Math.round(pos)); if (k !== shown) { if (shown >= 0) try { navigator.vibrate?.(6); } catch {} const dir = shown < 0 ? 0 : Math.sign(pos - (root._p ?? pos)) || 1; shown = k; els.forEach((d, i) => d.classList.toggle('sel', i === k)); rvIcon(b, items[k], dir); } root._p = pos;
+            const k = wrap(Math.round(pos)); if (k !== shown) { if (shown >= 0) try { navigator.vibrate?.(6); } catch {} shown = k; els.forEach((d, i) => d.classList.toggle('sel', i === k)); }
           };
           paint(); requestAnimationFrame(() => root.classList.add('on'));
           // 循环滚动：不分首尾，最后一项之后接第一项
@@ -5517,7 +5537,7 @@ const gachaUi = (() => {
             const kr = Math.round(pos), k = wrap(kr);
             // 吸附到选中项再淡出
             const from = pos, t0 = performance.now(); const snap = t => { const p = Math.min(1, (t - t0) / 160); pos = from + (kr - from) * (1 - Math.pow(1 - p, 3)); paint(); if (p < 1) requestAnimationFrame(snap); }; requestAnimationFrame(snap);
-            root.classList.add('out'); setTimeout(() => root.remove(), 420); rvShade.classList.remove('on'); setTimeout(() => rvShade.remove(), 240); setTimeout(() => rvIcon(b, null), 260);
+            root.classList.add('out'); setTimeout(() => root.remove(), 420);
             b.removeAttribute('data-amp-rv'); b._ampRv = false; b._ampRvSkip = Date.now();
             if (pick) { const it = items[k]; if (it.id !== curId || it.id === 'custom') { if (it.id === 'custom') gacha.setVendor('custom', it.kw); else gacha.setVendor(it.id); try { window.dispatchEvent(new CustomEvent('amp-native-gacha')); } catch {} } }
           };
@@ -5614,7 +5634,7 @@ const gachaUi = (() => {
       if (!Number.isFinite(sec) || sec < 0 || sec > 60) { say('间隔 0～60 秒', true); return; }
       gacha.saveSettings({ prompt: field('prompt').value.trim(), intervalMs: Math.round(sec * 1000), stopOnThinking: field('stopOnThinking').checked, sortSidebar: field('sortSidebar').checked }); if (gacha.saveOk()) say('已保存'); else say('保存失败：浏览器本地存储已满或被禁用', true);
     };
-    $('[data-a="start"]').onclick = () => { message = ''; const st = gacha.state(), r = gacha.start(st?.status === 'paused'); if (!r.ok) { say(r.error, true); render(); return; } close(); render(); };
+    $('[data-a="start"]').onclick = () => { message = ''; const st = gacha.state(), r = gacha.start(); if (!r.ok) { say(r.error, true); render(); return; } close(); render(); };
     $('[data-a="stop"]').onclick = () => { gacha.stop(); render(); };
     $('[data-a="reset"]').onclick = () => { gacha.reset(); message = ''; render(); };
     $('[data-a="ipok"]').onclick = async e => { const b = e.currentTarget; if (b.disabled) return; b.disabled = true; b.textContent = '检测中…'; let r; try { r = await gacha.ipRetry(); } catch (x) { r = { ok: false, error: String(x?.message || x) }; } b.disabled = false; b.textContent = '我已更换 IP'; if (r.ok) { say(r.msg); setTimeout(() => { if (message === r.msg) { message = ''; render(); } }, 5000); close(); } else say(r.error, true); };
@@ -5634,7 +5654,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.72', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.73', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -6184,7 +6204,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     const panelBtn=el('button','','模型信息',tools);panelBtn.title='打开模型信息侧栏';panelBtn.onclick=()=>ui?.show();
     const hideBtn=el('button','','',tools);hideBtn.title='收起底部信息栏';hideBtn.setAttribute('aria-label',hideBtn.title);
     hideBtn.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>';hideBtn.onclick=()=>{prefs.barCollapsed=true;savePrefs();sync();};
-    const offsetCss=`html[data-amp-bar-offset] body .h-dvh,html[data-amp-bar-offset] body .h-screen,html[data-amp-bar-offset] body .h-svh{height:calc(100dvh - ${BAR_H}px)!important}html[data-amp-bar-offset] body .max-h-dvh,html[data-amp-bar-offset] body .max-h-screen{max-height:calc(100dvh - ${BAR_H}px)!important}html[data-amp-bar-overlap] main{padding-bottom:${BAR_H}px!important;box-sizing:border-box!important}`;
+    const offsetCss=`html[data-amp-bar-offset] body .h-dvh,html[data-amp-bar-offset] body .h-screen,html[data-amp-bar-offset] body .h-svh{height:calc(100dvh - ${BAR_H}px)!important}html[data-amp-bar-offset] body .max-h-dvh,html[data-amp-bar-offset] body .max-h-screen{max-height:calc(100dvh - ${BAR_H}px)!important}html[data-amp-bar-overlap] main{padding-bottom:${BAR_H}px!important;box-sizing:border-box!important}html[data-amp-bar-offset]:not([data-amp-kbhide]) main:is(.min-h-svh,.min-h-dvh,.min-h-screen){padding-bottom:${BAR_H}px!important;box-sizing:border-box!important}`;
     let offsetSheet=null,offsetStyle=null;try{offsetSheet=new CSSStyleSheet();offsetSheet.replaceSync(offsetCss);document.adoptedStyleSheets=[...document.adoptedStyleSheets,offsetSheet];}catch{offsetStyle=el('style','',offsetCss,document.head||document.body);}
     const fmtUsd=v=>(v<0?'-$':'$')+Math.abs(v).toFixed(2),exactUsd=v=>'$'+String(v);
     const clock=t=>Number.isFinite(t)?new Date(t).toLocaleTimeString('zh-CN',{hour12:false}):'--:--:--';
@@ -6216,7 +6236,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       const sid=sidOf(location.href),cr=sid?costState.get(sid)?.credits||r?.data?.credits:null;
       if(cr&&cr.credits!==null&&cr.credits!==undefined)out.push(item('turn','',[['t','本轮 '],['b',Math.round(cr.credits).toLocaleString('zh-CN')+' cr'],['t',cr.usd!==null&&cr.usd!==undefined?' · $'+(+cr.usd).toFixed(4):'']],'GET /api/chat/{id}/cost · 本轮计费'));
       const g=gacha.state();
-      if(g){const run=['running','stopping'].includes(g.status);out.push(item('gacha',run?'good':g.status==='hit'?'good':g.status==='paused'?'warn':'',[['t','抽卡 '],['b',g.completed+'/'+g.settings.maxAttempts],['t',' · '+(run?(g.phase||'进行中'):({hit:'已命中',done:'已完成',paused:'已暂停'}[g.status]||g.status))]],(g.reason||g.phase||'')+'\n点击打开抽卡面板',()=>window.dispatchEvent(new CustomEvent('amp-native-gacha-open'))));}
+      if(g){const run=['running','stopping'].includes(g.status);out.push(item('gacha',run?'good':g.status==='hit'?'good':['paused','stopped'].includes(g.status)?'warn':'',[['t','抽卡 '],['b',g.completed+'/'+g.settings.maxAttempts],['t',' · '+(run?(g.phase||'进行中'):({hit:'已命中',done:'已完成',paused:'已停止',stopped:'已停止'}[g.status]||g.status))]],(g.reason||g.phase||'')+'\n点击打开抽卡面板',()=>window.dispatchEvent(new CustomEvent('amp-native-gacha-open'))));}
       const last=Math.max(usd?.at||0,pulse?.checkedAt||0,balance?.at||0);
       out.push(item('updated','',[['t','更新 '],['b',last?clock(last):'--:--:--']],'最近一次数据更新时间（美金 '+(usd?clock(usd.at):'—')+' · Pulse '+(pulse?clock(pulse.checkedAt):'—')+' · 额度 '+(balance?clock(balance.at):'—')+'）'));
       return out;
@@ -6279,6 +6299,8 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
   function save(s){if(!s?.calls.some(c=>c.model&&c.model!=='未提供'))return;const c=localSnapshot(s);if(c){history=[{...c,raw:{events:[],spans:{}}},...history.filter(x=>x.key!==c.key)].slice(0,20);store(KEY+'.history',history.slice(0,6));}try{onSnapshot?.(s);}catch{}}
   // 内存中保留最近 RAW_KEEP 轮的完整原始 Trace 与 Span（持久化的是精简版）
   function keepRaw(r){if(!r.data)return;const key=r.data.key;rawStore.delete(key);rawStore.set(key,{trace:r.rawTrace,spans:r.rawSpans,probe:r.probe,at:Date.now()});while(rawStore.size>RAW_KEEP)rawStore.delete(rawStore.keys().next().value);}
+  // v1.11.73 抽卡进行中：Trace 读得更勤（0.5~2.5 秒一次），模型识别更快；平时保持原来的节奏
+  function gFast(){try{return gacha.running();}catch{return false;}}
   function later(r,ms=1200,final=false){if(stopped||!enabled||!r.token||Date.now()<cooldown)return;clearTimeout(r.timer);r.timer=setTimeout(()=>{r.timer=null;if(r.busy)later(r,400,final);else void poll(r,final);},ms);}
   // v1.11.71 锁定对话：Arena 可能把同一个 Trace 运行先后给多个对话用。以前新对话的令牌被忽略（信息不更新），
   // 旧对话却把新对话的调用读进来，误报“换模型 / 又换回来”。现在按对话分段：每个对话只认自己那段事件，互不串台。
@@ -6305,7 +6327,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     const pending=submissions.get(auth.sid)||(pendingNew&&Date.now()-pendingNew.at<15000?pendingNew:null);
     r={...auth,token,revision:pending?.revision||++revision,requestConfigs:pending?.configs||[],prompt:pending?.prompt||null,submittedAt:pending?.at||null,baseline:null,markers:0,seen:new Set(),newest:null,tries:0,finalReads:0,busy:false,timer:null,abort:null,cache:new Map(),rawSpans:new Map(),rawTrace:[],missing:new Map(),probe:null,data:null,credits:costOf(auth.sid).credits,phase:'等待 Trace'};
     runs.set(auth.runId,r);while(runs.size>8){const [id,old]=runs.entries().next().value;clearTimeout(old.timer);old.abort?.abort();old.token=null;runs.delete(id);}
-    pendingNew=null;log('detail','权限','检测到运行令牌 · '+r.runId+' · 有效期至 '+new Date(r.expires).toLocaleTimeString('zh-CN'),null,r);later(r,1600);paint();
+    pendingNew=null;log('detail','权限','检测到运行令牌 · '+r.runId+' · 有效期至 '+new Date(r.expires).toLocaleTimeString('zh-CN'),null,r);later(r,gFast()?500:1600);paint();
   }
   // 首包提示：在页面发出的用户消息末尾追加一句，让模型先输出“思考中…”，服务端尽早收到首包，避免约 90 秒无首包被改派。
   function warmBody(url,body){
@@ -6353,7 +6375,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     frames++;const sid=ctx.sid||sidOf(location.href);inspect(frame,t=>accept(t,ctx.sid),(type,node)=>{
       // 助手消息的 id / nodeId 出现在 start 与 message-metadata 帧里；费用接口按 nodeId（缺省为消息 id）计
       if(node&&typeof node==='object'){noteTurnId(sid,node.messageId);const meta=node.messageMetadata;if(meta&&typeof meta==='object'){noteTurnId(sid,meta.nodeId);noteTurnId(sid,meta.messageId);}}
-      if(type==='finish'){try{errReload.noteFinish(sid);}catch{}for(const r of runs.values())if(r.sid===sid)r.huntFinishedAt=Date.now();log('detail','读流','检测到流结束（finish）',null,ctx);for(const r of runs.values())if(r.sid===sid&&r.finalReads<2)later(r,1200,true);clearTimeout(balanceTimer);balanceTimer=setTimeout(()=>{if(Date.now()-(balance?.at||0)>8000)void refreshBalance(true);},6000);scheduleCost(sid,COST_DELAYS[0],true);}
+      if(type==='finish'){try{errReload.noteFinish(sid);}catch{}for(const r of runs.values())if(r.sid===sid)r.huntFinishedAt=Date.now();log('detail','读流','检测到流结束（finish）',null,ctx);for(const r of runs.values())if(r.sid===sid&&r.finalReads<2)later(r,gFast()?400:1200,true);clearTimeout(balanceTimer);balanceTimer=setTimeout(()=>{if(Date.now()-(balance?.at||0)>8000)void refreshBalance(true);},6000);scheduleCost(sid,COST_DELAYS[0],true);}
       else if(type==='error'||type==='abort'){log('detail','读流','检测到流事件 '+type,null,ctx);scheduleCost(sid,COST_DELAYS[1],true);}
     });paint();
   }
@@ -6429,7 +6451,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       const stale=!p.resumed&&!r.baseline&&r.tries<=6&&!!r.submittedAt&&!!p.at&&p.at<r.submittedAt-90000;
       if(stale)r.baseline={markers:p.markers,spans:new Set(p.spanIds),since:p.newest||null};
       log('detail','Trace',(p.turn?'第 '+p.turn+' 轮':'未标记轮次')+(p.attempt>1?' · 第 '+p.attempt+' 次':'')+(p.resumed?' · 同轮新记录':'')+' · '+p.count+' 次模型调用'+(p.prior?'（此前 '+p.prior+' 次）':'')+' · '+p.markers+' 个轮次标记 · '+trace.events.length+' 条事件'+(p.limited?' · 超出详读上限':''),null,r);
-      if(!p.count||stale){r.phase='等待本轮记录';log('debug','轮次',stale?'最新轮次早于本次提交，继续等待':'尚无本轮模型调用记录',null,r);if(!kick){if(r.tries<8)later(r,Math.min(15000,2500*r.tries));else r.phase='暂未发现本轮记录';}return;}
+      if(!p.count||stale){r.phase='等待本轮记录';log('debug','轮次',stale?'最新轮次早于本次提交，继续等待':'尚无本轮模型调用记录',null,r);if(!kick){if(r.tries<(gFast()?24:8))later(r,gFast()?Math.min(2500,600+300*r.tries):Math.min(15000,2500*r.tries));else r.phase='暂未发现本轮记录';}return;}
       r.rawTrace=trace.events.slice(p.range[0],p.range[1]+1);
       r.data=snapshot(r,p,r.cache);keepRaw(r);save(r.data);paint(); // 先显示模型标签，不等所有 span 成功。
       if(r.data.routing)void noteRoute(r,p,ctrl.signal);
@@ -6458,7 +6480,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       if(r.data.outcome&&r.outcomeNoted!==r.data.key){r.outcomeNoted=r.data.key;const lc=r.data.calls.at(-1);log('warn','结果',turnLabel(r.data)+' · '+(r.data.outcome==='failed'?'Arena 记录本轮失败':'本轮没有产出回复')+(lc?.finish==='length'?' · '+(lc.model||'模型')+' 推理用尽输出上限（'+(lc.tokens?.output??'?')+' Token）仍未作答':''),null,r);}
       const last=r.data.calls.at(-1),eff=last?.effort;
       log('info','结果',turnLabel(r.data)+' · '+p.count+' 次调用 · '+(last?.model||'未提供')+(last?.internal?' · 内部名称 '+last.internal:'')+' · 显式 '+(eff?.value||({conflict:'冲突',unsupported:'不支持'}[eff?.status])||'未知')+' · 推理 Token '+(last?.reasoning.status==='conflict'?'冲突':last?.reasoning.value??'—')+(r.data.partial?' · 部分字段未取得':''),null,r);
-      if(!kick&&r.data.partial&&r.tries<8)later(r,Math.min(15000,2500*r.tries));
+      if(!kick&&r.data.partial&&r.tries<(gFast()?24:8))later(r,gFast()?Math.min(2500,600+300*r.tries):Math.min(15000,2500*r.tries));
     }catch(e){
       if(!live()||e.name==='AbortError'&&ctrl.signal.aborted)return;
       r.phase=e.status===429?'限流暂停':[401,403].includes(e.status)?'权限失效':'Trace 读取失败';
@@ -7323,7 +7345,8 @@ details.mc-card .section.credits{margin-top:12px}
       +'[data-amp-wsgrip]{position:absolute;left:0;top:0;bottom:0;width:18px;z-index:60;touch-action:none;cursor:grab;-webkit-user-select:none;user-select:none}[data-amp-wsgrip]::after{content:"";position:absolute;left:6px;top:50%;width:5px;height:44px;margin-top:-22px;border-radius:3px;background:hsl(var(--surface-tertiary,33 31% 94%))}html:not([data-amp-gem]) [data-amp-wsgrip]{display:none}'
       +'@keyframes ampWsIn{from{translate:var(--amp-ws-from,100%) 0}to{translate:0 0}}@keyframes ampWsOut{from{translate:var(--amp-ws-x,0px) 0}to{translate:100% 0}}@keyframes ampWsFadeIn{from{opacity:var(--amp-ws-ov0,0)}to{opacity:1}}@keyframes ampWsFadeOut{from{opacity:var(--amp-ws-ov1,1)}to{opacity:0}}'
       +'@media (prefers-reduced-motion:reduce){html[data-amp-gem] :is([data-vaul-drawer],[data-vaul-overlay])[data-amp-wsright]{animation-duration:.01s!important;transition:none!important}}'
-      +'html[data-amp-gem][data-amp-wsedge] main :is(button[aria-label="Open workspace"],button[aria-label="Toggle workspace sidebar"],button[aria-label="打开工作区"],button[aria-label="切换工作区侧边栏"]){position:absolute!important;width:1px!important;height:1px!important;min-width:0!important;min-height:0!important;padding:0!important;margin:0!important;border:0!important;opacity:0!important;pointer-events:none!important;overflow:hidden!important}'
+      +'html[data-amp-gem] main div.flex.items-center.justify-end:has(> :is(button[aria-label="Open workspace"],button[aria-label="打开工作区"])):not(:has(> #amp-avatar))::after{content:"";order:3;flex:none;width:36px;height:36px;border-radius:999px;box-shadow:inset 0 0 0 1.5px color-mix(in srgb,currentColor 16%,transparent)}' // v1.11.73 头像位先占好（水合后头像放进同一个位置，顶部不再跳）
+      +'html[data-amp-gem]:is([data-amp-wsedge],[data-amp-wspre]) main :is(button[aria-label="Open workspace"],button[aria-label="Toggle workspace sidebar"],button[aria-label="打开工作区"],button[aria-label="切换工作区侧边栏"]){position:absolute!important;width:1px!important;height:1px!important;min-width:0!important;min-height:0!important;padding:0!important;margin:0!important;border:0!important;opacity:0!important;pointer-events:none!important;overflow:hidden!important}'
       +'html[data-amp-gem] main button[aria-label="Add files and connections"]{position:relative}html[data-amp-gem] main button[aria-label="Add files and connections"] > span{opacity:0}'
       +'html[data-amp-gem] main button[aria-label="Add files and connections"]::after{content:"";position:absolute;inset:auto;left:50%;top:50%;width:22px;height:22px;margin:-11px 0 0 -11px;background:currentColor;-webkit-mask:url(data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2024%2024%22%3E%3Cpath%20d=%22M12%204.5v15M4.5%2012h15%22%20stroke=%22black%22%20stroke-width=%221.7%22%20stroke-linecap=%22round%22/%3E%3C/svg%3E) center/contain no-repeat;mask:url(data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2024%2024%22%3E%3Cpath%20d=%22M12%204.5v15M4.5%2012h15%22%20stroke=%22black%22%20stroke-width=%221.7%22%20stroke-linecap=%22round%22/%3E%3C/svg%3E) center/contain no-repeat;pointer-events:none}'
       +'}',document.head||document.body);
@@ -7656,8 +7679,9 @@ details.mc-card .section.credits{margin-top:12px}
       if(!known&&r){const exact=rc0?.internal||rc0?.response,fin=(rc0?.internal||meta?.name?.name||'').replace(/^未提供$/,'');
         if(done&&fin)[fam,tierTxt]=split(withVendor(sid,meta,fin));else if(exact){fam=split(exact)[0];tierTxt='';}else{fam='识别中…';tierTxt='';}}
       if(tierTxt==='none')tierTxt='';
-      {const ms0=monState(sid);if(ms0.tone==='switch'&&ms0.to&&!forceEq(ms0.to,shownName)){[fam,tierTxt]=split(ms0.to);if(tierTxt==='none')tierTxt='';}}
-      if(nm.textContent!==fam)nm.textContent=fam;nm.title=shownName;
+      let famOk=known||(!!r&&fam!=='识别中…');
+      {const ms0=monState(sid);if(ms0.tone==='switch'&&ms0.to&&!forceEq(ms0.to,shownName)){[fam,tierTxt]=split(ms0.to);if(tierTxt==='none')tierTxt='';famOk=true;}}
+      if(nm.textContent!==fam)nm.textContent=fam;nm.title=shownName;hdrShown={sid,fam:famOk?fam:'',tier:tierTxt||'',vid:'',at:Date.now()};
       let tg=hdr.tier;if(!tg||!tg.isConnected||nm.nextElementSibling!==tg){tg?.remove();tg=document.createElement('span');tg.setAttribute('data-amp-htier','');nm.after(tg);hdr.tier=tg;}
       if(tg.dataset.t!==tierTxt||tg.textContent!==tierTxt){tg.dataset.t=tierTxt;tg.replaceChildren();if(tierTxt){const lv=TIER_LV[tierTxt]??0;tg.dataset.lv=String(lv);tg.append(document.createTextNode(tierTxt));}tg.removeAttribute('data-pop');void tg.offsetWidth;if(tierTxt)tg.setAttribute('data-pop','');}
       tg.hidden=!tierTxt;tg.toggleAttribute('data-hi',/^(max|xhigh|high)$/.test(tierTxt));tg.toggleAttribute('data-amp-hdark',isDark());
@@ -7676,7 +7700,7 @@ details.mc-card .section.credits{margin-top:12px}
       if(!sub&&generating&&!done)sub='识别中…';
       const rt=r?.data?.routing||live?.routing;if(rt&&!fresh)sub='已被改派：'+(rt.from?brand.short(rt.from):'原模型')+' → '+(rt.to?brand.short(rt.to):'其他模型');
       if(nm.getAttribute('data-amp-hsub')!==sub)nm.setAttribute('data-amp-hsub',sub);nm.toggleAttribute('data-amp-hfresh',fresh);
-      const vid=brand.of(finalName)||brand.of(shownName)||brand.of(partial)||brand.forSid(sid,'');
+      const vid=brand.of(finalName)||brand.of(shownName)||brand.of(partial)||brand.forSid(sid,'');if(hdrShown&&hdrShown.sid===sid)hdrShown.vid=vid||'';
       if(!vid){hdr.logo?.remove();hdr.logo=null;return;}
       if(!hdr.logo||!hdr.logo.isConnected||hdr.logo.nextElementSibling!==t||hdr.logo.dataset.v!==vid){hdr.logo?.remove();const lg=document.createElement('span');lg.setAttribute('data-amp-hlogo','');lg.dataset.v=vid;if(['deepseek','qwen','zhipu','xiaomi','bytedance','minimax','mistral','meta'].includes(vid))lg.setAttribute('data-full','');lg.innerHTML=gachaUi.vendorIcon(vid,12);t.before(lg);hdr.logo=lg;}
     }
@@ -7698,12 +7722,15 @@ details.mc-card .section.credits{margin-top:12px}
         cand.setAttribute('data-amp-doc-hidden','');if(label&&!remembered){store(DOC_KEY,label);log('debug','界面','已隐藏输入框文档图标：'+label);}
       }
     }
-    el('style','','[data-amp-doc-hidden]{display:none!important}',document.head||document.body);
+    // v1.11.73 第一帧就隐藏：输入框里发送键（或抽卡按钮）左边那个无标签的文档图标；抽卡兜底开侧栏时侧栏与遮罩透明
+    el('style','','[data-amp-doc-hidden]{display:none!important}'
+      +'html[data-amp-docpre] main div.flex.items-center.gap-2>:is(div:has(>button:only-child:not([aria-label]) svg),button:not([aria-label]):not([role]):not([aria-haspopup]):has(svg)):has(+:is(button[aria-label="Send message"],button[aria-label="发送消息"],[data-amp-native-gacha="1"])){display:none!important}'
+      +'html[data-amp-quietnav] body>[role="dialog"][data-mobile="true"],html[data-amp-quietnav] body>div.bg-black\\/80[data-state]:not([role]){opacity:0!important;transition:none!important;animation:none!important;pointer-events:none!important}',document.head||document.body);
     function attach(){
-      if(stopped||!document.body)return;const cooling=Date.now()<cooldown;if(cooling!==lastCooling){lastCooling=cooling;paint();}const main=document.querySelector('main'),ready=document.readyState==='complete';
+      if(stopped||!document.body)return;const cooling=Date.now()<cooldown;if(cooling!==lastCooling){lastCooling=cooling;paint();}const main=document.querySelector('main'),ready=document.readyState==='complete'||!!document.querySelector('next-route-announcer'); // v1.11.73 React 水合完成即可（Next.js 在提交后插入 next-route-announcer），不再等 load（手机上常晚好几秒）
       const anchor=ready?[...document.querySelectorAll('main button[aria-label="Toggle workspace sidebar"],main button[aria-label="Open workspace"],main button[aria-label="Close workspace"],main button[aria-label="打开工作区"],main button[aria-label="切换工作区侧边栏"]')].find(b=>{const r=b.getBoundingClientRect(),m=b.closest('main').getBoundingClientRect();return r.width>0&&r.height>0&&r.top<m.top+100;}):null;
       if(anchor){if(entry.parentNode!==anchor.parentNode||entry.nextSibling!==anchor)anchor.before(entry);entry.removeAttribute('data-floating');}else{if(entry.parentNode!==document.body)document.body.append(entry);entry.setAttribute('data-floating','');}
-      {const g=gemOn();document.documentElement.toggleAttribute('data-amp-gem',g);if(g&&anchor){if(anchor.nextSibling!==avatarHost)anchor.after(avatarHost);avatarHost.hidden=false;paintAvatar();loadMe();}else if(avatarHost.isConnected)avatarHost.remove();syncMode();wsSync();if(!drawerMoOn&&document.body){drawerMoOn=true;drawerMo.observe(document.body,{childList:true});}}
+      {const g=gemOn();document.documentElement.toggleAttribute('data-amp-gem',g);document.documentElement.toggleAttribute('data-amp-wspre',g&&prefs.wsEdge!==false);document.documentElement.toggleAttribute('data-amp-docpre',!!prefs.hideDocIcon);if(g&&anchor){if(anchor.nextSibling!==avatarHost)anchor.after(avatarHost);avatarHost.hidden=false;paintAvatar();loadMe();}else if(avatarHost.isConnected)avatarHost.remove();syncMode();wsSync();if(!drawerMoOn&&document.body){drawerMoOn=true;drawerMo.observe(document.body,{childList:true});}}
       if(reloadHost.isConnected)reloadHost.remove();document.documentElement.toggleAttribute('data-amp-glass',!!prefs.glassDrawer);if(ready)pull.bind();
       const eligible=/^\/agent(?:\/|$)/.test(location.pathname);entry.hidden=!eligible;let mode='none';
       if(eligible&&ready&&main){const parent=main.parentElement,p=getComputedStyle(parent),m=getComputedStyle(main),isSibling=host.parentNode===parent&&!host.hidden,available=main.getBoundingClientRect().width+(isSibling?host.getBoundingClientRect().width+(parseFloat(p.columnGap)||0):0),wide=innerWidth>=1024&&available>=900&&p.display.includes('flex')&&p.flexDirection==='row';
@@ -8125,7 +8152,7 @@ details.mc-card .section.credits{margin-top:12px}
     }
     function huntTab(){
       const g=gacha.state(),s=gacha.settings(),active=gacha.running();
-      const h=el('div','section-heading',null,body),hh3=el('h3','','老虎机抽卡',h);el('span','eyebrow',g?({running:'进行中',stopping:'正在停止',paused:'已暂停',hit:'已命中',done:'已完成'}[g.status]||g.status):'未开始',h);
+      const h=el('div','section-heading',null,body),hh3=el('h3','','老虎机抽卡',h);el('span','eyebrow',g?({running:'进行中',stopping:'正在停止',paused:'已停止',stopped:'已停止',hit:'已命中',done:'已完成'}[g.status]||g.status):'未开始',h);
       info(hh3,'hunt','点击发送按钮左侧的厂商名称打开抽卡卡片。\n每抽：新对话 → 发送 → 识别模型 → 改名 → 黑名单归档；未识别时在同一对话重发。\n单标签页运行 · 9.23.2 引擎。',h);
       const cfg=el('div','section',null,body);
       const gs=g?.settings??s;row(cfg,'目标厂商',gs.targetModel||'不限',false);
@@ -8134,7 +8161,6 @@ details.mc-card .section.credits{margin-top:12px}
       const ctl=el('div','section',null,body);ctl.style.cssText='display:flex;gap:8px;flex-wrap:wrap';
       button(ctl,'打开抽卡面板','打开发送按钮旁的抽卡面板',()=>window.dispatchEvent(new CustomEvent('amp-native-gacha-open')),'clear');
       if(active)button(ctl,'停止','停止抽卡',()=>{gacha.stop();render();},'clear');
-      else if(g?.status==='paused')button(ctl,'继续','从暂停处继续',()=>{const r=gacha.start(true);if(!r.ok)say(r.error);render();},'clear');
       if(g&&!active)button(ctl,'导出','导出本次抽卡记录（不含令牌）',()=>download(g,'arena-gacha-'+Date.now()+'.json'),'clear');
       if(!g)return;
       const st=el('div','section',null,body);el('h3','section-heading','状态',st);
@@ -8207,15 +8233,22 @@ details.mc-card .section.credits{margin-top:12px}
     }
     ui={host,entry,attach,render,view,spendBrief,show(t){if(typeof t==='string'&&tabs.some(x=>x[0]===t)){tab=t;historyView=null;turnKey=null;}if(compact)expanded=true;else pref.open=true;persist();render();},toggle(){if(compact)expanded=!expanded;else pref.open=!pref.open;persist();render();},destroy(){clearTimeout(toastTimer);try{clearHeader();}catch{}for(const [a,m]of marks)restoreMark(a,m);marks.clear();clearSent();if(aliasSheet)document.adoptedStyleSheets=document.adoptedStyleSheets.filter(s=>s!==aliasSheet);aliasStyle?.remove();applySidebar(null);entry.remove();host.remove();gripHost.remove();foldHost.remove();reloadHost.remove();pull.destroy();glassStyle.remove();document.documentElement.removeAttribute('data-amp-glass');gemStyle.remove();avatarHost.remove();modeHost.remove();drawerMo.disconnect();document.documentElement.removeAttribute('data-amp-gem');document.documentElement.removeAttribute('data-amp-mode-open');}};render();
   }
+  // v1.11.73 顶部标题此刻显示的厂商 / 型号 / 档位（老虎机直接用它，保证两边同时、一致）
+  let hdrShown=null;
   const mountAll=()=>{mount();mountBar();gachaUi.mount();};
   if(document.body)mountAll();else{const observer=new MutationObserver(()=>{if(document.body){observer.disconnect();mountAll();}});observer.observe(document.documentElement||document,{childList:true,subtree:true});}
   const routeTimer=setInterval(()=>{if(location.pathname!==lastRoute){lastRoute=location.pathname;paint();}ui?.attach();bar?.sync();},500);
+  // v1.11.73 启动 / 切换对话时不再干等 500ms 轮询：DOM 一有变化就在下一帧挂载（最多 100ms 一次），页面一次成形，不再一块块跳
+  let fastUntil=Date.now()+20000,fastT=0,fastLast=0,fastPath=location.pathname;
+  const fastRun=()=>{fastT=0;fastLast=performance.now();try{ui?.attach();}catch{}try{bar?.sync();}catch{}};
+  const fastMo=new MutationObserver(()=>{if(location.pathname!==fastPath){fastPath=location.pathname;fastUntil=Date.now()+6000;}if(fastT||Date.now()>fastUntil)return;fastT=setTimeout(()=>requestAnimationFrame(fastRun),Math.max(0,100-(performance.now()-fastLast)));});
+  try{fastMo.observe(document.documentElement,{childList:true,subtree:true});}catch{}
   // 状态行里的倒计时与“已重置”切换需要定期重绘；回到前台时顺带刷新额度
   const statusTimer=setInterval(()=>{if(!document.hidden&&(prefs.showQuota||prefs.showCredits))paint();},30000);
   const onVisible=()=>{if(document.hidden)return;paint();if(Date.now()-(balance?.at||0)>BALANCE_INTERVAL)void refreshBalance();};document.addEventListener('visibilitychange',onVisible);
   const resize=()=>{ui?.attach();paint();};window.addEventListener('resize',resize);
   const flushAll=()=>{for(const r of runs.values())if(r.data)save(r.data);void catalog.flush();};window.addEventListener('pagehide',flushAll);
-  function stop(){clearInterval(mon.timer);gacha.stop();gacha.setPaint(null);bar?.destroy();bar=null;legacyDisplay.onchange=null;stopped=true;onLog=null;onSnapshot=null;clearInterval(routeTimer);clearInterval(routeWatch);clearTimeout(paintTimer);for(const r of runs.values()){clearTimeout(r.timer);r.abort?.abort();r.token=null;}for(const reader of readers){try{reader.cancel().catch(()=>{});}catch{}}if(window.fetch===wrapped)window.fetch=native;if(XO?.open===xhrOpen)XO.open=oldOpen;if(XO?.send===xhrSend)XO.send=oldSend;if(window.EventSource===eventSource)window.EventSource=ES;window.removeEventListener('resize',resize);window.removeEventListener('pagehide',flushAll);window.removeEventListener('storage',onStorage);document.removeEventListener('visibilitychange',onVisible);clearInterval(statusTimer);clearTimeout(balanceTimer);clearTimeout(balanceResetTimer);for(const c of costState.values())clearTimeout(c.timer);ui?.destroy();catalog.destroy();}
+  function stop(){clearInterval(mon.timer);gacha.stop();gacha.setPaint(null);bar?.destroy();bar=null;legacyDisplay.onchange=null;stopped=true;onLog=null;onSnapshot=null;clearInterval(routeTimer);try{fastMo.disconnect();}catch{}clearInterval(routeWatch);clearTimeout(paintTimer);for(const r of runs.values()){clearTimeout(r.timer);r.abort?.abort();r.token=null;}for(const reader of readers){try{reader.cancel().catch(()=>{});}catch{}}if(window.fetch===wrapped)window.fetch=native;if(XO?.open===xhrOpen)XO.open=oldOpen;if(XO?.send===xhrSend)XO.send=oldSend;if(window.EventSource===eventSource)window.EventSource=ES;window.removeEventListener('resize',resize);window.removeEventListener('pagehide',flushAll);window.removeEventListener('storage',onStorage);document.removeEventListener('visibilitychange',onVisible);clearInterval(statusTimer);clearTimeout(balanceTimer);clearTimeout(balanceResetTimer);for(const c of costState.values())clearTimeout(c.timer);ui?.destroy();catalog.destroy();}
   window.__AMP_LITE__={version:VERSION,stop,huntLive(){
     const r=selectedRun();
     const blocks=[quota.chat,quota.append].filter(q=>q?.blocked&&(!q.resetAt||q.resetAt>Date.now()));
@@ -8225,7 +8258,7 @@ details.mc-card .section.credits{margin-top:12px}
   },show(){ui?.show();},snapshot:()=>JSON.parse(JSON.stringify(exported())),exportAll:withRaw=>catalog.exportAll(withRaw===true).then(x=>JSON.parse(JSON.stringify(x)))};
   setTimeout(()=>void refreshBalance(),4000);
   setTimeout(()=>void refreshPulse(),5000);setInterval(()=>{if(!document.hidden)void refreshPulse();},60000);
-  gacha.bindCore({rawFetch,runFor,huntLive,clearLimits:()=>{quota={chat:null,append:null};store(KEY+'.quota',quota);cooldown=0;log('info','限流','已更换 IP，清除本地限流记录');paint();},usdQuota:()=>usd,note:(level,text)=>log(level,'看门狗',text)});
+  gacha.bindCore({rawFetch,runFor,huntLive,clearLimits:()=>{quota={chat:null,append:null};store(KEY+'.quota',quota);cooldown=0;log('info','限流','已更换 IP，清除本地限流记录');paint();},usdQuota:()=>usd,shown:sid=>hdrShown&&hdrShown.sid===sid&&Date.now()-hdrShown.at<5000?hdrShown:null,note:(level,text)=>log(level,'看门狗',text)});
   // 账号切换（配套脚本 Arena-Account-Switch）：限流/脉冲/credits 属于账号，切换后丢弃旧状态并立即重新读取
   function accountReset(reason){
     try{
@@ -8239,7 +8272,7 @@ details.mc-card .section.credits{margin-top:12px}
   }
   window.addEventListener('amp:account',()=>accountReset('登录账号变化'));
   try{if(localStorage.getItem('amp.account.dirty')){localStorage.removeItem('amp.account.dirty');setTimeout(()=>accountReset('切换后首次加载'),800);}}catch{}
-  window.__AMP_LITE__.mon={state:sid=>mon.bySid.get(sid||sidOf(location.href))||null,verdict:sid=>monState(sid||sidOf(location.href)),tick:monTick,kick:monKick};window.__AMP_LITE__.gacha={start:r=>gacha.start(!!r),stop:gacha.stop,state:gacha.state,settings:gacha.settings,followModel:gacha.followModel};window.__AMP_LITE__.usd=()=>usd?{...usd}:null;window.__AMP_LITE__.pulse=()=>pulse?{...pulse}:null;
+  window.__AMP_LITE__.mon={state:sid=>mon.bySid.get(sid||sidOf(location.href))||null,verdict:sid=>monState(sid||sidOf(location.href)),tick:monTick,kick:monKick};window.__AMP_LITE__.gacha={start:()=>gacha.start(),stop:gacha.stop,state:gacha.state,peek:gacha.peek,settings:gacha.settings,followModel:gacha.followModel};window.__AMP_LITE__.usd=()=>usd?{...usd}:null;window.__AMP_LITE__.pulse=()=>pulse?{...pulse}:null;
   log('debug','初始化','v'+VERSION+' 已就绪');
   // 存储自检：写入/读回一个测试键，失败时在日志里给出明确提示（保存无效的常见原因：存储已满、隐私模式、站点数据被清理）。
   try{const t='amp.selftest',v=String(Date.now()),ok=ampStore.set(t,v)&&localStorage.getItem(t)===v;try{localStorage.removeItem(t);}catch{}const u=ampStore.usage();log(ok?'debug':'info','存储',(ok?'本地存储正常':'本地存储不可写，设置将无法保存')+' · 已用约 '+Math.round(u.total/1024)+' KB（本脚本 '+Math.round(u.ours/1024)+' KB）');}catch{}
