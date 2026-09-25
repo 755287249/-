@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.62
+// @version      1.11.63
 // @description  【测试版】Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.62' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.63' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -4259,12 +4259,16 @@ const errReload = (() => {
 
   // ---------- 刷新后滚到最新消息（一次，不锁定） ----------
   function findScroller() {
-    const log = logEl(), cands = [];
-    if (log) { for (let e = log; e && e !== document.body; e = e.parentElement) cands.push(e); cands.push(...log.querySelectorAll(':scope > *, :scope > * > *')); }
+    const log = logEl(); if (!log) return null;
+    const can = e => { if (e.scrollHeight - e.clientHeight <= 1) return false; const oy = getComputedStyle(e).overflowY; return oy === 'auto' || oy === 'scroll' || oy === 'overlay'; };
+    // 优先对话区本身（Arena 的 role="log" 就是滚动容器），其次它里面一两层，最后才是最近的可滚动外层。
+    // 以前取“可滚动空间最大”的：外层容器也能滚时会选错，跟随时整块聊天区被推走，看起来像跳回中间。
+    if (can(log)) return log;
     let best = null, room = 0;
-    for (const e of cands) { const r = e.scrollHeight - e.clientHeight; if (r > room + 1) { const oy = getComputedStyle(e).overflowY; if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') { best = e; room = r; } } }
-    if (!best && log) { const se = document.scrollingElement; if (se && se.scrollHeight - se.clientHeight > 1) best = se; }
-    return best;
+    for (const e of log.querySelectorAll(':scope > *, :scope > * > *')) { const r = e.scrollHeight - e.clientHeight; if (r > room + 1 && can(e)) { best = e; room = r; } }
+    if (best) return best;
+    for (let e = log.parentElement; e && e !== document.body && e !== document.documentElement; e = e.parentElement) if (can(e)) return e;
+    const se = document.scrollingElement; return se && se.scrollHeight - se.clientHeight > 1 ? se : null;
   }
   function bottomOnce(msg) {
     const t0 = Date.now(); let done = false, lastH = -1, stableAt = Date.now(), sc = null, said = false;
@@ -4284,25 +4288,53 @@ const errReload = (() => {
       if (Date.now() - stableAt > 2500 && room > 2) off();
     }, 200);
   }
-  // ---------- 跟随最新：点了页面自带的“到底部”按钮后，新内容出来就一直贴着底部 ----------
-  // 向上滚动就取消（滚轮上滑 / 触摸下拉 / PageUp·↑·Home·Shift+空格 / 按住鼠标往上拖滚动条或选文字），页面的“到底部”按钮会重新出现。
+  // ---------- 跟随最新：任务进行中，最新内容（最底部的白点）一直留在输入框上方 ----------
+  // 开启：① 点页面自带的“到底部”按钮；② 任务进行中自己往下滚到露出最底部的白点（最新内容的末尾）。
+  // 跟随时只往下补：内容变长、白点被挡住就往下滚到刚好露出它，从不往上拉；页面自己把画面带走时也会补回来。
+  // Arena 回答还短时会在底部留一块空白（把你的提问顶到上方），跟随不会滚进这块空白。
+  // 取消：滚轮上滑 / 触摸下拉 / PageUp·↑·Home·Shift+空格 / 按住鼠标往上拖滚动条或选文字；切换对话也会停止。
   const follow = (() => {
     const LABEL = /scroll\s*(?:to\s*)?(?:the\s*)?(?:bottom|end|latest)|scroll\s*down|(?:jump|go|back|return|skip)\s*to\s*(?:the\s*)?(?:bottom|latest|present|end|recent)|(?:new|latest)\s*messages?|滚动到底|滚到底|回到底|到底部|跳到底|最新消息|回到最新|新消息/i;
     const NOT = 'aside,nav,header,form,[role="dialog"],[role="menu"],[role="listbox"],[role="tablist"],[data-sidebar],[contenteditable="true"]';
-    let on = false, sc = null, findAt = 0, raf = 0, path = '', holding = false, downTop = 0, touchY = null, verify = 0;
+    const STOP = /^(?:stop(?:\s+(?:generating|response|streaming))?|停止(?:生成|回答)?)$/i;
+    const PAD = 24; // 白点与输入框顶边保持的距离（Arena 自己的底部也留 24px）
+    let on = false, sc = null, findAt = 0, raf = 0, path = '', holding = false, pressed = false, downTop = 0, touchY = null, verify = 0;
+    let inAt = 0, inDir = 0, lastTop = -1, runAt = 0, runVal = false;
     const gap = e => e.scrollHeight - e.clientHeight - e.scrollTop;
-    const scroller = () => { if (sc && sc.isConnected) return sc; if (Date.now() - findAt < 400) return null; findAt = Date.now(); return (sc = findScroller()); };
-    const inScroller = t => { const s = sc && sc.isConnected ? sc : null; return !!(s && t && (t === s || s.contains(t))); };
+    const scroller = () => { if (sc && sc.isConnected && sc !== document.scrollingElement) return sc; if (Date.now() - findAt < 400) return sc && sc.isConnected ? sc : null; findAt = Date.now(); return (sc = findScroller()); };
+    const inScroller = t => { const s = scroller(); return !!(s && t && (t === s || s.contains(t))); };
+    // 最新内容的末尾（白点所在处）和可见区域的底边（吸底输入框的顶边）；认不出页面结构时返回 null，退回“滚到最底部”
+    function edges(s) {
+      if (s === document.scrollingElement || s === document.body) return null;
+      const sr = s.getBoundingClientRect(); let end = -Infinity, vis = sr.bottom;
+      for (const c of s.children) {
+        const cs = getComputedStyle(c); if (cs.display === 'none' || cs.position === 'absolute' || cs.position === 'fixed') continue;
+        const r = c.getBoundingClientRect(); if (r.height <= 0) continue;
+        if (cs.position === 'sticky') { if (r.top > sr.top + sr.height * 0.3 && r.top < vis) vis = r.top; continue; }
+        if (!c.childElementCount && !norm(c.textContent)) continue; // 空白垫片不算内容
+        if (r.bottom > end) end = r.bottom;
+      }
+      return end === -Infinity ? null : { end, vis };
+    }
+    const need = s => { const e = edges(s); return e ? e.end - (e.vis - PAD) : gap(s); }; // 还要往下滚多少（≤ 0：白点已在输入框上方）
+    const atEnd = s => { const e = edges(s); return e ? e.end <= e.vis + 2 : gap(s) <= 8; }; // 白点露出来了
+    // 任务进行中：页面状态是 submitted / streaming（Arena 自己的 isStreaming 也这样算），或者看得到“停止生成”按钮
+    function running() {
+      const now = Date.now(); if (now - runAt < 300) return runVal; runAt = now;
+      const st = chatStatus(); if (st === 'submitted' || st === 'streaming') return (runVal = true);
+      const m = mainEl(); return (runVal = !!m && [...m.querySelectorAll('button')].some(b => STOP.test(norm(b.getAttribute('aria-label') || b.textContent)) && visible(b)));
+    }
     function loop() {
       raf = 0; if (!on) return;
       if (location.pathname !== path) { stop(); return; }
       const s = scroller();
-      if (s && !holding && gap(s) > 1) s.scrollTop = s.scrollHeight;
+      if (s && !holding) { const n = need(s), room = s.scrollHeight - s.clientHeight; if (n > 1 && s.scrollTop < room - 0.5) s.scrollTop = Math.min(room, s.scrollTop + n); }
       raf = requestAnimationFrame(loop);
     }
     function begin() {
       if (!sidNow()) return;
       const was = on; on = true; path = location.pathname; if (!sc || !sc.isConnected) { findAt = 0; scroller(); }
+      if (pressed && sc) { holding = true; downTop = sc.scrollTop; } // 拖着滚动条到底时，松手前先不动
       if (!raf) raf = requestAnimationFrame(loop);
       // 倒计时提示条在用时不弹（toast 收起时会连带取消倒计时）
       if (!was && !timer && !errBar && (!box || box.hidden)) toast('已跟随最新消息 · 向上滚动取消', 1800);
@@ -4321,15 +4353,21 @@ const errReload = (() => {
       clearInterval(verify); const t0 = Date.now();
       verify = setInterval(() => { if (!s.isConnected || Date.now() - t0 > 2500) { clearInterval(verify); return; } const moved = s.scrollTop - top0; if (moved > 20 && (gap(s) <= near || moved >= g0 * 0.6)) { clearInterval(verify); sc = s; begin(); } }, 80);
     }
+    // 自己往下滚、露出了最底部的白点，并且任务正在进行 → 开始跟随
+    function auto(s) { if (on || !s || Date.now() - inAt > 900 || inDir < 0) return; if (atEnd(s) && running()) begin(); }
+    const note = d => { inAt = Date.now(); inDir = d; };
+    const editing = t => !!t?.closest?.('[contenteditable="true"],textarea,input,select');
     function init() {
       addEventListener('click', onClick, true);
-      addEventListener('wheel', e => { if (on && e.deltaY < 0 && inScroller(e.target)) stop(); }, { capture: true, passive: true });
-      addEventListener('touchstart', e => { touchY = on && inScroller(e.target) ? (e.touches[0]?.clientY ?? null) : null; }, { capture: true, passive: true });
-      addEventListener('touchmove', e => { if (on && touchY !== null && (e.touches[0]?.clientY ?? touchY) - touchY > 12) stop(); }, { capture: true, passive: true });
-      addEventListener('keydown', e => { if (on && (/^(PageUp|ArrowUp|Home)$/.test(e.key) || (e.key === ' ' && e.shiftKey)) && !e.target?.closest?.('[contenteditable="true"],textarea,input,select')) stop(); }, true);
+      addEventListener('wheel', e => { if (!e.deltaY || !inScroller(e.target)) return; if (e.deltaY < 0) { note(-1); if (on) stop(); } else { note(1); auto(sc); } }, { capture: true, passive: true });
+      addEventListener('touchstart', e => { touchY = inScroller(e.target) ? (e.touches[0]?.clientY ?? null) : null; }, { capture: true, passive: true });
+      addEventListener('touchmove', e => { if (touchY === null) return; const dy = (e.touches[0]?.clientY ?? touchY) - touchY; if (dy > 12) { note(-1); if (on) stop(); } else if (dy < -12) { note(1); auto(sc); } }, { capture: true, passive: true });
+      addEventListener('keydown', e => { if (editing(e.target)) return; if (/^(PageUp|ArrowUp|Home)$/.test(e.key) || (e.key === ' ' && e.shiftKey)) { note(-1); if (on) stop(); } else if (/^(PageDown|ArrowDown|End)$/.test(e.key) || e.key === ' ') { note(1); setTimeout(() => auto(scroller()), 400); } }, true);
       // 按住鼠标时（拖滚动条 / 选文字）先不贴底；松开时如果往上走了就取消，否则继续跟随
-      addEventListener('mousedown', e => { if (on && e.button === 0 && inScroller(e.target)) { holding = true; downTop = sc.scrollTop; } }, true);
-      addEventListener('mouseup', () => { if (!holding) return; holding = false; if (on && sc && sc.scrollTop < downTop - 10) stop(); }, true);
+      addEventListener('mousedown', e => { if (e.button !== 0 || !inScroller(e.target)) return; pressed = true; note(0); downTop = sc.scrollTop; if (on) holding = true; }, true);
+      addEventListener('mouseup', () => { if (!pressed) return; pressed = false; const s = sc; if (holding) { holding = false; if (on && s && s.scrollTop < downTop - 10) stop(); } else if (s && s.scrollTop > downTop + 10) { note(0); auto(s); } }, true);
+      // 滚轮惯性、拖滚动条、按键滚动：滚动过程中一露出白点就开始跟随
+      addEventListener('scroll', e => { const s = sc; if (on || !s || e.target !== s) return; const down = lastTop >= 0 && s.scrollTop > lastTop + 0.5; lastTop = s.scrollTop; if (inDir > 0 || (inDir === 0 && down)) auto(s); }, { capture: true, passive: true });
     }
     return { init, begin, stop, get on() { return on; } };
   })();
@@ -5360,7 +5398,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.62', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.63', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -5473,7 +5511,7 @@ const gachaUi = (() => {
     const p=object(data?.properties), text=paths=>paths.map(k=>label(get(p,k))).find(Boolean)||null;
     const readings=(paths,kind,source='span')=>paths.flatMap(path=>number(get(p,path))!==null?[{kind,value:get(p,path),source,path:'$.properties.'+path}]:[]);
     const d={id:event.id,kind:event.kind,at:event.at??null,partial:event.partial||data?.isPartial===true,available:!!data?.properties};
-    if(event.kind!=='stream')return {...d,internal:text(['modelName','model_name','model','ai.model.id']),messageId:text(['messageId','message_id','assistantMessageId','nodeId']),route:text(['provider']),reasoning:readings(['reasoningTokens'],'reasoning','record'),input:readings(['inputTokens'],'input','record'),output:readings(['outputTokens'],'output','record'),total:readings(['totalTokens'],'total','record'),fields:event.kind==='cost'?costFields(p):[],usd:event.kind==='cost'?usdFields(p):null};
+    if(event.kind!=='stream')return {...d,internal:text(['modelName','model_name','model','ai.model.id']),messageId:text(['messageId','message_id','assistantMessageId','nodeId']),route:text(['provider']),reasoning:readings(['reasoningTokens'],'reasoning','record'),input:readings(['inputTokens'],'input','record'),output:readings(['outputTokens'],'output','record'),total:readings(['totalTokens'],'total','record'),cacheRead:readings(['cacheReadTokens','cache_read_tokens','cachedInputTokens','cacheReadInputTokens','cachedTokens'],'cacheRead','record'),cacheWrite:readings(['cacheWriteTokens','cache_write_tokens','cacheCreationInputTokens','cacheCreationTokens'],'cacheWrite','record'),fields:event.kind==='cost'?costFields(p):[],usd:event.kind==='cost'?usdFields(p):null};
     d.request=text(['ai.telemetry.metadata.apiModelName','gen_ai.request.model','ai.model.id']);d.response=text(['ai.response.model','gen_ai.response.model']);
     d.route=text(['ai.telemetry.metadata.modelProvider']);d.adapter=text(['ai.model.provider']);d.finish=text(['ai.response.finishReason']);
     d.configs=configs(p);const opt=get(p,'ai.prompt.providerOptions');if(opt!==undefined)configs({providerOptions:opt},'span','$.properties.ai.prompt',d.configs);
@@ -5483,6 +5521,12 @@ const gachaUi = (() => {
       const v=get(meta,path);if(number(v)!==null)d.reasoning.push({kind:'reasoning',value:v,source:'providerMetadata',path:'$.properties.ai.response.providerMetadata.'+path});
     }
     d.input=readings(['ai.usage.inputTokens','ai.usage.promptTokens','gen_ai.usage.input_tokens'],'input');d.output=readings(['ai.usage.outputTokens','ai.usage.completionTokens','gen_ai.usage.output_tokens'],'output');d.total=readings(['ai.usage.totalTokens','gen_ai.usage.total_tokens'],'total');
+    // 缓存 token（估算美金用：缓存读取比普通输入便宜很多）；追踪数据里每次调用自带的成本（ai.totalCost）
+    d.cacheRead=readings(['ai.usage.cachedInputTokens','ai.usage.inputTokenDetails.cacheReadTokens','ai.usage.cacheReadTokens','gen_ai.usage.cache_read_input_tokens','gen_ai.usage.cache_read.input_tokens'],'cacheRead');
+    d.cacheWrite=readings(['ai.usage.inputTokenDetails.cacheWriteTokens','ai.usage.cacheWriteTokens','gen_ai.usage.cache_creation_input_tokens','gen_ai.usage.cache_creation.input_tokens'],'cacheWrite');
+    for(const [path,k] of [['openai.cachedPromptTokens','cacheRead'],['azure.cachedPromptTokens','cacheRead'],['anthropic.cacheReadInputTokens','cacheRead'],['anthropic.cacheCreationInputTokens','cacheWrite'],['google.usageMetadata.cachedContentTokenCount','cacheRead'],['vertex.usageMetadata.cachedContentTokenCount','cacheRead']]){const v=get(meta,path);if(number(v)!==null)d[k].push({kind:k,value:v,source:'providerMetadata',path:'$.properties.ai.response.providerMetadata.'+path});}
+    const ai=data?.ai&&typeof data.ai==='object'?data.ai:null;
+    if(ai){if(number(ai.cachedTokens)!==null&&!d.cacheRead.length)d.cacheRead.push({kind:'cacheRead',value:ai.cachedTokens,source:'span',path:'$.ai.cachedTokens'});if(typeof ai.totalCost==='number'&&Number.isFinite(ai.totalCost)&&ai.totalCost>=0)d.aiCost=ai.totalCost;}
     d.settings={};for(const k of ['temperature','topP','maxOutputTokens']){const v=get(p,'ai.settings.'+k);if(typeof v==='number'&&Number.isFinite(v))d.settings[k]=v;}
     return d;
   }
@@ -5498,9 +5542,9 @@ const gachaUi = (() => {
       const d=details.get(e.id)||{}, i=p.allStreams.indexOf(e), rec=paired?pool[i]?.d:one?pool[0].d:null;
       const internal=rec?.internal||(names.length===1?names[0]:null), scope=rec?.internal?(paired||single?'call':'turn'):internal?'turn':null;
       const first=k=>(d[k]?.length?d[k]:single&&rec?.[k]||[]), input=first('input'), output=first('output'), total=first('total');
-      return {id:e.id,at:e.at?new Date(e.at).toISOString():null,model:d.request||e.model||'未提供',request:d.request||null,response:d.response||null,internal,internalScope:scope,route:d.route||rec?.route||null,adapter:d.adapter||null,finish:d.finish||null,hint:hint(internal,d.request),effort:effort([...(d.configs||[]),...(single?run.requestConfigs||[]:[])]),reasoning:reported([...(d.reasoning||[]),...(single&&rec?.reasoning||[])]),tokens:{input:input[0]?.value??null,output:output[0]?.value??null,total:total[0]?.value??null},tokenSources:[...input,...output,...total],totalLabel:e.totalLabel,settings:d.settings||{},partial:!d.available||d.partial===true};
+      return {id:e.id,at:e.at?new Date(e.at).toISOString():null,model:d.request||e.model||'未提供',request:d.request||null,response:d.response||null,internal,internalScope:scope,route:d.route||rec?.route||null,adapter:d.adapter||null,finish:d.finish||null,hint:hint(internal,d.request),effort:effort([...(d.configs||[]),...(single?run.requestConfigs||[]:[])]),reasoning:reported([...(d.reasoning||[]),...(single&&rec?.reasoning||[])]),tokens:{input:input[0]?.value??null,output:output[0]?.value??null,total:total[0]?.value??null,cacheRead:first('cacheRead')[0]?.value??null,cacheWrite:first('cacheWrite')[0]?.value??null},tokenSources:[...input,...output,...total],totalLabel:e.totalLabel,settings:d.settings||{},cost:typeof d.aiCost==='number'?d.aiCost:null,partial:!d.available||d.partial===true};
     });
-    const records=pool.filter(x=>x.d?.available).slice(-TURN_CALL_LIMIT).map(({e,d})=>({id:e.id,at:e.at?new Date(e.at).toISOString():null,kind:e.kind,internal:d.internal||null,messageId:d.messageId||null,input:d.input[0]?.value??null,output:d.output[0]?.value??null,reasoning:d.reasoning[0]?.value??null,total:d.total[0]?.value??null}));
+    const records=pool.filter(x=>x.d?.available).slice(-TURN_CALL_LIMIT).map(({e,d})=>({id:e.id,at:e.at?new Date(e.at).toISOString():null,kind:e.kind,internal:d.internal||null,messageId:d.messageId||null,input:d.input[0]?.value??null,output:d.output[0]?.value??null,reasoning:d.reasoning[0]?.value??null,total:d.total[0]?.value??null,cacheRead:d.cacheRead?.[0]?.value??null,cacheWrite:d.cacheWrite?.[0]?.value??null}));
     // 花费记录单独列出（spend.recorded 的费用类字段），不混入用量记录
     const costs=recs.filter(x=>x.e.kind==='cost'&&x.d?.available).slice(-4).map(({e,d})=>({id:e.id,at:e.at?new Date(e.at).toISOString():null,internal:d.internal||null,messageId:d.messageId||null,fields:d.fields||[]}));
     const partial=p.limited||calls.some(c=>c.partial)||[...p.streams,...p.records].some(e=>!details.get(e.id)?.available);
@@ -5656,12 +5700,12 @@ const gachaUi = (() => {
     if(!s||![1,2].includes(s.version)||!/^\w[\w-]{0,127}$/.test(s.sid||'')||!RUN.test(s.runId||'')||!Array.isArray(s.calls))return null;
     const iso=v=>typeof v==='string'&&Number.isFinite(Date.parse(v))?new Date(v).toISOString():null;
     const evidence=items=>(Array.isArray(items)?items:[]).slice(0,128).flatMap(e=>{if(!e||typeof e.path!=='string'||e.path.length>2000||!/^\$[\w.-]*$/.test(e.path))return[];const x={source:['span','record','providerMetadata','页面请求'].includes(e.source)?e.source:'未知来源',path:e.path};if(e.kind==='effort')return[{...x,kind:'effort',value:LEVELS.includes(e.value)?e.value:null}];if(e.kind==='budget')return Number.isSafeInteger(e.value)&&e.value>=-1?[{...x,kind:'budget',value:e.value}]:[];if(e.kind==='mode')return['enabled','disabled','adaptive'].includes(e.value)?[{...x,kind:'mode',value:e.value}]:[];return number(e.value)!==null?[{...x,kind:['input','output','total','reasoning'].includes(e.kind)?e.kind:'token',value:e.value}]:[];});
-    const calls=s.calls.slice(0,TURN_CALL_LIMIT).filter(c=>c&&SPAN.test(c.id||'')).map(c=>{const request=label(c.request),internal=label(c.internal);return{id:c.id,at:iso(c.at),model:label(c.model)||'未提供',request,response:label(c.response),internal,internalScope:['call','turn'].includes(c.internalScope)?c.internalScope:internal?'turn':null,route:label(c.route),adapter:label(c.adapter),finish:label(c.finish),hint:hint(internal,request),effort:effort(evidence(c.effort?.evidence)),reasoning:reported(evidence(c.reasoning?.evidence)),tokens:{input:number(c.tokens?.input),output:number(c.tokens?.output),total:number(c.tokens?.total)},tokenSources:evidence(c.tokenSources),totalLabel:label(c.totalLabel),settings:Object.fromEntries(['temperature','topP','maxOutputTokens'].filter(k=>typeof c.settings?.[k]==='number'&&Number.isFinite(c.settings[k])).map(k=>[k,c.settings[k]])),partial:c.partial===true};});
+    const calls=s.calls.slice(0,TURN_CALL_LIMIT).filter(c=>c&&SPAN.test(c.id||'')).map(c=>{const request=label(c.request),internal=label(c.internal);return{id:c.id,at:iso(c.at),model:label(c.model)||'未提供',request,response:label(c.response),internal,internalScope:['call','turn'].includes(c.internalScope)?c.internalScope:internal?'turn':null,route:label(c.route),adapter:label(c.adapter),finish:label(c.finish),hint:hint(internal,request),effort:effort(evidence(c.effort?.evidence)),reasoning:reported(evidence(c.reasoning?.evidence)),tokens:{input:number(c.tokens?.input),output:number(c.tokens?.output),total:number(c.tokens?.total),cacheRead:number(c.tokens?.cacheRead),cacheWrite:number(c.tokens?.cacheWrite)},tokenSources:evidence(c.tokenSources),totalLabel:label(c.totalLabel),settings:Object.fromEntries(['temperature','topP','maxOutputTokens'].filter(k=>typeof c.settings?.[k]==='number'&&Number.isFinite(c.settings[k])).map(k=>[k,c.settings[k]])),cost:typeof c.cost==='number'&&Number.isFinite(c.cost)&&c.cost>=0?c.cost:null,partial:c.partial===true};});
     if(!calls.length)return null;
     const key=typeof s.key==='string'&&/^run_[\w-]{1,100}:[\w-]{1,40}$/.test(s.key)?s.key:s.runId+':'+calls[0].id;
     const rawRecords=Array.isArray(s.records)?s.records:s.turnUsage&&typeof s.turnUsage==='object'?[{...s.turnUsage,id:null,kind:'usage'}]:[];
     const mid=v=>typeof v==='string'&&/^[\w-]{4,128}$/.test(v)?v:null,fnum=v=>typeof v==='number'&&Number.isFinite(v)?v:null;
-    const records=rawRecords.slice(0,TURN_CALL_LIMIT).filter(r=>r&&typeof r==='object').map(r=>({id:SPAN.test(r.id||'')?r.id:null,at:iso(r.at),kind:r.kind==='cost'?'cost':'usage',internal:label(r.internal),messageId:mid(r.messageId),input:number(r.input),output:number(r.output),reasoning:number(r.reasoning),total:number(r.total)}));
+    const records=rawRecords.slice(0,TURN_CALL_LIMIT).filter(r=>r&&typeof r==='object').map(r=>({id:SPAN.test(r.id||'')?r.id:null,at:iso(r.at),kind:r.kind==='cost'?'cost':'usage',internal:label(r.internal),messageId:mid(r.messageId),input:number(r.input),output:number(r.output),reasoning:number(r.reasoning),total:number(r.total),cacheRead:number(r.cacheRead),cacheWrite:number(r.cacheWrite)}));
     const costs=(Array.isArray(s.costs)?s.costs:[]).slice(0,4).filter(c=>c&&typeof c==='object').map(c=>({id:SPAN.test(c.id||'')?c.id:null,at:iso(c.at),internal:label(c.internal),messageId:mid(c.messageId),fields:(Array.isArray(c.fields)?c.fields:[]).slice(0,24).flatMap(f=>f&&typeof f.path==='string'&&/^\$[\w.-]{0,400}$/.test(f.path)&&typeof f.key==='string'&&f.key.length<=120&&(fnum(f.value)!==null||label(f.value))?[{path:f.path,key:f.key,value:fnum(f.value)??label(f.value)}]:[])}));
     const c=s.credits&&typeof s.credits==='object'?s.credits:null,credits=c?(()=>{const out={credits:fnum(c.credits),usd:fnum(c.usd),actualUsd:fnum(c.actualUsd),source:['message','new','session'].includes(c.source)?c.source:null,keys:(Array.isArray(c.keys)?c.keys:[]).filter(k=>typeof k==='string'&&/^[\w-]{1,128}$/.test(k)).slice(0,8),parts:(Array.isArray(c.parts)?c.parts:[]).slice(0,8).filter(p=>p&&typeof p==='object').map(p=>({key:typeof p.key==='string'&&/^[\w-]{1,128}$/.test(p.key)?p.key:null,credits:fnum(p.credits),usd:fnum(p.usd),actualUsd:fnum(p.actualUsd),strategy:label(p.strategy),multiplier:fnum(p.multiplier),margin:fnum(p.margin),fallback:p.fallback===true})),session:c.session&&typeof c.session==='object'?{credits:fnum(c.session.credits),chargedUsd:fnum(c.session.chargedUsd),actualUsd:fnum(c.session.actualUsd),messages:fnum(c.session.messages)}:null,balance:c.balance&&typeof c.balance==='object'?{before:fnum(c.balance.before),beforeAt:iso(c.balance.beforeAt),after:fnum(c.balance.after),afterAt:iso(c.balance.afterAt),delta:fnum(c.balance.delta)}:null,at:iso(c.at)};return out.credits!==null||out.session||out.balance?out:null;})():null;
     return{version:2,key,sid:s.sid,runId:s.runId,turn:number(s.turn),attempt:number(s.attempt)||1,segment:number(s.segment)||0,resumed:s.resumed===true,at:iso(s.at)||new Date().toISOString(),startedAt:iso(s.startedAt),revision:number(s.revision)||0,prompt:typeof s.prompt==='string'?s.prompt.replace(/[\x00-\x1f\x7f]/g,' ').slice(0,40):null,sentAt:iso(s.sentAt),calls,count:number(s.count)??calls.length,prior:number(s.prior)||0,internalNames:(Array.isArray(s.internalNames)?s.internalNames:[]).map(label).filter(Boolean).slice(0,6),records,costs,credits,routing:s.routing&&typeof s.routing==='object'?{from:label(s.routing.from),to:label(s.routing.to),waitMs:number(s.routing.waitMs),at:iso(s.routing.at),committed:s.routing.committed===true,reason:typeof s.routing.reason==='string'?s.routing.reason.slice(0,300):null,cause:typeof s.routing.cause==='string'?s.routing.cause.slice(0,120):null}:null,outcome:['failed','empty'].includes(s.outcome)?s.outcome:null,partial:s.partial===true,raw:sanitizeRaw(s.raw)};
@@ -6766,6 +6810,81 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     // 概览第一行“消耗”卡片：当前对话总量 / 最近一次，Token ↔ 美金 切换（选择会记住）。
     // 美金：Arena 费用接口的会话累计计费（含其他设备的消耗）与本轮计费；没有接口数据时用本机记录的每轮 credits 合计（标 ≈）。
     // Token：按本机记录的每轮用量求和（优先 token.usage.recorded，其次各次调用），缺字段或调用数超过保留上限时标 ≈。
+    // ---------- 美金估算：Arena 费用接口不开放时，按 token × 模型官方单价估算 ----------
+    // 单价（每百万 token 的输入 / 输出价）读 Arena 排行榜页面（同站，24 小时刷新一次，失败 6 小时后再试），读不到时用内置价格表。
+    // 缓存读取按输入价的 10% 计；缓存写入 Claude 按 125%、其他按输入价；推理 token 已含在输出里。
+    const PRICE_KEY='amp.native.prices.v1',PRICE_DAY=86400000,PRICE_RETRY=21600000,CACHE_READ_RATE=0.1;
+    const PRICE_BUILTIN={'gpt-6-astra':[10,50],'gpt-6-sol':[2,10],'gpt-6-luna':[0.1,0.5],'gpt-5.6-sol':[4,20],'gpt-5.6-terra':[2,12],'gpt-5.6-luna':[0.2,1.2],'gpt-5.5':[5,30],'gpt-5.4':[2.5,15],
+      'claude-fable-5.1':[10,50],'claude-fable-5':[10,50],'claude-opus-5.5':[4,20],'claude-opus-5':[5,25],'claude-sonnet-5':[2,10],'claude-opus-4-8':[5,25],'claude-sonnet-4-6':[1.5,7.5],
+      'gemini-3.8-flash':[0.75,3.75],'gemini-3.1-pro':[1,6],'kimi-k3':[3,15],'grok-4.7':[2,6],'deepseek-v4-pro':[1.32,3.96],'deepseek-v4.1-flash':[0.3,1.2],'glm-5.3':[1.4,4.4],'qwen3.8-max':[1.69,5.07],'minimax-m3':[0.3,1.2],'mimo-v2.6-pro':[0.435,0.87]};
+    const PRICE_TAIL=/-(?:max|xhigh|high|medium|low|minimal|none|thinking(?:-\d+k)?|non-thinking|no-thinking|preview|latest|agent|webdev|vertex|bedrock|\d+k|\d{8}|\d{4}-\d{2}-\d{2}|\d{4})$/;
+    function priceKey(n){
+      let s=String(n||'').toLowerCase().replace(/^#\d+\s*/,'').replace(/\s*·\s*\d+\s*$/,'').replace(/\[[^\]]*\]|\([^)]*\)/g,' ').trim();
+      s=s.replace(/^[\w.-]+\//,'').replace(/[\s_]+/g,'-').replace(/-{2,}/g,'-').replace(/^-|-$/g,'');
+      for(let i=0;i<8&&PRICE_TAIL.test(s);i++)s=s.replace(PRICE_TAIL,'');
+      return s.length<=80?s:'';
+    }
+    let priceMem=null,priceBusy=false;
+    const priceSave=()=>{try{ampStore.set(PRICE_KEY,JSON.stringify(priceMem));}catch{}};
+    function priceLoad(){if(priceMem)return priceMem;let c=null;try{c=JSON.parse(localStorage.getItem(PRICE_KEY)||'null');}catch{}priceMem=c&&c.map&&typeof c.map==='object'?{at:+c.at||0,tried:+c.tried||0,map:c.map}:{at:0,tried:0,map:{}};return priceMem;}
+    function priceOf(name){
+      const k=priceKey(name);if(!k)return null;const m=priceLoad().map;
+      for(let s=k;s;s=s.includes('-')?s.slice(0,s.lastIndexOf('-')):''){const p=m[s]||PRICE_BUILTIN[s];if(Array.isArray(p)&&p[0]>=0&&p[1]>=0)return {key:s,in:p[0],out:p[1],src:m[s]?'排行榜':'内置'};}
+      return null;
+    }
+    // 排行榜页面里每个模型对象都带 inputPricePerMillion / outputPricePerMillion；名字在同一对象里（modelDisplayName 或 model）
+    function priceParse(txt){
+      const s=String(txt).slice(0,12e6).replace(/\\"/g,'"'),map={},re=/"inputPricePerMillion":(null|[\d.]+),"outputPricePerMillion":(null|[\d.]+)/g;
+      for(let m,n=0;(m=re.exec(s))&&n<5000;n++){
+        if(m[1]==='null'||m[2]==='null')continue;const i=+m[1],o=+m[2];if(!(i>=0&&o>=0&&i<1e4&&o<1e4))continue;
+        const st=s.lastIndexOf('{',m.index);if(st<0||m.index-st>3000)continue;const obj=s.slice(st,m.index);
+        for(const x of obj.matchAll(/"(?:modelDisplayName|model|publicName|displayName)":"([^"]{1,160})"/g)){const k=priceKey(x[1]);if(k&&!map[k])map[k]=[i,o];}
+      }
+      return map;
+    }
+    function priceRefresh(){
+      const pm=priceLoad(),now=Date.now();
+      if(priceBusy||now-pm.at<PRICE_DAY||now-pm.tried<PRICE_RETRY)return;
+      priceBusy=true;pm.tried=now;priceSave();
+      void rawFetch(location.origin+'/leaderboard',{credentials:'same-origin',cache:'no-store',headers:{Accept:'text/html'}}).then(r=>{if(!r.ok)throw Error('HTTP '+r.status);return r.text();}).then(txt=>{
+        const map=priceParse(txt),n=Object.keys(map).length;if(n<5)throw Error('排行榜页面里没有读到单价');
+        priceMem={at:Date.now(),tried:pm.tried,map};priceSave();log('info','费用','已从 Arena 排行榜更新 '+n+' 个模型的单价');spendSerial++;paint();
+      }).catch(e=>log('debug','费用','读取排行榜单价失败：'+(e?.message||e))).finally(()=>{priceBusy=false;});
+    }
+    const priceText=p=>p.key+'：输入 $'+p.in+' · 输出 $'+p.out+' / 百万 token（'+p.src+'）';
+    function priceWhen(){const pm=priceLoad();return Object.keys(pm.map).length&&pm.at?'Arena 排行榜（'+new Date(pm.at).toLocaleDateString('zh-CN')+' 更新）':'内置价格表（读到 Arena 排行榜后自动更新）';}
+    // 一次用量的美金。输入里已含缓存（OpenAI / AI SDK 口径）就扣掉；缓存比输入还多，说明是分开计的（Anthropic 口径）
+    function usdOf(p,i,o,cr,cw){i=i||0;o=o||0;cr=cr||0;cw=cw||0;const fresh=cr+cw<=i?i-cr-cw:i,wr=/^claude/.test(p.key)?1.25:1;return (fresh*p.in+cr*p.in*CACHE_READ_RATE+cw*p.in*wr+o*p.out)/1e6;}
+    // 卡片只用到这些字段（不把整份快照留在内存里）
+    function spendLite(d){
+      if(!d)return null;const c=d.credits;
+      return {count:d.count,internalNames:d.internalNames||[],credits:c?{usd:c.usd,credits:c.credits}:null,
+        costs:(d.costs||[]).map(x=>({fields:(x.fields||[]).filter(f=>f&&/^(chargedUsd|costUsd)$/.test(f.key))})),
+        records:(d.records||[]).map(r=>({kind:r.kind,internal:r.internal,input:r.input,output:r.output,cacheRead:r.cacheRead,cacheWrite:r.cacheWrite})),
+        calls:(d.calls||[]).map(x=>({internal:x.internal,request:x.request,model:x.model,cost:x.cost,tokens:x.tokens}))};
+    }
+    const convModel=sid=>{const e=sid&&catalog.entries.get(sid);return e?e.name?.name||(e.models||[])[0]||null:null;};
+    // 一轮的美金：Arena 计费（credits）> spend.recorded 计费记录 > 追踪数据里的调用成本 > token × 单价估算
+    function turnUsd(s,fb){
+      if(!s)return null;
+      const cu=spendNum(s.credits?.usd)??(spendNum(s.credits?.credits)!==null?s.credits.credits/CREDITS_PER_USD:null);
+      if(cu!==null)return {usd:cu,kind:'credits'};
+      const recs=(s.records||[]).filter(r=>r&&r.kind!=='cost'),calls=s.calls||[];
+      const fees=(s.costs||[]).map(c=>{const f=k=>(c.fields||[]).find(x=>x.key===k&&typeof x.value==='number'&&x.value>=0)?.value??null;return f('chargedUsd')??f('costUsd');});
+      if(fees.length&&fees.every(v=>v!==null)&&fees.length>=(recs.length||1)){const sum=fees.reduce((a,b)=>a+b,0);if(sum>0)return {usd:sum,kind:'record'};}
+      if(calls.length&&calls.length>=(s.count||0)&&calls.every(c=>spendNum(c.cost)!==null)){const sum=calls.reduce((a,c)=>a+c.cost,0);if(sum>0)return {usd:sum,kind:'trace'};}
+      const turnName=(s.internalNames||[])[0]||calls.find(c=>c.internal)?.internal||calls.find(c=>c.request)?.request||calls.find(c=>c.model&&c.model!=='未提供')?.model||null;
+      const src=recs.length?recs.map(r=>({n:r.internal,i:r.input,o:r.output,cr:r.cacheRead,cw:r.cacheWrite})):calls.map(c=>({n:c.internal||c.request||c.model,i:c.tokens?.input,o:c.tokens?.output,cr:c.tokens?.cacheRead,cw:c.tokens?.cacheWrite}));
+      let usd=0,have=0,miss=0,noPrice=0,noCache=0;const used=new Map();
+      for(const x of src){
+        if(spendNum(x.i)===null&&spendNum(x.o)===null){miss++;continue;}
+        const p=priceOf(x.n)||priceOf(turnName)||priceOf(fb);if(!p){noPrice++;continue;}
+        usd+=usdOf(p,spendNum(x.i),spendNum(x.o),spendNum(x.cr),spendNum(x.cw));have++;used.set(p.key,p);if(spendNum(x.cr)===null)noCache++;
+      }
+      if(!have)return noPrice?{usd:null,kind:'noprice'}:null;
+      const cut=recs.length?recs.length>=TURN_CALL_LIMIT:(s.count||0)>calls.length;
+      return {usd,kind:'estimate',partial:miss>0||noPrice>0||cut,noCache:noCache===have,prices:[...used.values()]};
+    }
     let spendSerial=0;const spendCache=new Map(),spendRemote=new Map();
     // 美金：读 Arena 费用接口的整段对话累计（includeSession=true）。每个对话最多 60 秒一次，只在卡片需要时触发。
     function spendFetch(sid){
@@ -6796,12 +6915,19 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       const turns=catalog.turnsOf(sid),stamp=turns.map(t=>t.key+'@'+t.at).join('|');let hit=spendCache.get(sid);
       if(!hit||hit.stamp!==stamp){
         const h={stamp,byKey:hit?.byKey||null,loading:true};hit=h;spendCache.delete(sid);spendCache.set(sid,h);while(spendCache.size>8)spendCache.delete(spendCache.keys().next().value);
-        void catalog.rows('turns','sid',sid,'next',400).then(rows=>{const m=new Map();for(const row of rows){const d=row?.data;if(d?.key)m.set(d.key,{tok:turnTokens(d),credits:spendNum(row.credits??d.credits?.credits)});}h.byKey=m;h.loading=false;if(spendCache.get(sid)===h){spendSerial++;paint();}}).catch(()=>{h.loading=false;});
+        void catalog.rows('turns','sid',sid,'next',400).then(rows=>{const m=new Map();for(const row of rows){const d=row?.data;if(d?.key)m.set(d.key,{tok:turnTokens(d),credits:spendNum(row.credits??d.credits?.credits),lite:spendLite(d)});}h.byKey=m;h.loading=false;if(spendCache.get(sid)===h){spendSerial++;paint();}}).catch(()=>{h.loading=false;});
       }
-      const all=new Map(hit.byKey||[]);if(latest?.key)all.set(latest.key,{tok:turnTokens(latest),credits:spendNum(latest.credits?.credits)});
+      const all=new Map(hit.byKey||[]);if(latest?.key)all.set(latest.key,{tok:turnTokens(latest),credits:spendNum(latest.credits?.credits),lite:spendLite(latest)});
       let total=0,input=0,output=0,have=0,approx=false,credits=0,cHave=0;
-      for(const v of all.values()){if(v.tok){total+=v.tok.total;input+=v.tok.input;output+=v.tok.output;have++;if(v.tok.approx)approx=true;}else approx=true;if(v.credits!==null){credits+=v.credits;cHave++;}}
-      return {total:have?total:null,input,output,turns:all.size,approx,loading:hit.loading&&!hit.byKey,credits:cHave?credits:null,creditTurns:cHave};
+      // 美金按轮相加：有 Arena 计费的轮次用计费，其余按 token × 单价估算（渲染时按当前单价算）
+      const fb=convModel(sid),usd={usd:0,have:0,estimated:0,partial:false,noPrice:0,noCache:false,prices:[],fb},ps=new Map();
+      for(const v of all.values()){
+        if(v.tok){total+=v.tok.total;input+=v.tok.input;output+=v.tok.output;have++;if(v.tok.approx)approx=true;}else approx=true;if(v.credits!==null){credits+=v.credits;cHave++;}
+        const u=turnUsd(v.lite,fb);if(!u){usd.partial=true;continue;}if(u.usd===null){usd.noPrice++;continue;}
+        usd.usd+=u.usd;usd.have++;if(u.kind==='estimate'){usd.estimated++;if(u.partial)usd.partial=true;if(u.noCache)usd.noCache=true;for(const q of u.prices)ps.set(q.key,q);}
+      }
+      usd.prices=[...ps.values()];
+      return {total:have?total:null,input,output,turns:all.size,approx,loading:hit.loading&&!hit.byKey,credits:cHave?credits:null,creditTurns:cHave,usd};
     }
     function spendCard(s){
       const sid=s.sid,latest=spendLatest(sid)||s,unit=prefs.spendUnit==='usd'?'usd':'token';
@@ -6819,11 +6945,16 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
         const st=costState.get(sid),aAt=Date.parse(latest.credits?.at||'')||0,cands=[[latest.credits?.session||null,aAt],[st?.latest?.summary?.session||null,st?.latest?.at||0]].filter(x=>x[0]);
         const newest=cands.reduce((m,x)=>Math.max(m,x[1]),0),rm=!cands.length||Date.now()-newest>600000?spendFetch(sid):spendRemote.get(sid)||null;
         if(rm?.session)cands.push([rm.session,rm.at]);cands.sort((x,y)=>y[1]-x[1]);const sess=cands[0]?.[0]||null,wait=rm?.busy?'正在读取费用接口…':rm?.error||'';
-        const su=spendNum(sess?.chargedUsd),fb=tot.credits!==null?tot.credits/CREDITS_PER_USD:null,cr=latest.credits||null;
-        cell('当前对话',su!==null?spendMoney(su):fb!==null?'≈ '+spendMoney(fb):rm?.busy?'读取中…':'—',su!==null?[spendNum(sess.messages)!==null?sess.messages+' 条消息':null,spendNum(sess.actualUsd)!==null?'实际成本 '+spendMoney(sess.actualUsd):null].filter(Boolean).join(' · '):fb!==null?'本机记录的 '+tot.creditTurns+' 轮合计':!prefs.showCredits?'费用读取已关闭（设置里开启“本轮消耗”）':wait||'暂无费用数据',su!==null?'Arena 费用接口的会话累计计费，包含其他设备上的消耗':fb!==null?'没有取得会话累计，按本机记录的每轮 credits 相加（1 美元 = 1000 credits）':'');
-        const local=(latest.calls||[]).length>0;let lc=cr,lu=spendNum(cr?.usd)??(spendNum(cr?.credits)!==null?cr.credits/CREDITS_PER_USD:null),byDom=false;
+        const su=spendNum(sess?.chargedUsd),cr=latest.credits||null,eu=tot.usd;if(su===null&&eu.estimated)priceRefresh();
+        const how=eu.estimated?(eu.estimated===eu.have?'按 token × 单价估算':'其中 '+eu.estimated+' 轮按 token 估算'):'';
+        const why=eu.have?[eu.estimated?'没有取得 Arena 的会话计费，按本机记录的每轮相加：有计费数据的轮次直接用，其余按 token 用量 × 模型官方单价估算':'没有取得会话累计，按本机记录的每轮 credits 相加（1 美元 = 1000 credits）',...eu.prices.map(priceText),eu.estimated?'缓存读取按输入价的 10% 计'+(eu.noCache?'；部分调用没有缓存数据，按全价计，可能偏高':''):'',eu.partial?'部分轮次缺少用量记录，未计入':'',eu.noPrice?'有 '+eu.noPrice+' 轮找不到模型单价，未计入':'',eu.estimated?'单价来源：'+priceWhen():'',rm?.error?'费用接口：'+rm.error:'','其他设备上的轮次不在内'].filter(Boolean).join('\n'):'';
+        cell('当前对话',su!==null?spendMoney(su):eu.have?'≈ '+spendMoney(eu.usd):rm?.busy?'读取中…':'—',su!==null?[spendNum(sess.messages)!==null?sess.messages+' 条消息':null,spendNum(sess.actualUsd)!==null?'实际成本 '+spendMoney(sess.actualUsd):null].filter(Boolean).join(' · '):eu.have?(how?'本机 '+eu.have+' 轮 · '+how:'本机记录的 '+eu.have+' 轮合计'):eu.noPrice?'没有这个模型的单价':!prefs.showCredits?'费用读取已关闭（设置里开启“本轮消耗”）':wait||'暂无费用数据',su!==null?'Arena 费用接口的会话累计计费，包含其他设备上的消耗':why);
+        const local=(latest.calls||[]).length>0;let lc=cr,lu=spendNum(cr?.usd)??(spendNum(cr?.credits)!==null?cr.credits/CREDITS_PER_USD:null),byDom=false,le=null;
         if(lu===null&&rm?.entries){const id=domAssistantId(sid),e=id&&rm.entries[id];const v=e?spendNum(e.usd)??(spendNum(e.credits)!==null?e.credits/CREDITS_PER_USD:null):null;if(v!==null){lu=v;lc=e;byDom=true;}}
-        cell('最近一次',lu!==null?spendMoney(lu):'—',lu!==null?[spendNum(lc?.credits)!==null?Math.round(lc.credits).toLocaleString('zh-CN')+' credits':null,spendNum(lc?.actualUsd)!==null?'实际 '+spendMoney(lc.actualUsd):null].filter(Boolean).join(' · '):!prefs.showCredits?'费用读取已关闭':local?'等待费用接口（流结束后几秒读取）':wait||(rm?.entries?'费用接口里没找到最后一条回复':'本机暂无这个对话的记录'),lu!==null?(byDom?'按页面最后一条回复的消息 id 在 Arena 费用接口里查到的计费':'本轮计费（Arena 费用接口）'):'');
+        if(lu===null&&local){const u=turnUsd(spendLite(latest),eu.fb);if(u&&u.usd!==null){le=u;lu=u.usd;if(u.kind==='estimate')priceRefresh();}}
+        const leSub=le?(le.kind==='estimate'?'按 token 估算'+(le.prices.length===1?' · $'+le.prices[0].in+' / $'+le.prices[0].out:''):le.kind==='record'?'Arena 计费记录':'调用追踪里的成本'):'';
+        const leWhy=le?(le.kind==='estimate'?['本轮没有取得 Arena 计费，按 token 用量 × 模型官方单价估算：',...le.prices.map(priceText),'缓存读取按输入价的 10% 计'+(le.noCache?'；本轮没有缓存数据，按全价计，可能偏高':''),le.partial?'部分调用缺少用量或单价，未计入':'','单价来源：'+priceWhen()].filter(Boolean).join('\n'):le.kind==='record'?'本轮 spend.recorded 记录里的计费金额（Arena 服务端写入）':'Trigger 追踪数据里每次模型调用的成本（ai.totalCost）相加'):'';
+        cell('最近一次',lu!==null?(le?.kind==='estimate'?'≈ ':'')+spendMoney(lu):'—',lu!==null?(le?leSub:[spendNum(lc?.credits)!==null?Math.round(lc.credits).toLocaleString('zh-CN')+' credits':null,spendNum(lc?.actualUsd)!==null?'实际 '+spendMoney(lc.actualUsd):null].filter(Boolean).join(' · ')):!prefs.showCredits?'费用读取已关闭':local?'等待费用接口（流结束后几秒读取）':wait||(rm?.entries?'费用接口里没找到最后一条回复':'本机暂无这个对话的记录'),lu!==null?(le?leWhy:byDom?'按页面最后一条回复的消息 id 在 Arena 费用接口里查到的计费':'本轮计费（Arena 费用接口）'):'');
       }
     }
     function overview(s,c){
