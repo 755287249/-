@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.68
+// @version      1.11.69
 // @description  【测试版】Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.68' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.69' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -5575,7 +5575,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.68', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.69', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -5921,7 +5921,66 @@ const gachaUi = (() => {
     }
     // 正文 delta 字符串不会被当作协议对象解析。
   }
-  if(typeof window==='undefined'){if(typeof module!=='undefined')module.exports={get,authorized,configs,effort,hint,reported,plan,detail,snapshot,Lines,inspect,sidOf,streamSid,localSnapshot,pickName,nextName,promptPreview,trimRaw,trimSpan,sanitizeRaw,toMs,toDurationMs,uuidTime,stamp,quotaOf,quotaView,until,costFields,costSummary,creditsOf,resolveTurnCredits,CREDITS_PER_USD,BUDGET_OPTIONS};return;}
+
+  // ---------- 实时监控 · 纯函数 ----------
+  // 页面 useChat 状态里的助手消息（AI SDK v5 UIMessage.parts）压成“步骤摘要”：step-start 分隔一次模型调用；
+  // 有文字的 reasoning = 可见思考链，tool-* / dynamic-tool = 工具调用（bash 等），text = 正文。
+  const monTool=t=>t==='dynamic-tool'||/^tool-/.test(t);
+  const monMedian=a=>{const v=(a||[]).filter(x=>Number.isFinite(x)).sort((x,y)=>x-y);if(!v.length)return 0;const m=v.length>>1;return v.length%2?v[m]:(v[m-1]+v[m])/2;};
+  function monMetaModel(meta){
+    if(!meta||typeof meta!=='object')return null;
+    for(const k of ['model','modelId','modelName','model_id','model_name','apiModelName','internalModelName']){const v=meta[k];if(typeof v==='string'&&v.length<=120&&/[a-z]/i.test(v))return v;if(v&&typeof v==='object')for(const j of ['id','name','slug'])if(typeof v[j]==='string'&&v[j].length<=120&&/[a-z]/i.test(v[j]))return v[j];}
+    return null;
+  }
+  function liveMsg(msg){
+    const parts=Array.isArray(msg?.parts)?msg.parts:[],steps=[];let st=null,fr=-1,ft=-1;
+    const open=()=>{st={r:0,rc:0,t:0,tools:[],live:false};steps.push(st);};
+    parts.forEach((p,i)=>{
+      if(!p||typeof p!=='object')return;const t=String(p.type||'');
+      if(t==='step-start'){open();return;}if(!st)open();
+      const txt=typeof p.text==='string'?p.text:'';
+      if(/^reasoning|thinking/.test(t)){if(txt.trim()){st.r++;st.rc+=txt.length;if(fr<0)fr=i;}}
+      else if(t==='text'){st.t+=txt.length;if(ft<0&&txt.trim())ft=i;}
+      else if(monTool(t))st.tools.push(String(p.toolName||t.slice(5)||'tool').slice(0,32));
+      const ps=String(p.state||'');if(ps==='streaming'||monTool(t)&&/^input-/.test(ps))st.live=true;
+    });
+    const fs=steps.findIndex(x=>x.r>0);
+    return {id:String(msg?.id||''),steps,n:steps.length,think:steps.filter(x=>x.r).length,rc:steps.reduce((a,x)=>a+x.rc,0),tc:steps.reduce((a,x)=>a+x.t,0),tools:steps.reduce((a,x)=>a+x.tools.length,0),live:steps.some(x=>x.live),
+      midText:fr>=0&&ft>=0&&fr>ft,firstThink:fs,before:fs>0?steps.slice(0,fs).filter(x=>x.t||x.tools.length).length:0,model:monMetaModel(msg?.metadata)};
+  }
+  // 本条回复 cur 相对此前各轮 prev 的疑点。level：strong 基本可判定换了模型 / medium 可疑 / weak 仅供参考
+  function liveFlags(prev,cur,done){
+    const out=[];if(!cur||!cur.n)return out;
+    const hist=(prev||[]).filter(m=>m&&m.n).slice(-12),th=hist.filter(m=>m.think).length,no=hist.length-th;
+    if(cur.think&&th===0){
+      const midStep=cur.firstThink>0&&cur.before>0;
+      if(cur.midText||midStep)out.push({kind:'think-mid',level:cur.midText||no>=1?'strong':'medium',text:cur.midText?'回复中途出现思考链':'第 '+(cur.firstThink+1)+' 步开始出现思考链',detail:(cur.midText?'先输出了正文，之后才开始思考':'前 '+cur.firstThink+' 步都没有思考')+(no?'；此前 '+no+' 轮也都没有':'')});
+      else if(no>=2)out.push({kind:'think-new',level:'strong',text:'思考链出现：此前 '+no+' 轮都没有',detail:'闭源模型在 Arena 一般不显示思考链，从无到有多半是换了模型'});
+      else if(no===1)out.push({kind:'think-new',level:'medium',text:'思考链出现：上一轮没有',detail:'再观察一轮会更可靠'});
+    }else if(!cur.think&&done&&th>=2&&no===0)out.push({kind:'think-gone',level:'medium',text:'思考链消失：此前 '+th+' 轮都有',detail:'可能换了模型或降了档位，也可能只是这轮不需要思考'});
+    const per=m=>m.think?m.rc/m.think:0,withT=hist.filter(m=>m.think),base=monMedian(withT.map(per));
+    if(cur.think&&(done||cur.think>=3)&&withT.length>=2&&base>=600){const v=per(cur),k=v/base,d='每步思考约 '+Math.round(v)+' 字，此前中位 '+Math.round(base)+' 字';
+      if(k<=0.25)out.push({kind:'think-drop',level:'medium',text:'思考强度骤降 ↓'+Math.round((1-k)*100)+'%',detail:d});
+      else if(k>=4)out.push({kind:'think-rise',level:'weak',text:'思考强度骤增 ×'+(Math.round(k*10)/10),detail:d});}
+    return out;
+  }
+  // Trace 调用级：同一模型内的档位变化（显式参数 / 内部名称后缀）、单次调用消耗（输出 + 推理 token）与输出速度的突变
+  function traceShift(calls,same,tierOf){
+    const list=Array.isArray(calls)?calls:[],tiers=[];let pv=null;
+    for(const c of list){const t=c.eff||(c.internal?tierOf(c.internal):null)||null;if(!t)continue;if(pv&&pv.t!==t&&same(pv.c,c))tiers.push({from:pv.t,to:t,at:c.at??null,turn:c.turn??null,attempt:c.attempt??null,n:c.n??null});pv={t,c};}
+    const done=list.filter(c=>!c.partial&&Number.isFinite(c.out)),key=c=>(c.run||'trace')+':'+c.turn+':'+c.attempt,lk=done.length?key(done.at(-1)):null;
+    const cur=done.filter(c=>key(c)===lk),base=done.filter(c=>key(c)!==lk).slice(-40),v=c=>c.out+(Number.isFinite(c.rsn)?c.rsn:0);
+    let shift=null,speed=null;
+    if(cur.length&&base.length>=3){const b=monMedian(base.map(v)),x=monMedian(cur.map(v)),k=b?x/b:0,sm=same(base.at(-1),cur.at(-1));
+      if(b>=1500&&k<=0.3)shift={kind:'drop',base:b,cur:x,ratio:k,same:sm,turn:cur[0].turn??null,attempt:cur[0].attempt??null};
+      else if(x>=1500&&b>0&&k>=3.5)shift={kind:'rise',base:b,cur:x,ratio:k,same:sm,turn:cur[0].turn??null,attempt:cur[0].attempt??null};}
+    const tb=base.map(c=>c.tps).filter(x=>Number.isFinite(x)&&x>0),tc=cur.map(c=>c.tps).filter(x=>Number.isFinite(x)&&x>0);
+    if(tb.length>=3&&tc.length){const b=monMedian(tb),x=monMedian(tc),k=x/b;if(k>=2.5||k<=0.4)speed={base:b,cur:x,ratio:k,turn:cur[0].turn??null,attempt:cur[0].attempt??null};}
+    return {tiers,shift,speed};
+  }
+  // 观察到的思考强度（推理 token）分 0–4 级
+  const thinkLevel=t=>t===null||t===undefined||t===''||!Number.isFinite(+t)?null:+t<=0?0:+t<1000?1:+t<4000?2:+t<16000?3:4;
+  if(typeof window==='undefined'){if(typeof module!=='undefined')module.exports={get,authorized,configs,effort,hint,reported,plan,detail,snapshot,Lines,inspect,sidOf,streamSid,localSnapshot,pickName,nextName,promptPreview,trimRaw,trimSpan,sanitizeRaw,toMs,toDurationMs,uuidTime,stamp,quotaOf,quotaView,until,costFields,costSummary,creditsOf,resolveTurnCredits,CREDITS_PER_USD,BUDGET_OPTIONS,liveMsg,liveFlags,traceShift,thinkLevel,monMedian};return;}
   if(window.top!==window.self)return;
   if(window.__AMP_LITE__?.version===VERSION)return;
   window.__AMP_LITE__?.stop?.();
@@ -5933,7 +5992,7 @@ const gachaUi = (() => {
   const load=(key,fallback)=>{try{return JSON.parse(localStorage.getItem(key))??fallback;}catch{return fallback;}};
   const store=(key,value)=>{try{return ampStore.set(key,JSON.stringify(value));}catch{return false;}};
   const clamp=(v,min,max,fallback)=>Number.isFinite(v)?Math.min(max,Math.max(min,Math.round(v))):fallback;
-  const stored=load(KEY+'.prefs',{}), prefs={width:clamp(stored.width,280,720,340),sidebarWidth:clamp(stored.sidebarWidth,200,560,null),cloudSync:stored.cloudSync===true,cloudFormat:stored.cloudFormat==='name'?'name':'prefix',rawBudget:BUDGET_OPTIONS.includes(stored.rawBudget)?stored.rawBudget:64,showSent:stored.showSent!==false,showQuota:stored.showQuota!==false,showCredits:stored.showCredits!==false,showBar:stored.showBar!==false,barCollapsed:stored.barCollapsed===true,barOffset:stored.barOffset!==false,showSeq:stored.showSeq===true,hideDocIcon:stored.hideDocIcon!==false,stopOnResample:stored.stopOnResample!==false,showQuotaReset:stored.showQuotaReset===true,spendUnit:stored.spendUnit==='usd'?'usd':'token',sheetH:typeof stored.sheetH==='number'&&stored.sheetH>=0.05&&stored.sheetH<=1?stored.sheetH:0.5,sheetFull:stored.sheetFull===true,pullRefresh:stored.pullRefresh!==false,glassDrawer:stored.glassDrawer!==false,gemLayout:stored.gemLayout!==false};
+  const stored=load(KEY+'.prefs',{}), prefs={width:clamp(stored.width,280,720,340),sidebarWidth:clamp(stored.sidebarWidth,200,560,null),cloudSync:stored.cloudSync===true,cloudFormat:stored.cloudFormat==='name'?'name':'prefix',rawBudget:BUDGET_OPTIONS.includes(stored.rawBudget)?stored.rawBudget:64,showSent:stored.showSent!==false,showQuota:stored.showQuota!==false,showCredits:stored.showCredits!==false,showBar:stored.showBar!==false,barCollapsed:stored.barCollapsed===true,barOffset:stored.barOffset!==false,showSeq:stored.showSeq===true,hideDocIcon:stored.hideDocIcon!==false,stopOnResample:stored.stopOnResample!==false,showQuotaReset:stored.showQuotaReset===true,spendUnit:stored.spendUnit==='usd'?'usd':'token',sheetH:typeof stored.sheetH==='number'&&stored.sheetH>=0.05&&stored.sheetH<=1?stored.sheetH:0.5,sheetFull:stored.sheetFull===true,pullRefresh:stored.pullRefresh!==false,glassDrawer:stored.glassDrawer!==false,gemLayout:stored.gemLayout!==false,monOn:stored.monOn!==false,monAlert:stored.monAlert!==false,monStop:stored.monStop===true};
   // 手机/窄屏：底部只留一条余额栏，点击余额栏才展开模型信息
   const miniBar=()=>innerWidth<768||!!document.getElementById('amp-lite-dock')?.hasAttribute('data-compact');
   const savePrefs=()=>store(KEY+'.prefs',prefs);
@@ -6194,14 +6253,14 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     if(!session){if(/^\/(api|ai-proxy|agent)\//.test(u.pathname)&&!/\/(events|spans)\b|telemetry|analytics|metrics|logs?\b|ping|heartbeat|presence/i.test(u.pathname))notePost(u.pathname,kind,sid);return;}
     notePost(u.pathname,kind,sid);
     const continuation=kind&&kind!=='message'||/regenerate/i.test(j.trigger||j.payload?.trigger||'');
-    if(continuation){if(!/^(stop|cancel|abort|interrupt)/i.test(kind||'')){try{errReload.follow.arm();errReload.noteSend(sidOf(location.href)||sid,null);}catch{}}if(sid&&!/^(stop|cancel|abort|interrupt)/i.test(kind||'')){const l=contSeen.get(sid)||[];l.push({at:Date.now(),kind:/regenerate/i.test(j.trigger||j.payload?.trigger||'')?'regenerate':kind||'continue'});contSeen.delete(sid);contSeen.set(sid,l.slice(-40));while(contSeen.size>20)contSeen.delete(contSeen.keys().next().value);}for(const r of runs.values())if(r.sid===sid){r.tries=0;r.finalReads=0;r.phase='工作流继续';later(r);}return;}
+    if(continuation){if(!/^(stop|cancel|abort|interrupt)/i.test(kind||'')){try{errReload.follow.arm();errReload.noteSend(sidOf(location.href)||sid,null);}catch{}}if(sid&&!/^(stop|cancel|abort|interrupt)/i.test(kind||'')){const l=contSeen.get(sid)||[];l.push({at:Date.now(),kind:/regenerate/i.test(j.trigger||j.payload?.trigger||'')?'regenerate':kind||'continue'});contSeen.delete(sid);contSeen.set(sid,l.slice(-40));while(contSeen.size>20)contSeen.delete(contSeen.keys().next().value);}for(const r of runs.values())if(r.sid===sid){r.tries=0;r.finalReads=0;r.liveReads=0;r.phase='工作流继续';later(r);}return;}
     const preview=promptPreview(j), entry={revision:++revision,at:Date.now(),configs:configs(j,'页面请求','$'),prompt:preview,balance:balance&&Date.now()-balance.at<180000?{remaining:balance.remaining,at:balance.at}:null};
     const pm=j.payload?.message,mid=j.message?.id??(pm&&typeof pm==='object'&&pm.role!=='assistant'?pm.id:undefined);if(typeof mid==='string'&&/^[\w-]{8,64}$/.test(mid)){try{onSent?.(mid,entry.at);}catch{}}
     // 发送后自动跟随最新；记下这条消息（刷新后若页面里找不到，提示“服务器已收到、不用重发”）
     entry.mid=typeof mid==='string'?mid:null;try{errReload.follow.arm();const ps=sidOf(location.href)||sid;if(ps)errReload.noteSend(ps,entry.mid?{mid:entry.mid,text:preview,at:entry.at}:null);}catch{}
     if(sid){submissions.set(sid,entry);void costBaseline(sid,entry);}else pendingNew=entry;
     // 记下提交前已见过的标记数与 span：后端若不写新的轮次标记（如撤回后重发），仍能靠“新出现的 span”识别本轮
-    for(const r of runs.values())if(r.sid===sid){clearTimeout(r.timer);r.abort?.abort();if(r.data)save(r.data);r.revision=entry.revision;r.requestConfigs=entry.configs;r.prompt=preview;r.submittedAt=entry.at;r.baseline={markers:r.markers,spans:new Set(r.seen),since:r.newest||null};r.tries=0;r.finalReads=0;r.cache.clear();r.missing=new Map();r.rawSpans=new Map();r.rawTrace=[];r.credits=null;if(r.probe)delete r.probe.cost;r.phase='等待新一轮';later(r,1800);}
+    for(const r of runs.values())if(r.sid===sid){clearTimeout(r.timer);r.abort?.abort();if(r.data)save(r.data);r.revision=entry.revision;r.requestConfigs=entry.configs;r.prompt=preview;r.submittedAt=entry.at;r.baseline={markers:r.markers,spans:new Set(r.seen),since:r.newest||null};r.tries=0;r.finalReads=0;r.liveReads=0;r.cache.clear();r.missing=new Map();r.rawSpans=new Map();r.rawTrace=[];r.credits=null;if(r.probe)delete r.probe.cost;r.phase='等待新一轮';later(r,1800);}
     log('detail','提交','页面提交新消息'+(preview?' · “'+preview+'”':''),null,{sid});paint();
   }
   function frameSeen(frame,ctx){
@@ -6271,31 +6330,33 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     }catch{}finally{r.watching=false;}
   }
   const routeWatch=setInterval(()=>{void watchRoute();},20000);
-  async function poll(r,final=false){
-    if(stopped||!enabled||r.busy||Date.now()<cooldown||!r.token||r.tries>=8&&!final||final&&r.finalReads>=2)return;
-    if(final)r.finalReads++;r.tries++;r.busy=true;r.phase='读取 Trace';
+  async function poll(r,final=false,kick=null){
+    if(stopped||!enabled||r.busy||Date.now()<cooldown||!r.token||r.tries>=8&&!final&&!kick||final&&r.finalReads>=2)return;
+    if(final)r.finalReads++;if(!kick)r.tries++;r.lastRead=Date.now();r.busy=true;r.phase=kick?'实时核对':'读取 Trace';
     const epoch=r.revision,ctrl=new AbortController();r.abort=ctrl;
     const live=()=>!stopped&&enabled&&r.revision===epoch&&!ctrl.signal.aborted&&runs.get(r.runId)===r;
     try{
       const trace=await json(r,'events',ctrl.signal);if(!live())return;
-      const p=plan(trace,r.runId,r.baseline);r.markers=p.markers;for(const id of p.spanIds)r.seen.add(id);r.newest=Math.max(r.newest||0,p.newest||0)||null;
+      const p=plan(trace,r.runId,r.baseline);r.markers=p.markers;for(const id of p.spanIds)r.seen.add(id);r.newest=Math.max(r.newest||0,p.newest||0)||null;monTrace(r,trace);
       // 刷新页面后首次提交时还没有基线：若最新段落明显早于本次提交，就把当前内容记为基线，之后只认新出现的标记或 span。
       // 基线一旦存在便不再用本机时钟判断，避免时钟偏差把新一轮吞掉
       const stale=!p.resumed&&!r.baseline&&r.tries<=6&&!!r.submittedAt&&!!p.at&&p.at<r.submittedAt-90000;
       if(stale)r.baseline={markers:p.markers,spans:new Set(p.spanIds),since:p.newest||null};
       log('detail','Trace',(p.turn?'第 '+p.turn+' 轮':'未标记轮次')+(p.attempt>1?' · 第 '+p.attempt+' 次':'')+(p.resumed?' · 同轮新记录':'')+' · '+p.count+' 次模型调用'+(p.prior?'（此前 '+p.prior+' 次）':'')+' · '+p.markers+' 个轮次标记 · '+trace.events.length+' 条事件'+(p.limited?' · 超出详读上限':''),null,r);
-      if(!p.count||stale){r.phase='等待本轮记录';log('debug','轮次',stale?'最新轮次早于本次提交，继续等待':'尚无本轮模型调用记录',null,r);if(r.tries<8)later(r,Math.min(15000,2500*r.tries));else r.phase='暂未发现本轮记录';return;}
+      if(!p.count||stale){r.phase='等待本轮记录';log('debug','轮次',stale?'最新轮次早于本次提交，继续等待':'尚无本轮模型调用记录',null,r);if(!kick){if(r.tries<8)later(r,Math.min(15000,2500*r.tries));else r.phase='暂未发现本轮记录';}return;}
       r.rawTrace=trace.events.slice(p.range[0],p.range[1]+1);
       r.data=snapshot(r,p,r.cache);keepRaw(r);save(r.data);paint(); // 先显示模型标签，不等所有 span 成功。
       if(r.data.routing)void noteRoute(r,p,ctrl.signal);
       if(!r.probe)void probeRun(r,['run','session','metadata']);else if(final&&r.finalReads===1)void probeRun(r,['run','metadata']);
-      if(p.ready||final||r.tries>=4){
+      if(p.ready||final||r.tries>=4||kick){
         // 先读用量/花费记录（携带内部名称，条数少），再读模型调用；中途被新消息打断时名称也已到手
-        const todo=[...p.records,...p.streams];let n=0;
+        // 实时核对（kick）：只读已完成的调用、从最新往前、每次最多 4 个详情
+        const todo=kick?[...p.streams].reverse().filter(e=>!e.partial).concat(p.records):[...p.records,...p.streams];let n=0,kf=0;
         for(const e of todo){
           if(!live())return;n++;if(r.cache.get(e.id)?.available&&!r.cache.get(e.id)?.partial||(r.missing.get(e.id)||0)>=2)continue;
           if(e.properties){r.cache.set(e.id,detail({runId:r.runId,spanId:e.id,message:e.message,isPartial:e.partial,properties:e.properties},e,r.runId));r.rawSpans.set(e.id,{spanId:e.id,runId:r.runId,message:e.message,isPartial:e.partial,properties:e.properties});}
           else {
+            if(kick&&kf++>=4)continue;
             try{const d=await json(r,'spans/'+e.id,ctrl.signal);if(!live())return;r.cache.set(e.id,detail(d,e,r.runId));r.rawSpans.set(e.id,d);}
             catch(err){
               if(err.status===404){const k=(r.missing.get(e.id)||0)+1;r.missing.set(e.id,k);log(k>1?'warn':'detail','Span','详情 HTTP 404，跳过此 Span'+(k>1?'（第 '+k+' 次）':''),null,{sid:r.sid,runId:r.runId,spanId:e.id});continue;}
@@ -6307,11 +6368,11 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
           r.data=snapshot(r,p,r.cache);keepRaw(r);if(n%4===0)save(r.data);paint();await new Promise(resolve=>setTimeout(resolve,300));
         }
       }
-      if(!live())return;r.data=snapshot(r,p,r.cache);keepRaw(r);r.phase=r.data.partial?'部分记录':'已读取';save(r.data);noteUsd(r,p);if(r.data.routing)void noteRoute(r,p,ctrl.signal);
+      if(!live())return;r.data=snapshot(r,p,r.cache);keepRaw(r);r.phase=r.data.partial?'部分记录':'已读取';save(r.data);noteUsd(r,p);monTrace(r,trace);if(r.data.routing)void noteRoute(r,p,ctrl.signal);
       if(r.data.outcome&&r.outcomeNoted!==r.data.key){r.outcomeNoted=r.data.key;const lc=r.data.calls.at(-1);log('warn','结果',turnLabel(r.data)+' · '+(r.data.outcome==='failed'?'Arena 记录本轮失败':'本轮没有产出回复')+(lc?.finish==='length'?' · '+(lc.model||'模型')+' 推理用尽输出上限（'+(lc.tokens?.output??'?')+' Token）仍未作答':''),null,r);}
       const last=r.data.calls.at(-1),eff=last?.effort;
       log('info','结果',turnLabel(r.data)+' · '+p.count+' 次调用 · '+(last?.model||'未提供')+(last?.internal?' · 内部名称 '+last.internal:'')+' · 显式 '+(eff?.value||({conflict:'冲突',unsupported:'不支持'}[eff?.status])||'未知')+' · 推理 Token '+(last?.reasoning.status==='conflict'?'冲突':last?.reasoning.value??'—')+(r.data.partial?' · 部分字段未取得':''),null,r);
-      if(r.data.partial&&r.tries<8)later(r,Math.min(15000,2500*r.tries));
+      if(!kick&&r.data.partial&&r.tries<8)later(r,Math.min(15000,2500*r.tries));
     }catch(e){
       if(!live()||e.name==='AbortError'&&ctrl.signal.aborted)return;
       r.phase=e.status===429?'限流暂停':[401,403].includes(e.status)?'权限失效':'Trace 读取失败';
@@ -6692,11 +6753,104 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
 .tab[data-dot]::before{content:'';position:absolute;top:7px;right:-7px;width:6px;height:6px;border-radius:50%;background:#e38a1e}
 :host([data-compact]) .tabs{gap:14px}:host([data-compact]) .pickers{flex-direction:row;gap:8px;margin:10px 14px 0}:host([data-compact]) .call-picker{flex:1;min-width:0}:host([data-compact]) .call-picker>span:first-child{display:none}
 .about-head{display:flex;align-items:center;gap:11px;margin:2px 0 18px}.about-logo{width:38px;height:38px;border-radius:11px;background:var(--heading);color:var(--bg);display:flex;align-items:center;justify-content:center;font:600 16px/1 var(--mono);flex:none}.about-title{font-size:14px;font-weight:500;color:var(--heading)}.about-sub{font:11px/1.4 var(--mono);color:var(--secondary);margin-top:2px}
+.mc-card{display:block;border:1px solid var(--line);border-radius:14px;background:var(--bg);padding:12px 13px;box-shadow:0 1px 2px #0000000a;min-width:0}
+.mc-card+.mc-card,.mc-card+.section,.section+.mc-card{margin-top:10px}
+.section.spend{border:1px solid var(--line);border-radius:14px;padding:12px 13px;background:var(--bg);box-shadow:0 1px 2px #0000000a}
+.mc-head{display:flex;align-items:center;gap:7px;margin-bottom:9px;min-width:0}
+.mc-head h3{font-size:13px;font-weight:600;color:var(--heading);margin:0;white-space:nowrap}
+.mc-head .eyebrow{margin-left:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.mc-ic{width:15px;height:15px;color:var(--secondary);flex:none}
+.mc-hero{padding:14px 14px 12px;background:linear-gradient(180deg,var(--raised),var(--bg) 78%)}
+.mc-top{display:flex;align-items:center;gap:10px;min-width:0}
+.mc-top>.icon-button{margin-left:auto;flex:none}
+.vlogo.mc-big{width:32px;height:32px}.vlogo.mc-big svg{width:18px;height:18px}
+.mc-name{display:flex;align-items:center;flex-wrap:wrap;gap:5px 8px;min-width:0}
+.mc-fam{font:600 19px/1.2 var(--mono);color:var(--heading);letter-spacing:-.01em;overflow-wrap:anywhere}
+.mc-sub{margin-top:7px;font-size:11.5px;color:var(--secondary);line-height:1.5}
+.mc-tier{display:inline-flex;align-items:center;gap:4px;height:21px;padding:0 8px 0 6px;border-radius:999px;font:600 11px/1 var(--mono);color:var(--heading);background:var(--raised);box-shadow:inset 0 0 0 1px var(--edge);flex:none;white-space:nowrap}
+.mc-tier .tier-bars{width:16px;height:11px;flex:none}.mc-tier[data-lv="6"] .tier-bars{width:20px}
+.mc-tier rect{fill:currentColor;opacity:.25}.mc-tier rect[data-on]{opacity:1}.mc-tier [data-spark]{fill:currentColor}
+.mc-tier[data-lv="4"],.mc-tier[data-lv="5"],.mc-tier[data-lv="6"]{background:var(--heading);color:var(--bg);box-shadow:none}
+.mc-tier[data-lv="6"]{background:linear-gradient(135deg,var(--heading) 55%,color-mix(in srgb,var(--heading) 55%,var(--warn)))}
+.mc-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:11px}
+.mc-chip{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 10px 0 8px;border-radius:999px;border:1px solid var(--line);background:var(--raised);font:12px/1 inherit;color:var(--fg);white-space:nowrap;max-width:100%}
+.mc-chip>span{overflow:hidden;text-overflow:ellipsis}
+button.mc-chip{cursor:pointer}button.mc-chip:hover{border-color:var(--edge)}
+.mc-chip svg{width:14px;height:14px;flex:none;color:var(--secondary)}
+.mc-chip[data-tone=ok] svg{color:var(--green)}
+.mc-chip[data-tone=think] svg{color:var(--heading)}
+.mc-chip[data-lv="3"] svg,.mc-chip[data-lv="4"] svg{stroke-width:2.2}
+.mc-chip[data-tone=suspect],.mc-chip[data-tone=warn]{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 35%,transparent);background:color-mix(in srgb,var(--warn) 9%,var(--bg))}
+.mc-chip[data-tone=suspect] svg,.mc-chip[data-tone=warn] svg{color:var(--warn)}
+.mc-chip[data-tone=switch]{color:var(--bg);background:var(--warn);border-color:transparent}.mc-chip[data-tone=switch] svg{color:var(--bg)}
+.mc-srcs{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;margin-top:10px;padding:0;border:0;background:none;font:11px/1.2 inherit;color:var(--secondary);cursor:pointer;text-align:left}
+.mc-src{display:inline-flex;align-items:center;gap:4px}.mc-src i{width:7px;height:7px;border-radius:50%;background:var(--edge);flex:none}
+.mc-src[data-st=ok] i{background:var(--green)}.mc-src[data-st=diff] i{background:var(--warn)}.mc-src[data-st=diff]{color:var(--warn)}.mc-src[data-st=none]{opacity:.6}
+.mc-live{width:7px;height:7px;border-radius:50%;background:var(--green);animation:ampPulse 1.2s ease-in-out infinite;flex:none}
+.mc-strip{display:flex;align-items:flex-end;gap:3px;min-height:68px;padding:4px 2px 0;overflow-x:auto;scrollbar-width:none;overscroll-behavior-x:contain}
+.mc-strip::-webkit-scrollbar{display:none}
+.mc-step{display:flex;flex-direction:column;align-items:center;gap:4px;flex:0 0 15px}
+.mc-step .bar{width:10px;border-radius:4px 4px 2px 2px;background:color-mix(in srgb,var(--heading) 28%,transparent);overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end}
+.mc-step .bar i{display:block;width:100%;background:var(--heading)}
+.mc-step[data-g="1"] .bar{background:color-mix(in srgb,var(--warn) 42%,transparent)}.mc-step[data-g="1"] .bar i{background:var(--warn)}
+.mc-step[data-g="2"] .bar{background:color-mix(in srgb,var(--green) 38%,transparent)}.mc-step[data-g="2"] .bar i{background:var(--green)}
+.mc-step[data-g="3"] .bar{background:color-mix(in srgb,var(--secondary) 38%,transparent)}.mc-step[data-g="3"] .bar i{background:var(--secondary)}
+.mc-strip[data-few]{gap:7px}.mc-strip[data-few] .mc-step{flex-basis:24px}.mc-strip[data-few] .mc-step .bar{width:16px;border-radius:5px 5px 3px 3px}.mc-strip[data-few] .mc-step-ic svg{width:13px;height:13px}
+.mc-step[data-live] .bar{animation:ampPulse 1.2s ease-in-out infinite}
+.mc-step-ic{height:13px;display:flex;align-items:center;justify-content:center;color:var(--secondary)}
+.mc-step-ic svg{width:12px;height:12px}.mc-step-ic .dot{width:3px;height:3px;border-radius:50%;background:var(--edge)}
+.mc-step[data-think] .mc-step-ic{color:var(--heading)}
+.mc-sw{align-self:center;display:flex;color:var(--warn);margin:0 1px 16px;flex:none}.mc-sw svg{width:13px;height:13px}
+.mc-verdict{display:flex;align-items:flex-start;gap:7px;margin-top:10px;padding:8px 10px;border-radius:10px;background:var(--raised);font-size:12px;line-height:1.5;color:var(--fg)}
+.mc-verdict svg{width:15px;height:15px;flex:none;margin-top:1px;color:var(--secondary)}
+.mc-verdict[data-tone=ok] svg{color:var(--green)}
+.mc-verdict[data-tone=suspect]{background:color-mix(in srgb,var(--warn) 11%,var(--bg));color:var(--warn)}.mc-verdict[data-tone=suspect] svg{color:var(--warn)}
+.mc-verdict[data-tone=switch]{background:var(--warn);color:var(--bg)}.mc-verdict[data-tone=switch] svg{color:var(--bg)}
+.mc-verdict[data-tone=busy] svg{animation:ampSpin 1s linear infinite}
+.mc-flags{display:flex;flex-direction:column;margin-top:6px}
+.mc-flag{display:flex;align-items:flex-start;gap:8px;padding:8px 1px;border-top:1px solid var(--line)}
+.mc-flag:first-child{border-top:0}
+.mc-flag>svg{width:15px;height:15px;flex:none;margin-top:1px;color:var(--secondary)}
+.mc-flag[data-st=suspect]>svg,.mc-flag[data-st=confirmed]>svg{color:var(--warn)}
+.mc-flag-t{font-size:12px;color:var(--fg);line-height:1.45}.mc-flag-d{font-size:11px;color:var(--secondary);margin-top:2px;line-height:1.5;overflow-wrap:anywhere}
+.mc-flag-s{font-size:10.5px;padding:2px 7px;border-radius:999px;background:var(--raised);color:var(--secondary);white-space:nowrap;flex:none}
+.mc-flag-s:empty{display:none}
+.mc-flag[data-st=confirmed] .mc-flag-s{background:var(--warn);color:var(--bg)}.mc-flag[data-st=suspect] .mc-flag-s{color:var(--warn)}
+.mc-callbar{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
+.mc-callbar-h{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--secondary);margin-bottom:6px}
+.mc-stack{display:flex;height:8px;border-radius:999px;overflow:hidden;background:var(--raised);gap:1px}
+.mc-stack i{display:block;min-width:2px;flex-basis:0}
+.mc-stack .in,.mc-legend .in{background:color-mix(in srgb,var(--heading) 45%,transparent)}
+.mc-stack .cache,.mc-legend .cache{background:color-mix(in srgb,var(--heading) 18%,transparent)}
+.mc-stack .out,.mc-legend .out{background:var(--heading)}
+.mc-stack .rsn,.mc-legend .rsn{background:var(--warn)}
+.mc-legend{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:7px;font-size:11px;color:var(--secondary)}
+.mc-legend span{display:inline-flex;align-items:center;gap:5px}.mc-legend i{width:8px;height:8px;border-radius:2px;display:inline-block}
+details.mc-card>summary{display:flex;align-items:center;gap:7px;list-style:none;cursor:pointer;font-size:13px;font-weight:600;color:var(--heading);min-width:0}
+details.mc-card>summary::-webkit-details-marker{display:none}
+details.mc-card>summary .grow{flex:1;min-width:0}
+details.mc-card>summary .eyebrow{font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+details.mc-card>summary .mc-chev{width:14px;height:14px;color:var(--secondary);transition:transform .18s;flex:none}
+details.mc-card[open]>summary .mc-chev{transform:rotate(90deg)}
+details.mc-card[open]>summary{margin-bottom:4px}
+.mc-group{margin-top:6px}.mc-gh{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--secondary);margin:10px 0 2px}.mc-gh svg{width:13px;height:13px}
+details.mc-card .section.credits{margin-top:12px}
+.tl-change[data-tier],.mc-sw[data-tier]{color:var(--secondary)}
+.tl-change{display:flex;align-items:center;gap:6px;margin:0 0 2px 1px;padding:3px 0 5px;font-size:11px;color:var(--warn)}.tl-change svg{width:13px;height:13px;flex:none}
+.mc-act{margin-top:12px}.mc-act .detect-go{width:100%}
+.ci-text[data-tone=switch],.ci-text[data-tone=suspect]{color:var(--warn)}
+.body{touch-action:pan-y}
+.body.slide-l{animation:ampSlideL .24s cubic-bezier(.2,.8,.3,1)}
+.body.slide-r{animation:ampSlideR .24s cubic-bezier(.2,.8,.3,1)}
+@keyframes ampSlideL{from{transform:translateX(28px);opacity:.3}to{transform:none;opacity:1}}
+@keyframes ampSlideR{from{transform:translateX(-28px);opacity:.3}to{transform:none;opacity:1}}
+:host([data-compact]) .mc-fam{font-size:18px}
+:host([data-compact]) .mc-card{border-radius:16px}
 .about-upds{display:flex;flex-direction:column;align-items:stretch;gap:6px;margin:0;min-width:0}.about-upds .upd{display:flex;justify-content:flex-start;width:100%;min-height:36px;margin:0;padding:8px 12px!important;border:1px solid var(--line);border-radius:10px;font:12px/1.4 var(--mono);color:var(--fg);text-align:left;white-space:normal;overflow:visible;max-width:none;text-overflow:clip}.about-upds .upd:hover{background:var(--raised)}.about-upds .upd[data-new='1']{border-color:transparent}.about-upds .upd.chentry{justify-content:center;border-style:dashed;color:var(--secondary);opacity:1}.about-upds .chform{padding:2px 0}
 `;
   function el(tag,cls,text,parent){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined&&text!==null)e.textContent=text;if(parent)parent.append(e);return e;}
   function button(parent,text,title,fn,cls=''){const b=el('button',cls,text,parent);b.type='button';b.title=title;b.setAttribute('aria-label',title);b.dataset.focus=title;b.onclick=fn;return b;}
-  const paths={sun:['M12 4V2M12 22v-2M4 12H2M22 12h-2M5.6 5.6 4.2 4.2M19.8 19.8l-1.4-1.4M5.6 18.4l-1.4 1.4M19.8 4.2l-1.4 1.4','M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z'],moon:['M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z'],cube:['m12 3 9 5-9 5-9-5 9-5Z','M3 8v9l9 5 9-5V8M12 13v9'],chevron:['m9 5 7 7-7 7'],down:['m6 9 6 6 6-6'],copy:['M9 9h12v12H9z','M15 5V3H3v12h2'],download:['M12 3v12m-5-5 5 5 5-5','M4 16v5h16v-5'],reload:['M21.17 8A10 10 0 0 0 12 2 10 10 0 0 0 2.05 11','M17 8h4.4a.6.6 0 0 0 .6-.6V3','M2.88 16A10 10 0 0 0 12.05 22 10 10 0 0 0 22 13','M7.05 16H2.65a.6.6 0 0 0-.6.6V21'],info:['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z','M12 11v5.5','M12 7.6v.01'],close:['M6.5 6.5l11 11M17.5 6.5l-11 11'],user:['M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z','M4.5 20.5a7.5 7.5 0 0 1 15 0']};
+  const paths={sun:['M12 4V2M12 22v-2M4 12H2M22 12h-2M5.6 5.6 4.2 4.2M19.8 19.8l-1.4-1.4M5.6 18.4l-1.4 1.4M19.8 4.2l-1.4 1.4','M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z'],moon:['M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z'],cube:['m12 3 9 5-9 5-9-5 9-5Z','M3 8v9l9 5 9-5V8M12 13v9'],chevron:['m9 5 7 7-7 7'],down:['m6 9 6 6 6-6'],copy:['M9 9h12v12H9z','M15 5V3H3v12h2'],download:['M12 3v12m-5-5 5 5 5-5','M4 16v5h16v-5'],reload:['M21.17 8A10 10 0 0 0 12 2 10 10 0 0 0 2.05 11','M17 8h4.4a.6.6 0 0 0 .6-.6V3','M2.88 16A10 10 0 0 0 12.05 22 10 10 0 0 0 22 13','M7.05 16H2.65a.6.6 0 0 0-.6.6V21'],info:['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z','M12 11v5.5','M12 7.6v.01'],close:['M6.5 6.5l11 11M17.5 6.5l-11 11'],user:['M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z','M4.5 20.5a7.5 7.5 0 0 1 15 0'],brain:['M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z','M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z','M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4','M12 5v13'],terminal:['m4 17 6-6-6-6','M12 19h8'],swap:['M8 3 4 7l4 4','M4 7h16','m16 21 4-4-4-4','M20 17H4'],bolt:['M13 2 3 14h9l-1 8 10-12h-9l1-8z'],alert:['m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z','M12 9v4','M12 17h.01'],check:['M20 6 9 17l-5-5'],pulse:['M22 12h-4l-3 9L9 3l-3 9H2'],layers:['m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z','m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65','m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65'],gauge:['m12 14 4-4','M3.34 19a10 10 0 1 1 17.32 0'],hash:['M4 9h16','M4 15h16','M10 3 8 21','M16 3l-2 18'],route:['M16 3h5v5','M4 20 21 3','M21 16v5h-5','m15 15 6 6','M4 4l5 5']};
   function icon(name,parent,cls=''){const s=document.createElementNS('http://www.w3.org/2000/svg','svg');for(const [k,v]of Object.entries({viewBox:'0 0 24 24',fill:'none',stroke:'currentColor','stroke-width':'1.5','stroke-linecap':'round','stroke-linejoin':'round','aria-hidden':'true'}))s.setAttribute(k,v);if(cls)s.setAttribute('class',cls);for(const d of paths[name]||[]){const p=document.createElementNS(s.namespaceURI,'path');p.setAttribute('d',d);s.append(p);}parent?.append(s);return s;}
   function iconButton(parent,name,title,fn){const b=button(parent,'',title,fn,'icon-button');icon(name,b);return b;}
   function download(data,name='amp-lite-export.json'){const a=document.createElement('a'),u=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));a.href=u;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),10000);}
@@ -6740,6 +6894,8 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
   function forceTraceCalls(segs,det,runId,local){
     const out=[];
     segs.forEach((seg,si)=>{const names=forceNames(seg,det),ls=local.find(s=>s.runId===runId&&s.turn===seg.turn&&s.attempt===seg.attempt&&s.prompt);
+      // 用量记录按消息写入：同一条消息里中途换了模型时，内部名称只归给型号相符的调用，避免把前半段也算成新模型
+      {const own=seg.streams.map(x=>{const d=det.get(x.id)||{};return d.response||d.request||x.pill||null;}),known=own.filter(Boolean);if(known.some(n=>!forceEq(n,known[0])))own.forEach((n,i)=>{if(n&&names[i]&&!forceEq(n,names[i]))names[i]=null;});}
       seg.streams.forEach((s,i)=>{const d=det.get(s.id)||{};out.push({src:'trace',id:s.id,seg:si,turn:seg.turn,attempt:seg.attempt,n:i+1,at:s.at,end:s.end,partial:s.partial,error:s.error,internal:names[i],response:d.response||null,request:d.request||null,pill:s.pill,prompt:ls?.prompt||null});});});
     return out;
   }
@@ -6747,7 +6903,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
   function forceLocalCalls(local,skipRun){
     const out=[],seen=new Set();
     for(const s of local){if(skipRun&&s.runId===skipRun)continue;
-      s.calls.forEach((c,i)=>{if(seen.has(c.id))return;seen.add(c.id);out.push({src:'local',id:c.id,seg:null,run:s.runId,turn:s.turn,attempt:s.attempt,n:(s.prior||0)+i+1,at:Date.parse(c.at||'')||Date.parse(s.startedAt||s.at||'')||null,end:null,partial:false,error:false,internal:c.internal||null,response:c.response||null,request:c.request||null,pill:c.request?null:c.model&&c.model!=='未提供'?c.model:null,prompt:s.prompt||null,routing:s.routing||null});});}
+      s.calls.forEach((c,i)=>{if(seen.has(c.id))return;seen.add(c.id);out.push({src:'local',id:c.id,seg:null,run:s.runId,turn:s.turn,attempt:s.attempt,n:(s.prior||0)+i+1,at:Date.parse(c.at||'')||Date.parse(s.startedAt||s.at||'')||null,end:null,partial:false,error:false,internal:c.internal||null,response:c.response||null,request:c.request||null,pill:c.request?null:c.model&&c.model!=='未提供'?c.model:null,prompt:s.prompt||null,routing:s.routing||null,out:number(c.tokens?.output),rsn:c.reasoning?.value!==undefined?number(c.reasoning.value):null,eff:c.effort?.value||null});});}
     return out;
   }
   // 连续同一模型的调用合为一段；和段内已知名称（每种来源取最新）比较，避免某次调用缺名称时漏判
@@ -6779,6 +6935,24 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       try{const d=await json(r,'spans/'+x.id,ctrl.signal),v=detail(d,x,r.runId);det.set(x.id,v);out.fetched++;if(v.available&&!v.partial){forceSpans.set(x.id,v);while(forceSpans.size>800)forceSpans.delete(forceSpans.keys().next().value);}}
       catch(e){if(e.status===429||e.status===401||e.status===403||e.name==='AbortError')break;}
     }
+  }
+  // 逐次调用比对（一键检测与实时监控共用）：Trace 调用 + 本机更早轮次 → 分段、变更点、当前型号，写入 out
+  function forceAnalyze(sid,runId,segs,det,local,out){
+    const traced=runId?forceTraceCalls(segs,det,runId,local):[],ids=new Set(traced.map(c=>c.id));
+    for(const c of traced){const d=det.get(c.id);if(!d)continue;c.out=number(d.output?.[0]?.value);c.rsn=d.reasoning?.length?number(d.reasoning[0].value):null;c.inp=number(d.input?.[0]?.value);c.eff=d.configs?effort(d.configs).value||null:null;}
+    const older=forceLocalCalls(local,runId).filter(c=>!ids.has(c.id));
+    out.localTurns=new Set(older.map(c=>c.run+':'+c.turn+':'+c.attempt)).size;
+    let last=null;for(const c of traced){if(c.at===null)c.at=last;else last=c.at;}
+    const calls=[...older,...traced].map((c,i)=>({c,i})).sort((x,y)=>((x.c.at??0)-(y.c.at??0))||x.i-y.i).map(x=>x.c),groups=forceGroups(calls);
+    for(const c of calls)c.tps=Number.isFinite(c.out)&&c.out>0&&c.end&&c.at&&c.end-c.at>=800?Math.round(c.out/((c.end-c.at)/1000)):null;
+    out.calls=calls;out.groups=groups.map(g=>({title:g.title,names:g.names,count:g.count,from:g.first.at,to:g.last.at,turns:g.turns,local:g.local,partial:g.last.partial}));
+    out.callGroup={};groups.forEach((g,i)=>{for(const c of g.calls)out.callGroup[c.id]=i;});
+    out.changes=[];for(let i=1;i<groups.length;i++){const a=groups[i-1].last,b=groups[i].first;out.changes.push({from:groups[i-1].title.name,to:groups[i].title.name,at:b.at,turn:b.turn,attempt:b.attempt,n:b.n,local:b.src==='local',tags:forceTags(sid,a,b,segs),tierOnly:famEq(groups[i-1].title.name,groups[i].title.name)});}
+    {let fi=0;out.callFam={};groups.forEach((g,i)=>{if(i&&!out.changes[i-1].tierOnly)fi++;for(const c of g.calls)out.callFam[c.id]=fi;});}
+    const lc=calls.at(-1),lg=groups.at(-1);out.current=null;
+    if(lc)out.current={name:lg.title.name,src:lg.title.src,internal:lc.internal||lg.names.internal,response:lc.response,request:lc.request,pill:lc.pill,at:lc.at,turn:lc.turn,attempt:lc.attempt,n:lc.n,partial:lc.partial,local:lc.src==='local',eff:lc.eff||null};
+    const sh=traceShift(calls,monFamSame,n=>brand.tierOf(n));out.tiers=sh.tiers;out.shift=sh.shift;out.speed=sh.speed;
+    return out;
   }
   async function forceDetect(){
     const sid=sidOf(location.href);if(!sid||force.busy||stopped)return null;
@@ -6815,22 +6989,139 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
         }
       }
       step('比对模型');
-      const traced=trace?forceTraceCalls(segs,det,r.runId,local):[],ids=new Set(traced.map(c=>c.id));
-      const older=forceLocalCalls(local,trace?r.runId:null).filter(c=>!ids.has(c.id));
-      out.localTurns=new Set(older.map(c=>c.run+':'+c.turn+':'+c.attempt)).size;
-      let last=null;for(const c of traced){if(c.at===null)c.at=last;else last=c.at;}
-      const calls=[...older,...traced].map((c,i)=>({c,i})).sort((x,y)=>((x.c.at??0)-(y.c.at??0))||x.i-y.i).map(x=>x.c),groups=forceGroups(calls);
-      out.calls=calls;out.groups=groups.map(g=>({title:g.title,names:g.names,count:g.count,from:g.first.at,to:g.last.at,turns:g.turns,local:g.local,partial:g.last.partial}));
-      for(let i=1;i<groups.length;i++){const a=groups[i-1].last,b=groups[i].first;out.changes.push({from:groups[i-1].title.name,to:groups[i].title.name,at:b.at,turn:b.turn,attempt:b.attempt,n:b.n,local:b.src==='local',tags:forceTags(sid,a,b,segs)});}
-      const lc=calls.at(-1),lg=groups.at(-1);
-      if(lc)out.current={name:lg.title.name,src:lg.title.src,internal:lc.internal||lg.names.internal,response:lc.response,request:lc.request,pill:lc.pill,at:lc.at,turn:lc.turn,attempt:lc.attempt,n:lc.n,partial:lc.partial,local:lc.src==='local'};
-      else if(!out.notes.length)out.notes.push('这个对话还没有模型调用记录。');
+      forceAnalyze(sid,trace?r.runId:null,segs,det,local,out);const calls=out.calls;
+      if(!out.current&&!out.notes.length)out.notes.push('这个对话还没有模型调用记录。');
       log('info','一键检测',(out.changes.length?'中途换过 '+out.changes.length+' 次模型：'+out.changes.map(c=>c.from+' → '+c.to).join('；'):calls.length?'全程同一模型':'没有模型调用记录')+(out.current?' · 当前 '+out.current.name:'')+' · '+calls.length+' 次调用'+(out.events?' · Trace '+out.events+' 条事件':'')+(out.fetched?' · 补读 '+out.fetched+' 个详情':''),null,{sid,runId:out.runId});
     }catch(e){out.error=e?.name==='AbortError'?'已取消':errorText(e);log('warn','一键检测','检测失败',e,{sid});}
     finally{force.busy=false;force.abort=null;force.step='';force.bySid.delete(sid);force.bySid.set(sid,out);while(force.bySid.size>12)force.bySid.delete(force.bySid.keys().next().value);force.serial++;paint();}
     if(out.runId&&out.events&&!out.error)refresh();
     return out;
   }
+  // ---- 实时监控：读页面对话状态（零请求）→ 新步骤 / 思考链变化时按需读 Trace（事件驱动、限速）→ 每次读完自动逐次核对 ----
+  // 目的：同一轮里模型被悄悄换掉时尽早发现。强信号（思考链从无到有、回复中途开始思考）立即补读 Trace 确认；
+  // 确认换模型由原有“模型变更提醒”通知，这里只对“疑似”弹提示，避免重复。
+  const mon={bySid:new Map(),serial:0,sig:'',stamp:'',timer:0,alerts:new Set()};
+  const TIER_LV={none:0,minimal:1,low:2,medium:3,high:4,xhigh:5,max:6},TIER_SPLIT=/^(.*?)[-\s·]+(none|minimal|low|medium|high|xhigh|max)$/i;
+  // 名称 → [家族名, 档位]：与顶栏一致（有厂商时去掉厂商前缀）
+  function famTier(n){n=String(n||'');const x=brand.of(n)?brand.short(n):noVertex(n),m=x.match(TIER_SPLIT);return m?[m[1],m[2].toLowerCase()]:[x,''];}
+  // 档位图标：5 格信号条，minimal 1 格 … xhigh 5 格；max 五格全满再加星芒
+  function tierBars(lv){
+    const NS='http://www.w3.org/2000/svg',s=document.createElementNS(NS,'svg'),max=lv>=6;s.setAttribute('viewBox',max?'0 0 24 13':'0 0 19 13');s.setAttribute('aria-hidden','true');s.setAttribute('class','tier-bars');
+    for(let i=0;i<5;i++){const r=document.createElementNS(NS,'rect'),h=3.5+i*2.35;r.setAttribute('x',String(i*4));r.setAttribute('y',String(13-h));r.setAttribute('width','2.7');r.setAttribute('height',String(h));r.setAttribute('rx','1.1');if(i<Math.min(5,lv))r.setAttribute('data-on','');s.append(r);}
+    if(max){const p=document.createElementNS(NS,'path');p.setAttribute('d','M21.3 0.6l.75 1.75 1.75.75-1.75.75-.75 1.75-.75-1.75-1.75-.75 1.75-.75z');p.setAttribute('data-spark','');s.append(p);}
+    return s;
+  }
+  function monOf(sid){let m=mon.bySid.get(sid);if(!m){m={sid,flags:[],auto:null,cur:null,hist:[],sums:new Map(),msgId:'',steps:0,busy:false,wasBusy:false,local:null,localAt:0,localRev:-1,localBusy:false,autoKey:'',at:0};mon.bySid.set(sid,m);while(mon.bySid.size>12)mon.bySid.delete(mon.bySid.keys().next().value);}return m;}
+  // 与抽卡的 completion() 相同：从 [role=log] 的 React fiber 往上找 useChat 的 {id, messages, status}
+  function monChat(){
+    const sid=sidOf(location.href);if(!sid)return null;
+    const logs=[...document.querySelectorAll('main [role="log"]')],logEl=logs.find(e=>e.getClientRects().length)||logs[0];if(!logEl)return null;
+    try{const k=Object.keys(logEl).find(x=>x.startsWith('__reactFiber'));let f=k?logEl[k]:null;for(let n=0;f&&n<100;n++,f=f.return){const v=f.memoizedProps?.value;if(v&&v.id===sid&&Array.isArray(v.messages))return {sid,status:String(v.status||''),messages:v.messages};}}catch{}
+    return null;
+  }
+  function monSum(m,msg){const parts=Array.isArray(msg?.parts)?msg.parts:[],k=parts.length+':'+(typeof parts.at(-1)?.text==='string'?parts.at(-1).text.length:0),hit=m.sums.get(msg?.id);if(hit&&hit.k===k)return hit.s;const x=liveMsg(msg);m.sums.set(msg?.id,{k,s:x});if(m.sums.size>120)m.sums.delete(m.sums.keys().next().value);return x;}
+  function monTick(){
+    if(stopped||!enabled||!prefs.monOn||document.hidden)return;
+    const c=monChat();if(!c)return;
+    const msgs=c.messages,last=msgs.at(-1),lp=Array.isArray(last?.parts)?last.parts:[],tail=lp.at(-1);
+    const sig=c.sid+'|'+msgs.length+'|'+(last?.id||'')+'|'+lp.length+'|'+(typeof tail?.text==='string'?tail.text.length:0)+'|'+(tail?.state||'')+'|'+c.status;
+    if(sig===mon.sig)return;mon.sig=sig;
+    const m=monOf(c.sid),now=Date.now(),busy=c.status==='submitted'||c.status==='streaming';
+    let ui_=-1;for(let i=msgs.length-1;i>=0;i--)if(msgs[i]?.role==='user'){ui_=i;break;}
+    const after=msgs.slice(ui_+1).filter(x=>x?.role==='assistant'),curMsg=after.at(-1)||null;
+    const hist=msgs.slice(0,Math.max(0,ui_)).concat(after.slice(0,-1)).filter(x=>x?.role==='assistant').slice(-12).map(x=>monSum(m,x));
+    const cur=curMsg?monSum(m,curMsg):null;
+    m.cur=cur;m.hist=hist;m.busy=busy;m.at=now;
+    if(cur&&cur.id!==m.msgId){m.msgId=cur.id;m.steps=0;}
+    // 新步骤 = 新的一次模型调用：生成中立即补读 Trace（首步更快，后续限速）
+    if(cur&&cur.n>m.steps){const first=m.steps===0;m.steps=cur.n;if(busy)monKick(c.sid,first?'first':'step');}
+    if(m.wasBusy&&!busy)setTimeout(()=>{const r=forceRun(c.sid);if(r&&!r.finalReads)monKick(c.sid,'done');},3500);
+    m.wasBusy=busy;
+    if(cur)for(const f of liveFlags(hist,cur,!busy)){const key=cur.id+':'+f.kind;if(m.flags.some(x=>x.key===key))continue;const x={...f,key,at:now,msg:cur.id,step:cur.n,status:'suspect'};m.flags.push(x);if(m.flags.length>24)m.flags.shift();monFlag(c.sid,x,busy);}
+    const stamp=[c.sid,cur?.id,cur?.n,cur?.think,cur?.tools,busy,m.flags.map(f=>f.key+f.status).join(','),m.autoKey].join('|');
+    if(stamp!==mon.stamp){mon.stamp=stamp;mon.serial++;paint();}
+  }
+  // 抽卡模块原有的“路由到 Thinking 时停止”（默认开）已处理“正文之后出现思考链”，自动停止不重复点击
+  function monGuardOn(){try{return (JSON.parse(localStorage.getItem('amp.native.gacha.settings.v1')||'{}')||{}).stopOnThinking!==false;}catch{return true;}}
+  function monCurrentName(sid){const m=mon.bySid.get(sid);return m?.auto?.current?.name||catalog.entries.get(sid)?.name?.name||null;}
+  function monFlag(sid,f,busy){
+    log(f.level==='strong'?'warn':'info','实时监控',f.text+(f.detail?'（'+f.detail+'）':''),null,{sid});
+    if(f.level!=='weak')monKick(sid,'anomaly');
+    if(f.level==='strong'&&prefs.monAlert&&!mon.alerts.has(f.key)){mon.alerts.add(f.key);const cur=monCurrentName(sid);try{routeAlert.show('疑似换模型 · 正在核对',null,f.text,(cur?'当前识别 '+short_(cur)+' · ':'')+f.detail,'drop');}catch{}}
+    if(f.level==='strong'&&prefs.monStop&&busy&&pageGenerating()&&!(f.kind==='think-mid'&&mon.bySid.get(sid)?.cur?.midText&&monGuardOn())){const b=document.querySelector('button[aria-label="Stop generating"],button[aria-label="Stop response"],button[aria-label="停止生成"]');if(b&&!b.disabled){b.click();log('warn','实时监控','已按设置自动停止生成',null,{sid});}}
+  }
+  // 事件驱动读取：首步 / 疑点最短 2.5 秒，普通新步骤 5 秒起、长回复逐步放慢到 16 秒；每轮最多 90 次，遵守限流冷却
+  function monKick(sid,why){
+    if(stopped||!enabled||!prefs.monOn||Date.now()<cooldown)return;
+    const r=forceRun(sid);if(!r)return;const n=r.liveReads||0;if(n>=90)return;
+    const urgent=why==='anomaly'||why==='first'||why==='done',gap=urgent?2500:n<10?5000:n<30?9000:16000;
+    const due=Math.max(Date.now()+(why==='step'?1500:400),(r.lastRead||0)+gap);
+    if(r.kickTimer){if(!urgent||r.kickDue<=due)return;clearTimeout(r.kickTimer);}
+    r.kickDue=due;r.kickWhy=urgent?why:(r.kickWhy||why);
+    r.kickTimer=setTimeout(()=>{r.kickTimer=0;if(stopped||!r.token||runs.get(r.runId)!==r||Date.now()<cooldown)return;const w=r.kickWhy||why;r.kickWhy=null;if(r.busy){setTimeout(()=>monKick(sid,w),1200);return;}r.liveReads=(r.liveReads||0)+1;void poll(r,false,w);},Math.max(0,due-Date.now()));
+  }
+  // 本机更早轮次（异步加载后缓存；本机记录变化后 30 秒内最多刷新一次）
+  function monLocal(sid){
+    const m=monOf(sid);
+    if((m.local===null||m.localRev!==catalog.revision&&Date.now()-m.localAt>30000)&&!m.localBusy){m.localBusy=true;m.localAt=Date.now();m.localRev=catalog.revision;
+      void Promise.resolve(catalog.ready).then(()=>catalog.rows('turns','sid',sid,'next',400)).then(rows=>{const out=[];for(const row of rows||[]){try{const x=localSnapshot(row?.data);if(x)out.push(x);}catch{}}m.local=out;}).catch(()=>{m.local=m.local||[];}).finally(()=>{m.localBusy=false;});}
+    return m.local||[];
+  }
+  // 每次读到 Trace 后自动核对（零额外请求）：复用一键检测的分段与比对逻辑
+  function monTrace(r,trace){
+    if(!prefs.monOn||!r?.sid||!Array.isArray(trace?.events))return;
+    try{
+      const sid=r.sid,segs=forceSegments(trace,r.runId),det=new Map();
+      for(const x of segs.flatMap(g=>[...g.records,...g.streams])){
+        if(x.properties){try{det.set(x.id,detail({runId:r.runId,spanId:x.id,message:x.message,isPartial:x.partial,properties:x.properties},x,r.runId));}catch{}continue;}
+        const c=r.cache.get(x.id)||forceSpans.get(x.id);if(c?.available&&!(c.partial&&!x.partial))det.set(x.id,c);}
+      const local=[...monLocal(sid)];if(r.data?.sid===sid){try{const x=localSnapshot(r.data);if(x&&!local.some(y=>y.key===x.key))local.push(x);}catch{}}
+      const out=forceAnalyze(sid,r.runId,segs,det,local,{sid,at:Date.now(),runId:r.runId,events:trace.events.length,fetched:0,localTurns:0,notes:[],calls:[],groups:[],changes:[],current:null,error:null,auto:true});
+      monSetAuto(sid,out);
+    }catch(e){log('debug','实时监控','自动核对失败',e,{sid:r.sid});}
+  }
+  function monSetAuto(sid,out){
+    const m=monOf(sid);m.auto=out;const cur=out.current,tk=cur&&!cur.local?cur.turn+':'+cur.attempt:null;
+    // 不比较本机与服务端时钟：空闲时看到的最新一轮是“上一轮”，生成中只有出现更新的一轮后才据此下结论
+    if(!m.busy&&tk)m.idleKey=tk;
+    const fresh=!!tk&&(!m.busy||m.idleKey===undefined||tk!==m.idleKey);
+    for(const f of m.flags){
+      if(f.status!=='suspect')continue;
+      if(f.msg!==m.cur?.id){f.status='stale';continue;}
+      if(!fresh)continue;
+      const inTurn=c=>!c.local&&c.turn===cur.turn&&c.attempt===cur.attempt,ch=out.changes.filter(c=>inTurn(c)&&!c.tierOnly)[0];
+      if(ch){f.status='confirmed';f.from=ch.from;f.to=ch.to;log('warn','实时监控','已确认换模型：'+ch.from+' → '+ch.to+'（'+f.text+'）',null,{sid});continue;}
+      // 疑点所在那一步对应的调用已完成且型号没变 → 排除（可能只是档位 / 思考设置变化）
+      const tc=out.calls.filter(c=>c.src==='trace'&&inTurn(c)),k=tc[Math.max(1,f.step)-1];
+      if(tc.length>=f.step&&k&&!k.partial){f.status='cleared';f.same=cur.name;log('info','实时监控','已排除：第 '+f.step+' 步仍是 '+cur.name+'（'+f.text+'）',null,{sid});}
+    }
+    const key=out.changes.map(c=>c.from+'>'+c.to+'@'+c.at).join('|')+'#'+(out.current?.name||'')+'#'+out.calls.length+'#'+out.calls.filter(c=>!c.partial).length+'#'+(out.shift?.kind||'')+'#'+out.tiers.length+'#'+m.flags.map(f=>f.status).join('');
+    if(key!==m.autoKey){m.autoKey=key;mon.serial++;paint();}
+  }
+  // 当前对话的换模型结论：switch 本轮已确认 / suspect 疑似 / info 更早换过 / ok 未发现 / idle 数据不足 / off 已关闭
+  function monState(sid){
+    if(!prefs.monOn)return {tone:'off',icon:'pulse',short:'监控已关',text:'实时监控已在设置里关闭'};
+    const m=sid?mon.bySid.get(sid):null,auto=m?.auto,cur=auto?.current;
+    const recent=f=>Date.now()-f.at<30*60000&&f.level!=='weak';
+    const conf=m?.flags.filter(f=>f.status==='confirmed'&&recent(f)).at(-1);
+    const inTurn=c=>cur&&c.turn===cur.turn&&c.attempt===cur.attempt&&!c.local;
+    const ch=auto?.changes.filter(c=>inTurn(c)&&!c.tierOnly).at(-1);
+    if(ch||conf){const a=ch?.from||conf.from,b=ch?.to||conf.to;return {tone:'switch',icon:'swap',short:'本轮换了模型',text:'已确认换模型：'+short_(a)+' → '+short_(b)+(ch?'（第 '+ch.n+' 次调用起）':''),from:a,to:b};}
+    const sus=m?.flags.filter(f=>f.status==='suspect'&&recent(f)).at(-1);
+    if(sus)return {tone:'suspect',icon:'alert',short:'疑似换模型',text:'疑似换模型：'+sus.text+' · 正在核对',flag:sus};
+    const tier=auto?.tiers.filter(inTurn).at(-1)||auto?.changes.filter(c=>inTurn(c)&&c.tierOnly).map(c=>({from:tierName(c.from),to:tierName(c.to)})).at(-1);
+    if(tier)return {tone:'info',icon:'gauge',short:'档位变化',text:'同一模型，档位 '+tier.from+' → '+tier.to+'（不算换模型）'};
+    const sh=auto?.shift&&cur&&auto.shift.turn===cur.turn?auto.shift:null;
+    if(sh&&sh.kind==='drop')return {tone:'suspect',icon:'gauge',short:'消耗骤降',text:'单次调用消耗骤降 ↓'+Math.round((1-sh.ratio)*100)+'%'+(sh.same?'（名称未变，疑似降档）':'')};
+    if(auto?.changes.length)return {tone:'info',icon:'swap',short:'换过 '+auto.changes.length+' 次',text:'本对话更早换过 '+auto.changes.length+' 次模型，本轮未变'};
+    if(auto?.calls.length)return {tone:'ok',icon:'check',short:'未换模型',text:'全程同一模型 · '+auto.calls.length+' 次调用'};
+    return {tone:'idle',icon:'pulse',short:'监控中',text:'实时监控中：等待本对话的调用记录'};
+  }
+  const short_=n=>n?famTier(n).filter(Boolean).join(' '):'未知';
+  mon.timer=setInterval(()=>{try{monTick();}catch(e){if(!mon.err){mon.err=1;log('debug','实时监控','读取对话状态失败',e);}}},650);
+  // 同一模型家族（忽略档位 / -thinking 等后缀）：档位变化单独提示，不算换模型
+  const MON_TX=/-(none|minimal|low|medium|high|xhigh|max|thinking)$/,famKey=n=>n?brand.canon(n).replace(MON_TX,''):'',famEq=(a,b)=>!!a&&!!b&&(forceEq(a,b)||famKey(a)===famKey(b));
+  const monFamSame=(a,b)=>famEq(a.internal||forceBest(a),b.internal||forceBest(b)),tierName=n=>brand.tierOf(n)||'默认';
   function dragger(handle,hooks){
     handle.addEventListener('pointerdown',e=>{if(e.button!==0)return;e.preventDefault();const start=hooks.start(e);if(!start)return;try{handle.setPointerCapture(e.pointerId);}catch{}handle.dataset.active='';const shield=el('div','drag-shield',null,handle.getRootNode());let moved=false;
       const move=ev=>{if(Math.abs(ev.clientX-start.x)>2)moved=true;if(moved)hooks.move(ev,start);},up=ev=>{handle.removeEventListener('pointermove',move);handle.removeEventListener('pointerup',up);handle.removeEventListener('pointercancel',up);delete handle.dataset.active;shield.remove();if(moved)hooks.end(ev,start);else hooks.tap?.(ev);};
@@ -7018,8 +7309,8 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     const banner=el('div','cache-banner',null,panel),bannerText=el('span','grow','',banner);button(banner,'返回当前','返回当前会话的最新记录',()=>{historyView=null;turnKey=null;selected=null;rawSpan=null;tab=tab==='cache'?'overview':tab;render();},'return-live');
     const nav=el('div','tabs',null,panel);nav.setAttribute('role','tablist');nav.setAttribute('aria-label','模型信息视图');
     // 一级标签一屏放得下：来源 + 原始 合成“数据”，缓存 + 日志 合成“记录”（页内再切）；版本与更新单独放“关于”
-    const tabs=[['overview','概览'],['detector','独立检测'],['hunt','抽卡'],['sources','来源'],['raw','原始'],['cache','缓存'],['logs','日志'],['settings','设置'],['about','关于']];
-    const groups=[['overview','概览',['overview']],['detector','独立检测',['detector']],['hunt','抽卡',['hunt']],['data','数据',['sources','raw']],['records','记录',['cache','logs']],['settings','设置',['settings']],['about','关于',['about']]];
+    const tabs=[['overview','概览'],['detector','监控'],['hunt','抽卡'],['sources','来源'],['raw','原始'],['cache','缓存'],['logs','日志'],['settings','设置'],['about','关于']];
+    const groups=[['overview','概览',['overview']],['detector','监控',['detector']],['hunt','抽卡',['hunt']],['data','数据',['sources','raw']],['records','记录',['cache','logs']],['settings','设置',['settings']],['about','关于',['about']]];
     const groupOf=t=>groups.find(g=>g[2].includes(t))||groups[0],groupLast={};
     const tabButtons=groups.map(([gid,text,leaves])=>{const b=button(nav,text,text,()=>{tab=leaves.includes(groupLast[gid])?groupLast[gid]:leaves[0];render();},'tab');b.setAttribute('role','tab');b.id='amp-tab-'+gid;return b;});
     nav.onkeydown=e=>{let i=groups.indexOf(groupOf(tab));if(e.key==='ArrowRight')i=(i+1)%groups.length;else if(e.key==='ArrowLeft')i=(i+groups.length-1)%groups.length;else if(e.key==='Home')i=0;else if(e.key==='End')i=groups.length-1;else return;e.preventDefault();tabButtons[i].click();tabButtons[i].focus();};
@@ -7030,7 +7321,16 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     const picker=el('label','call-picker',null,pickers);el('span','','调用',picker);const select=el('select','selector',null,picker);select.setAttribute('aria-label','选择调用');select.onchange=()=>{selected=select.value;rawSpan=null;render();};
     const logBar=el('div','logbar',null,panel),controls=el('div','log-controls',null,logBar);el('h3','','日志详细程度',controls);const level=el('select','selector',null,controls);level.setAttribute('aria-label','日志详细程度');for(const [id,text]of [['info','普通'],['detail','详细'],['debug','调试']]){const o=el('option','',text,level);o.value=id;}level.value=pref.level;level.onchange=()=>{pref.level=level.value;persist();bodyStamp=[];render();};
     const actions=el('div','log-actions',null,logBar),read=button(actions,'重读记录','重新读取当前运行记录',refresh);const clearLogs=button(actions,'清理日志','清理全部本地日志（不影响编号与缓存）',async()=>{if(!confirmLogClear){confirmLogClear=true;render();return;}await catalog.clearLogs();confirmLogClear=false;logKey='';bodyStamp=[];render();}),cancelClear=button(actions,'取消','取消清理日志',()=>{confirmLogClear=false;render();});
-    const body=el('div','body',null,panel);body.setAttribute('role','tabpanel');
+    const body=el('div','body',null,panel);
+    // 左右滑动切换页面（触屏）：横向位移 > 56px 且明显大于纵向；从可横向滚动的元素、输入框里开始的手势不处理
+    {let sw=null;const skip=t=>{for(let n=t;n&&n!==body;n=n.parentElement){if(n.matches?.('input,textarea,select,[contenteditable],[data-noswipe],pre'))return true;if(n.scrollWidth>n.clientWidth+4&&/(auto|scroll)/.test(getComputedStyle(n).overflowX))return true;}return false;};
+      const reset=()=>{body.style.transition='transform .2s ease,opacity .2s ease';body.style.transform='';body.style.opacity='';setTimeout(()=>{body.style.transition='';},220);};
+      body.addEventListener('touchstart',e=>{if(e.touches.length!==1||skip(e.target)){sw=null;return;}const p=e.touches[0];sw={x:p.clientX,y:p.clientY,t:Date.now(),lock:null,dx:0};},{passive:true});
+      body.addEventListener('touchmove',e=>{if(!sw)return;const p=e.touches[0],dx=p.clientX-sw.x,dy=p.clientY-sw.y;if(sw.lock===null&&Math.hypot(dx,dy)>10)sw.lock=Math.abs(dx)>Math.abs(dy)*1.3?'x':'y';if(sw.lock!=='x')return;const i=groups.indexOf(groupOf(tab)),edge=dx>0&&i===0||dx<0&&i===groups.length-1;sw.dx=dx;body.style.transform='translateX('+(dx*(edge?0.12:0.3)).toFixed(1)+'px)';body.style.opacity=String(1-Math.min(0.3,Math.abs(dx)/700));},{passive:true});
+      body.addEventListener('touchend',()=>{const g=sw;sw=null;if(!g)return;if(g.lock!=='x'){reset();return;}const i=groups.indexOf(groupOf(tab)),j=i+(g.dx<0?1:-1);if(Math.abs(g.dx)<56||Math.abs(g.dx)<90&&Date.now()-g.t>700||j<0||j>=groups.length){reset();return;}
+        body.style.transition='';body.style.transform='';body.style.opacity='';tabButtons[j].click();body.classList.remove('slide-l','slide-r');void body.offsetWidth;body.classList.add(g.dx<0?'slide-l':'slide-r');try{tabButtons[j].scrollIntoView({inline:'center',block:'nearest'});}catch{}},{passive:true});
+      body.addEventListener('touchcancel',()=>{if(sw){sw=null;reset();}},{passive:true});
+      body.addEventListener('animationend',e=>{if(e.target===body)body.classList.remove('slide-l','slide-r');});}body.setAttribute('role','tabpanel');
     const toast=el('div','toast','',panel);toast.hidden=true;toast.setAttribute('role','status');
     // 版本 / 更新 / 正式版·测试版入口：原来挤在底部，现在放“关于”页（节点常驻，切到“关于”时挂进页面）
     const aboutBox=el('div','upds about-upds');let aboutChannel='';
@@ -7123,12 +7423,12 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       +'[data-amp-htitle][data-amp-hfresh]::after{animation:ampFresh 8s ease forwards}@keyframes ampFresh{0%,85%{opacity:1}100%{opacity:0}}'
       +'[data-amp-hlogo]{display:inline-flex!important;align-items:center;justify-content:center;flex:none;width:18px;height:18px;border-radius:50%;background:#fff;color:#111;box-shadow:0 0 0 1px #0000001a;margin-right:6px;vertical-align:middle;animation:ampHLogo .3s ease-out both}[data-amp-hlogo] svg{width:12px;height:12px;color:#111;fill:currentColor}[data-amp-hlogo][data-full]{background:transparent;box-shadow:none}[data-amp-hlogo][data-full] svg{width:18px;height:18px}'
       +'[data-amp-htier]{display:inline-flex!important;align-items:center;flex:none;height:18px;padding:0 7px;margin-left:6px;border-radius:999px;font-size:11px;font-weight:600;line-height:1;vertical-align:middle;color:#6a5e54;background:#6a5e5414;box-shadow:inset 0 0 0 1px #6a5e5433;white-space:nowrap}[data-amp-htier][hidden]{display:none!important}[data-amp-htier][data-hi]{color:#fff;background:#6a5e54;box-shadow:none}'
-      +'[data-amp-htier][data-amp-hdark]{color:#d8d3ca;background:#d8d3ca14;box-shadow:inset 0 0 0 1px #d8d3ca33}[data-amp-htier][data-amp-hdark][data-hi]{color:#262522;background:#d8d3ca}[data-amp-htier][data-pop]{animation:ampHLogo .3s cubic-bezier(.3,1.6,.5,1) both}'
+      +'[data-amp-htier][data-amp-hdark]{color:#d8d3ca;background:#d8d3ca14;box-shadow:inset 0 0 0 1px #d8d3ca33}[data-amp-htier][data-amp-hdark][data-hi]{color:#262522;background:#d8d3ca}[data-amp-htier][data-pop]{animation:ampHLogo .3s cubic-bezier(.3,1.6,.5,1) both}[data-amp-htier] .tier-bars{width:13px;height:9px;margin-right:4px;flex:none}[data-amp-htier][data-lv="6"] .tier-bars{width:16px}[data-amp-htier] .tier-bars rect{fill:currentColor;opacity:.3}[data-amp-htier] .tier-bars rect[data-on],[data-amp-htier] .tier-bars [data-spark]{fill:currentColor;opacity:1}[data-amp-hswap]{display:inline-flex!important;align-items:center;justify-content:center;flex:none;width:20px;height:20px;margin-left:5px;border-radius:50%;color:#fff;background:hsl(var(--syntax-yellow,48 92% 38%));vertical-align:middle;cursor:pointer;animation:ampHLogo .3s cubic-bezier(.3,1.6,.5,1) both}[data-amp-hswap][hidden]{display:none!important}[data-amp-hswap] svg{width:12px;height:12px}[data-amp-hswap][data-tone=suspect]{color:hsl(var(--syntax-yellow,48 92% 38%));background:transparent;box-shadow:inset 0 0 0 1.5px hsl(var(--syntax-yellow,48 92% 38%))}'
       +'@keyframes ampHLogo{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:none}}@media (prefers-reduced-motion:reduce){[data-amp-htitle],[data-amp-hlogo]{transition:none!important;animation:none!important}}';
     el('style','',hdrCSS,document.head||document.body);
     let hdr={t:null,logo:null,name:null},hdrStart=new Map();
     const isDark=()=>{const d=document.documentElement;return d.dataset.theme==='dark'||d.classList.contains('dark')||(!d.classList.contains('light')&&getComputedStyle(d).colorScheme==='dark');};
-    function clearHeader(){hdr.t?.removeAttribute('data-amp-horig');hdr.name?.remove();hdr.logo?.remove();hdr.tier?.remove();hdr={t:null,logo:null,name:null,tier:null};}
+    function clearHeader(){hdr.t?.removeAttribute('data-amp-horig');hdr.name?.remove();hdr.logo?.remove();hdr.tier?.remove();hdr.swap?.remove();hdr={t:null,logo:null,name:null,tier:null,swap:null};}
     function findHeaderTitle(sid){
       const main=document.querySelector('main');if(!main)return null;const mr=main.getBoundingClientRect();
       // 消息列表在可滚动容器里；顶部栏不在。任何位于滚动容器内的元素都不是标题（以前会误选到顶部的用户气泡“回复我1”）。
@@ -7165,10 +7465,14 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       if(!known&&r){const exact=rc0?.internal||rc0?.response,fin=(rc0?.internal||meta?.name?.name||'').replace(/^未提供$/,'');
         if(done&&fin)[fam,tierTxt]=split(withVendor(sid,meta,fin));else if(exact){fam=split(exact)[0];tierTxt='';}else{fam='识别中…';tierTxt='';}}
       if(tierTxt==='none')tierTxt='';
+      {const ms0=monState(sid);if(ms0.tone==='switch'&&ms0.to&&!forceEq(ms0.to,shownName)){[fam,tierTxt]=split(ms0.to);if(tierTxt==='none')tierTxt='';}}
       if(nm.textContent!==fam)nm.textContent=fam;nm.title=shownName;
       let tg=hdr.tier;if(!tg||!tg.isConnected||nm.nextElementSibling!==tg){tg?.remove();tg=document.createElement('span');tg.setAttribute('data-amp-htier','');nm.after(tg);hdr.tier=tg;}
-      if(tg.textContent!==tierTxt){tg.textContent=tierTxt;tg.removeAttribute('data-pop');void tg.offsetWidth;if(tierTxt)tg.setAttribute('data-pop','');}
+      if(tg.dataset.t!==tierTxt||tg.textContent!==tierTxt){tg.dataset.t=tierTxt;tg.replaceChildren();if(tierTxt){const lv=TIER_LV[tierTxt]??0;tg.dataset.lv=String(lv);tg.append(tierBars(lv),document.createTextNode(tierTxt));}tg.removeAttribute('data-pop');void tg.offsetWidth;if(tierTxt)tg.setAttribute('data-pop','');}
       tg.hidden=!tierTxt;tg.toggleAttribute('data-hi',/^(max|xhigh|high)$/.test(tierTxt));tg.toggleAttribute('data-amp-hdark',isDark());
+      // 换模型徽标：本轮已确认（实心）/ 疑似（描边）；点一下打开“监控”页
+      {const ms_=monState(sid),show=ms_.tone==='switch'||ms_.tone==='suspect';let sw=hdr.swap;if(!sw||!sw.isConnected||tg.nextElementSibling!==sw){sw?.remove();sw=document.createElement('span');sw.setAttribute('data-amp-hswap','');sw.setAttribute('role','button');sw.tabIndex=0;sw.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>';const go=e=>{e.preventDefault();e.stopPropagation();ui?.show('detector');};sw.addEventListener('click',go,true);sw.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' ')go(e);});tg.after(sw);hdr.swap=sw;}
+        sw.hidden=!show;if(show){sw.dataset.tone=ms_.tone;sw.title=ms_.text;sw.setAttribute('aria-label',ms_.text);}}
       nm.style.setProperty('--amp-hp',Math.round(p)+'%');nm.toggleAttribute('data-amp-hdone',done);nm.toggleAttribute('data-amp-hdark',isDark());
       // 副标题：识别中… → 识别：Claude → 识别：claude-opus-5 → 识别模型为 claude-opus-5-5（8 秒后淡出）
       const generating=!!document.querySelector('button[aria-label="Stop generating"],button[aria-label="Stop response"],button[aria-label="停止生成"]');
@@ -7258,7 +7562,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       const originTag=r?.data&&r.data.revision!==r.revision?'上次':!r?.data&&live?'缓存':'';
       const shown=meta?.name?.name||liveCall?.internal||liveCall?.model||'模型信息',eff=liveCall?.effort,effortText=eff?.value||({conflict:'冲突',unsupported:'不支持'}[eff?.status])||'未知';
       triggerLabel.textContent=(prefs.showSeq&&seqLabel(sid)?seqLabel(sid)+' ':'')+shown;mini.textContent=liveCall?(originTag?originTag+' · ':'')+'推理 '+effortText:'';mini.hidden=true;
-      compactName.textContent=triggerLabel.textContent;compactText.textContent=liveCall?'显式 '+effortText+' · 推理 Token '+(liveCall.reasoning.status==='conflict'?'冲突':fmt(liveCall.reasoning.value)):'尚无模型记录';numberLabel.textContent=seqLabel(s?.sid||sid);
+      compactName.textContent=triggerLabel.textContent;{const st=monState(sid),[,sfx]=famTier(liveCall?.internal||liveCall?.model||''),tier=liveCall?.effort?.value||sfx,rs=liveCall&&liveCall.reasoning.status!=='conflict'?number(liveCall.reasoning.value):null;compactText.textContent=liveCall?[tier?'档位 '+tier:'',rs?'思考 '+spendShort(rs):rs===0?'无思考链':'',st.tone==='idle'?'':st.short].filter(Boolean).join(' · ')||'已识别':'尚无模型记录';compactText.dataset.tone=liveCall?st.tone:'';}numberLabel.textContent=seqLabel(s?.sid||sid);
       const historical=!!historyView||!!turnKey||!r?.data&&!!s||!!r?.data&&r.data.revision!==r.revision,explicitHist=!!historyView||!!turnKey;banner.hidden=!explicitHist||!['overview','sources','raw'].includes(tab);{const ct=!explicitHist&&historical?(r?.data?'上次':'缓存'):'';for(const ch of [compactChip,headChip]){ch.hidden=!ct;if(ch.textContent!==ct)ch.textContent=ct;}}
       bannerText.textContent=historyView?'本地缓存 · '+(seqLabel(historyView.sid)||'')+' · '+turnLabel(historyView):turnKey?'历史轮次 · '+turnLabel(s)+' · 非最新记录':r?.data?'上次记录 · 非本轮结论':'本地缓存 · 非本轮结论';banner.querySelector('button').hidden=!(historyView||turnKey);
       const grp=groupOf(tab);groupLast[grp[0]]=tab;for(let i=0;i<groups.length;i++){const on=groups[i]===grp;tabButtons[i].setAttribute('aria-selected',String(on));tabButtons[i].tabIndex=on?0:-1;}body.setAttribute('aria-labelledby','amp-tab-'+grp[0]);subnav.hidden=grp[2].length<2;if(!subnav.hidden){const k=grp[0]+'|'+tab;if(subStamp!==k){subStamp=k;subnav.replaceChildren();subnav.setAttribute('aria-label',grp[1]);for(const id of grp[2]){const t=(tabs.find(x=>x[0]===id)||[id,id])[1],sb=button(subnav,t,t,()=>{tab=id;render();});sb.setAttribute('aria-pressed',String(id===tab));}}}
@@ -7271,50 +7575,53 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       pickers.hidden=turnPicker.hidden&&picker.hidden;
       if(tab==='logs'){const logSid=historyView?.sid||sid,key=(logSid||'')+':'+catalog.logRevision;if(logKey!==key){logKey=key;void catalog.readLogs(logSid).then(rows=>{if(logKey!==key)return;logItems=rows;logSerial++;paint();});}}
       if(tab==='settings'&&Date.now()-usageAt>5000){usageAt=Date.now();void catalog.usage().then(u=>{usageInfo=u;settingsSerial++;paint();});}
-      const next=[tab,tab==='detector'?legacyDisplay.revision+'|'+force.serial+'|'+(sid||''):tab==='hunt'?gacha.revision:0,s,c,historical,moreOpen,tab==='cache'?catalog.revision:0,cacheLimit,openSid,tab==='logs'?logSerial:0,tab==='logs'?pref.level:null,!!r?.busy,Date.now()<cooldown,rawFilter,rawSpan,tab==='raw'?rawStore.get(s?.key)?.spans.size:0,tab==='settings'?settingsSerial:0,confirmRawClear,tab==='settings'?JSON.stringify(prefs):'',tab==='raw'?JSON.stringify(rawOf(s)?.probe&&Object.keys(rawOf(s).probe)):'',tab==='overview'?spendSerial:0];
-      if(next.some((x,i)=>x!==bodyStamp[i])||!bodyStamp.length){const scroll=body.scrollTop,sameTab=bodyStamp[0]===tab,focus=root.activeElement?.dataset.focus;bodyStamp=next;body.replaceChildren();if(tab==='hunt')huntTab();else if(tab==='detector')detectorTab();else if(tab==='cache')cacheTab();else if(tab==='logs')logTab();else if(tab==='settings')settingsTab();else if(tab==='about')aboutTab();else if(!c){if(tab==='overview'&&turnSid)spendCard({sid:turnSid});empty(turnKey?'正在读取此轮缓存':'尚无模型记录',turnKey?'如长时间无内容，说明此轮快照不可用。':'发送一条新消息后，型号与配置会自动填入。');}else if(tab==='sources')sources(s,c);else if(tab==='raw')rawTab(s,c);else overview(s,c);body.scrollTop=sameTab?scroll:0;if(focus)[...body.querySelectorAll('[data-focus]')].find(e=>e.dataset.focus===focus)?.focus({preventScroll:true});}
+      const next=[tab,tab==='detector'?legacyDisplay.revision+'|'+force.serial+'|'+(sid||'')+'|'+mon.serial:tab==='hunt'?gacha.revision:0,s,c,historical,moreOpen,tab==='cache'?catalog.revision:0,cacheLimit,openSid,tab==='logs'?logSerial:0,tab==='logs'?pref.level:null,!!r?.busy,Date.now()<cooldown,rawFilter,rawSpan,tab==='raw'?rawStore.get(s?.key)?.spans.size:0,tab==='settings'?settingsSerial:0,confirmRawClear,tab==='settings'?JSON.stringify(prefs):'',tab==='raw'?JSON.stringify(rawOf(s)?.probe&&Object.keys(rawOf(s).probe)):'',tab==='overview'?spendSerial+'|'+mon.serial:0];
+      if(next.some((x,i)=>x!==bodyStamp[i])||!bodyStamp.length){const scroll=body.scrollTop,sameTab=bodyStamp[0]===tab,focus=root.activeElement?.dataset.focus;bodyStamp=next;body.replaceChildren();if(tab==='hunt')huntTab();else if(tab==='detector')detectorTab();else if(tab==='cache')cacheTab();else if(tab==='logs')logTab();else if(tab==='settings')settingsTab();else if(tab==='about')aboutTab();else if(!c){if(tab==='overview'&&turnSid){liveCard(turnSid,null,!historyView&&!turnKey);spendCard({sid:turnSid});}empty(turnKey?'正在读取此轮缓存':'尚无模型记录',turnKey?'如长时间无内容，说明此轮快照不可用。':'发送一条新消息后，型号与配置会自动填入。');}else if(tab==='sources')sources(s,c);else if(tab==='raw')rawTab(s,c);else overview(s,c);body.scrollTop=sameTab?scroll:0;if(focus)[...body.querySelectorAll('[data-focus]')].find(e=>e.dataset.focus===focus)?.focus({preventScroll:true});}
     }
     // 独立检测页：上半“一键检测”（立刻读取本对话此刻的全部记录，看中途有没有换模型、换成了谁），下半“原脚本检测”（v8.1.0 原样结果，只换排版）
     const posText=c=>!c?'':(c.turn?'第 '+c.turn+' 轮':'未标记轮次')+(c.attempt>1?'（第 '+c.attempt+' 次）':'')+' · 第 '+c.n+' 次调用';
     function vlogo(parent,names){const vid=names.map(n=>brand.of(n)).find(Boolean);if(!vid)return null;let ic='';try{ic=gachaUi.vendorIcon(vid,12);}catch{}if(!ic)return null;const s=el('span','vlogo',null,parent);s.innerHTML=ic;if(!ic.includes('gpVIcon'))s.setAttribute('data-full','');s.title=brand.NAME[vid]||vid;return s;}
     let legacyRawOpen=false;
     function detectorTab(){
-      const sid=sidOf(location.href),busy=force.busy&&force.sid===sid,res=sid?force.bySid.get(sid)||null:null,calls=res?.calls?.length||0,changed=!!res?.changes?.length,cur=res?.current;
-      const sec=el('section','section detect',null,body),head=el('div','section-heading',null,sec),dh3=el('h3','','一键检测',head);el('span','eyebrow',res?'检测于 '+clock(res.at):'核对此刻模型',head);info(dh3,'det','立刻读取本对话此刻的全部记录（包括交互面板选择后继续的部分），逐次调用核对模型：中途有没有换模型、换成了谁。\n档位 / -vertex 等后缀不同不算换模型。',head);
-      const card=el('div','detect-card',null,sec);card.dataset.tone=busy?'busy':!res?'idle':!calls?(res.error||res.notes.length?'error':'idle'):changed?'changed':'same';
-      const st=el('div','detect-state',null,card);el('i','',null,st);
-      el('span','grow',busy?(force.step||'检测中')+'…':!sid?'未打开对话':!res?'尚未检测':!calls?(res.error?'检测未完成':'没有找到模型调用记录'):changed?'中途换过 '+res.changes.length+' 次模型':'全程同一模型，未发现变更',st);
-      if(cur){
-        const m=el('div','detect-model',null,card);vlogo(m,[cur.name,cur.internal,cur.response,cur.request,cur.pill]);el('span','detect-name',cur.name,m);
-        const tier=brand.tierOf(cur.internal||'')||brand.tierOf(cur.name);if(tier)el('span','detect-tier',tier,m);
-        const alt=FORCE_SRC.filter(k=>k!==cur.src&&cur[k]&&!forceEq(cur[k],cur.name)).slice(0,2).map(k=>FORCE_SRC_TEXT[k]+' '+cur[k]);
-        el('div','detect-sub',['按'+(FORCE_SRC_TEXT[cur.src]||'名称'),...alt].join(' · '),card);
-        el('div','detect-sub',(cur.partial?'正在进行':'最近一次')+' · '+clock(cur.at)+' · '+posText(cur)+(cur.local?' · 本机记录':''),card);
-      }else if(!res)el('div','detect-sub',sid?'点下面的按钮开始检测':'打开一个对话后再检测',card);
-      if(changed){const box=el('div','detect-changes',null,card);
-        for(const c of res.changes.slice(-4).reverse()){const row=el('div','detect-change',null,box),flow=el('div','detect-flow',null,row);el('span','from',c.from,flow);el('span','arrow','→',flow);el('b','',c.to,flow);el('div','detect-sub',[clock(c.at),posText(c)+'起',...c.tags].join(' · '),row);}
-        if(res.changes.length>4)el('div','detect-sub','更早还有 '+(res.changes.length-4)+' 次，见下方时间线',box);}
-      const go=button(sec,busy?'检测中…':!sid?'打开对话后可用':res?'重新检测':'一键检测',sid?'立刻读取本对话此刻的 Trace 与本机记录，逐次调用核对模型':'先打开一个对话',()=>{void forceDetect();},'detect-go');go.disabled=force.busy||!sid;
-      for(const n of res?.notes||[])el('p','note warning',n,sec);
-      if(res?.error)el('p','note warning','检测出错：'+res.error,sec);
-      if(calls)el('p','note',['依据：'+(res.events?'Trace '+res.events+' 条事件':'本机记录'),calls+' 次调用',res.fetched?'补读 '+res.fetched+' 个详情':'',res.localTurns?'本机更早 '+res.localTurns+' 轮':''].filter(Boolean).join(' · '),sec);
-      if(res?.groups?.length){
-        const ts=el('section','section',null,body),th=el('div','section-heading',null,ts);el('h3','','模型时间线',th);el('span','eyebrow',res.groups.length+' 段 · '+calls+' 次调用',th);
-        const tl=el('div','tl',null,ts),gs=res.groups,shown=gs.slice(-8);if(gs.length>8)el('div','tl-more','更早 '+(gs.length-8)+' 段未显示',tl);
-        shown.forEach((g,i)=>{const row=el('div','tl-row',null,tl),now=i===shown.length-1;if(now)row.setAttribute('data-current','');el('i','tl-dot',null,row);const nm=el('div','tl-name',null,row);vlogo(nm,[g.title.name,g.names.internal,g.names.response,g.names.request,g.names.pill]);el('span','',g.title.name,nm);el('span','tl-count','× '+g.count,row);
-          const t=g.turns,turns=t.length?'第 '+(t.length>1?Math.min(...t)+'–'+Math.max(...t):t[0])+' 轮':'';
-          el('div','tl-meta',[clock(g.from)+(g.to&&g.to!==g.from?' – '+clock(g.to):''),turns,g.title.src?'按'+FORCE_SRC_TEXT[g.title.src]:'',g.local?'本机记录':'',now&&g.partial?'进行中':''].filter(Boolean).join(' · '),row);});
-      }
+      const sid=sidOf(location.href),m=sid?mon.bySid.get(sid):null,busy=force.busy&&force.sid===sid,man=sid?force.bySid.get(sid)||null:null,auto=m?.auto||null;
+      const res=man&&(!auto||man.at>=auto.at||(man.calls?.length||0)>=(auto.calls?.length||0))?man:auto||man,calls=res?.calls?.length||0,cur=res?.current,st=monState(sid);
+      // ① 监控状态：当前型号 + 结论
+      const card=el('section','mc-card mc-hero',null,body),head=el('div','mc-head',null,card);icon('pulse',head,'mc-ic');const h3=el('h3','','实时监控',head);if(prefs.monOn&&m?.busy)el('i','mc-live',null,head);
+      el('span','eyebrow',!sid?'未打开对话':res?(res.auto?'自动核对 ':'深度核对 ')+clock(res.at):prefs.monOn?'等待数据':'已关闭',head);
+      info(h3,'mon','读取页面上的对话状态（不发请求）：出现新的步骤或思考链变化时，立即补读一次 Trace；每次读到 Trace 都自动逐次调用比对型号。\n· 思考链从无到有、回复中途开始思考 → 疑似换模型（弹提示并立即核对）\n· Trace 里前后型号不同 → 确认换模型\n· 档位 / -vertex 等后缀不同不算换模型，单独标为“档位变化”\n注意：闭源 / 开源与是否显示思考链并不绝对对应，所以只看“变化”，不看有无本身。',head);
+      if(cur){const top=el('div','mc-top',null,card),lg=vlogo(top,[cur.name,cur.internal,cur.response,cur.request,cur.pill].filter(Boolean));if(lg)lg.classList.add('mc-big');const nb=el('div','mc-name',null,top),[f1]=famTier(cur.name),[f2,t2]=famTier(cur.internal||'');el('span','mc-fam',f1||f2||cur.name,nb);tierBadge(nb,cur.eff||t2,'档位 '+(cur.eff||t2));
+        el('div','mc-sub',[(cur.partial?'正在进行':'最近一次')+' · '+clock(cur.at),posText(cur),cur.local?'本机记录':''].filter(Boolean).join(' · '),card);}
+      else if(!res)el('div','mc-sub',!sid?'打开一个对话后开始监控':prefs.monOn?'发送消息后会自动识别并持续核对；也可以点下面的“深度核对”':'实时监控已关闭，可在设置里开启',card);
+      const v=el('div','mc-verdict',null,card);v.dataset.tone=busy?'busy':st.tone;icon(busy?'reload':st.icon,v);el('span','',busy?(force.step||'深度核对中')+'…':st.text,v);
+      // ② 信号：思考链变化、档位变化、消耗 / 速度突变
+      const sig=[];for(const f of (m?.flags||[]).slice(-6).reverse())sig.push([f.kind.startsWith('think-d')||f.kind.startsWith('think-r')?'gauge':'brain',f.text,flagDetail(f),f.status]);
+      for(const t of (res?.tiers||[]).slice(-3).reverse())sig.push(['gauge','档位变化 '+t.from+' → '+t.to,[clock(t.at),posText(t)].filter(Boolean).join(' · '),'']);
+      if(res?.shift)sig.push(['gauge',res.shift.kind==='drop'?'单次调用消耗骤降 ↓'+Math.round((1-res.shift.ratio)*100)+'%':'单次调用消耗骤增 ×'+(Math.round(res.shift.ratio*10)/10),'本轮中位 '+spendShort(Math.round(res.shift.cur))+' · 此前 '+spendShort(Math.round(res.shift.base))+' token'+(res.shift.same?' · 名称未变，疑似改了档位':''),'']);
+      if(res?.speed)sig.push(['bolt','输出速度变化 ×'+(Math.round(res.speed.ratio*10)/10),'本轮 '+Math.round(res.speed.cur)+' · 此前 '+Math.round(res.speed.base)+' tok/s（仅作辅证）','']);
+      if(sig.length){const sc=el('section','mc-card',null,body),sh=el('div','mc-head',null,sc);icon('alert',sh,'mc-ic');el('h3','','信号',sh);el('span','eyebrow',sig.length+' 条',sh);const box=el('div','mc-flags',null,sc);for(const x of sig)flagRow(box,...x);}
+      // ③ 模型时间线：连续同一模型合为一段，段与段之间标出切换点
+      if(res?.groups?.length){const ts=el('section','mc-card',null,body),th=el('div','mc-head',null,ts);icon('layers',th,'mc-ic');el('h3','','模型时间线',th);el('span','eyebrow',res.groups.length+' 段 · '+calls+' 次调用',th);
+        const tl=el('div','tl',null,ts),gs=res.groups,shown=gs.slice(-8),off=gs.length-shown.length;if(off)el('div','tl-more','更早 '+off+' 段未显示',tl);
+        shown.forEach((g,i)=>{if(i){const ch=res.changes[off+i-1];if(ch){const cr=el('div','tl-change',null,tl);if(ch.tierOnly)cr.dataset.tier='';icon(ch.tierOnly?'gauge':'swap',cr);el('span','',[clock(ch.at),posText(ch)+'起',ch.tierOnly?'档位 '+tierName(ch.from)+' → '+tierName(ch.to)+'（同一模型）':'',...ch.tags].filter(Boolean).join(' · '),cr);}}
+          const r_=el('div','tl-row',null,tl),now=i===shown.length-1;if(now)r_.setAttribute('data-current','');el('i','tl-dot',null,r_);const nm=el('div','tl-name',null,r_);vlogo(nm,[g.title.name,g.names.internal,g.names.response,g.names.request,g.names.pill].filter(Boolean));const [f1]=famTier(g.title.name),[,t2]=famTier(g.names.internal||'');el('span','',f1||g.title.name,nm);if(t2)tierBadge(nm,t2);el('span','tl-count','× '+g.count,r_);
+          const t=g.turns,turns=t.length?'第 '+(t.length>1?Math.min(...t)+'–'+Math.max(...t):t[0])+' 轮':'';el('div','tl-meta',[clock(g.from)+(g.to&&g.to!==g.from?' – '+clock(g.to):''),turns,g.title.src?'按'+FORCE_SRC_TEXT[g.title.src]:'',g.local?'本机记录':'',now&&g.partial?'进行中':''].filter(Boolean).join(' · '),r_);});}
+      // ④ 深度核对：补读变更点前后的调用详情
+      const act=el('section','mc-act',null,body),go=button(act,busy?'核对中…':!sid?'打开对话后可用':'深度核对','立刻读取本对话此刻的 Trace 与本机记录，补读变更点前后的调用详情，逐次核对模型',()=>{void forceDetect();},'detect-go');go.disabled=force.busy||!sid;
+      el('p','note',res?['依据：'+(res.events?'Trace '+res.events+' 条事件':'本机记录'),calls?calls+' 次调用':'',res.fetched?'补读 '+res.fetched+' 个详情':'',res.localTurns?'本机更早 '+res.localTurns+' 轮':''].filter(Boolean).join(' · '):'实时监控每次读到 Trace 都会自动核对；需要补读更多详情时再点“深度核对”。',act);
+      for(const n of man?.notes||[])el('p','note warning',n,act);if(man?.error)el('p','note warning','核对出错：'+man.error,act);
       legacySection(res);
     }
-    // 原脚本 v8.1.0：把 “Key: value” 显示拆成配置行，原文收进“原始显示”
+    // 原脚本 v8.1.0：收进可展开的卡片，“Key: value”拆成配置行，原文收进“原始显示”
+    let legacyOpen=false;
     function legacySection(res){
       const data=legacyDisplay.snapshot(),text=String(data.text||''),state=data.state||'等待初始化',waiting=text.startsWith(state+'：');
-      const ls=el('section','section',null,body),lh=el('div','section-heading',null,ls),lh3=el('h3','','原脚本检测',lh);el('span','eyebrow',data.at?'更新于 '+clock(data.at):'v8.1.0',lh);info(lh3,'legacy','原脚本 v8.1.0 的检测结果，只看最新一轮。\n与上面的一键检测互相独立；保留原脚本的 New Chat 自动刷新。',lh);
+      const ls=el('details','mc-card mc-legacy',null,body);ls.open=legacyOpen;ls.ontoggle=()=>{legacyOpen=ls.open;};
+      const sm=el('summary','',null,ls);icon('layers',sm,'mc-ic');el('span','grow','原脚本检测',sm);el('span','eyebrow',(data.at?'更新于 '+clock(data.at):'v8.1.0')+' · '+state,sm);icon('chevron',sm,'mc-chev');
+      el('p','note','原脚本 v8.1.0 的检测结果，只看最新一轮；与上面的实时监控互相独立，保留原脚本的 New Chat 自动刷新。',ls);
       const cfg=el('div','config',null,ls),sr=el('div','config-row',null,cfg);el('span','config-label','状态',sr);const sv=el('span','config-value legacy-state',state,sr);if(waiting){const pr=el('div','config-row',null,cfg);el('span','config-label','进度',pr);el('span','config-value legacy-state',text.slice(state.length+1),pr);}sv.dataset.tone=/检测结果/.test(state)?'ok':/进行中/.test(state)?'busy':/错误/.test(state)?'bad':'';
-      if(!waiting)for(const line of text.split('\n')){const m=/^([^:：]{1,24})[:：]\s*(.+)$/.exec(line.trim());if(!m)continue;const r=el('div','config-row',null,cfg);el('span','config-label',m[1]==='Model'?'模型':m[1],r);el('span','config-value',m[2],r);}
-      const raw=el('details','legacy-raw',null,ls),sm=el('summary','',null,raw);icon('chevron',sm);el('span','','原始显示',sm);raw.open=legacyRawOpen;raw.ontoggle=()=>{legacyRawOpen=raw.open;};const pre=el('pre','json',text||'等待发送内容',raw);pre.tabIndex=0;
-      const actions=el('div','log-actions',null,ls);button(actions,'复制原始显示','复制原脚本完整显示文本',()=>copy(text,'独立检测信息'));button(actions,'导出本页','导出本页显示与一键检测结果，不含运行令牌',()=>download({...legacyDisplay.snapshot(),oneClick:res||null},'arena-independent-detector-'+Date.now()+'.json'));
+      if(!waiting)for(const line of text.split('\n')){const mm=/^([^:：]{1,24})[:：]\s*(.+)$/.exec(line.trim());if(!mm)continue;const r=el('div','config-row',null,cfg);el('span','config-label',mm[1]==='Model'?'模型':mm[1],r);el('span','config-value',mm[2],r);}
+      const raw=el('details','legacy-raw',null,ls),rs=el('summary','',null,raw);icon('chevron',rs);el('span','','原始显示',rs);raw.open=legacyRawOpen;raw.ontoggle=()=>{legacyRawOpen=raw.open;};const pre=el('pre','json',text||'等待发送内容',raw);pre.tabIndex=0;
+      const actions=el('div','log-actions',null,ls);button(actions,'复制原始显示','复制原脚本完整显示文本',()=>copy(text,'独立检测信息'));button(actions,'导出本页','导出本页显示与核对结果，不含运行令牌',()=>download({...legacyDisplay.snapshot(),oneClick:res||null},'arena-independent-detector-'+Date.now()+'.json'));
     }
     // 概览第一行“消耗”卡片：当前对话总量 / 最近一次，Token ↔ 美金 切换（选择会记住）。
     // 美金：Arena 费用接口的会话累计计费（含其他设备的消耗）与本轮计费；没有接口数据时用本机记录的每轮 credits 合计（标 ≈）。
@@ -7479,33 +7786,94 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
         cell('最近一次',lu!==null?(le?.kind==='estimate'?'≈ ':'')+spendMoney(lu):'—',lu!==null?(le?leSub:[spendNum(lc?.credits)!==null?Math.round(lc.credits).toLocaleString('zh-CN')+' credits':null,spendNum(lc?.actualUsd)!==null?'实际 '+spendMoney(lc.actualUsd):null].filter(Boolean).join(' · ')):!prefs.showCredits?'费用读取已关闭':local?'等待费用接口（流结束后几秒读取）':wait||(rm?.entries?'费用接口里没找到最后一条回复':'本机暂无这个对话的记录'),lu!==null?(le?leWhy:byDom?'按页面最后一条回复的消息 id 在 Arena 费用接口里查到的计费':'本轮计费（Arena 费用接口）'):'');
       }
     }
+    // ---------- 概览（卡片式）：① 身份 ② 本轮实时 ③ 消耗 ④ 技术细节（合并原“更多型号信息 / 推理配置 / 报告用量 / 本轮消耗”） ----------
+    function tierBadge(parent,tier,title){if(!tier)return null;const lv=TIER_LV[tier]??0,b=el('span','mc-tier',null,parent);b.dataset.lv=String(lv);b.append(tierBars(lv));el('span','',tier,b);b.title=title||'档位 '+tier;return b;}
+    function chipRow(parent){const row_=el('div','mc-chips',null,parent);return (ic,text,tone,title,fn)=>{const b=el(fn?'button':'span','mc-chip',null,row_);if(fn){b.type='button';b.onclick=fn;}if(tone)b.dataset.tone=tone;icon(ic,b);el('span','',text,b);if(title)b.title=title;return b;};}
+    function openTech(){moreOpen=true;render();requestAnimationFrame(()=>{const t=body.querySelector('.mc-tech');if(t)body.scrollTo({top:Math.max(0,t.offsetTop-8),behavior:'smooth'});});}
+    function heroCard(s,c,live){
+      const sid=s.sid,m=mon.bySid.get(sid),best=c.internal||c.response||c.request||c.model,[fam,sfx]=famTier(best),vid=brand.of(best)||brand.of(c.model||'');
+      const tier=c.effort?.value||sfx||'';
+      const card=el('section','mc-card mc-hero',null,body),top=el('div','mc-top',null,card);
+      const lg=vlogo(top,[best,c.model,c.request,c.response].filter(Boolean));if(lg)lg.classList.add('mc-big');
+      const nb=el('div','mc-name',null,top);el('span','mc-fam',fam||best,nb);tierBadge(nb,tier,(c.effort?.value?'显式档位参数':'内部名称后缀')+'：'+tier);
+      iconButton(top,'copy','复制型号',()=>copy(best));
+      el('div','mc-sub',[vid?brand.NAME[vid]||vid:null,turnLabel(s),s.count+' 次调用'+(s.prior?'（此前 '+s.prior+' 次）':'')].filter(Boolean).join(' · '),card);
+      const chip=chipRow(card);
+      const rs=c.reasoning?.status==='conflict'?null:number(c.reasoning?.value),lc=live&&m?.cur?.n?m.cur:null,think=lc?lc.think>0:rs!==null?rs>0:null;
+      if(think!==null){const b=chip('brain',think?(rs?'思考 '+spendShort(rs):'有思考链'):'无思考链',think?'think':'',think?'有可见思考链'+(rs?' · 推理 '+fmt(rs)+' tokens':''):'没有思考链（闭源模型在 Arena 一般不显示）');b.dataset.lv=String(thinkLevel(rs)??(think?2:0));}
+      const st=monState(sid);chip(st.icon,st.short,st.tone,st.text,()=>{tab='detector';render();});
+      const ac=m?.auto?.calls.find(x=>x.id===c.id);if(ac?.tps)chip('bolt',ac.tps+' tok/s','','输出速度：输出 token ÷ 调用耗时（'+fmt(ac.out)+' tokens / '+((ac.end-ac.at)/1000).toFixed(1)+' 秒）');
+      if(s.routing)chip('route','改派','warn',(s.routing.from||'原模型')+' → '+(s.routing.to||'其他模型')+(s.routing.cause?' · '+s.routing.cause:''),openTech);
+      if(s.outcome)chip('alert',s.outcome==='failed'?'本轮失败':'空回复','warn',s.outcome==='failed'?'Arena 记录本轮失败':'本轮没有产出回复',openTech);
+      const src=el('button','mc-srcs',null,card);src.type='button';src.title='名称来源是否一致（点开看完整名称）';src.onclick=openTech;
+      for(const [k,t] of [['request','请求'],['response','响应'],['internal','内部']]){const v=c[k],d=el('span','mc-src',null,src);d.dataset.st=!v?'none':forceEq(v,best)||forceEq(famTier(v)[0],fam)?'ok':'diff';el('i','',null,d);el('span','',t+(v&&d.dataset.st==='diff'?' '+short_(v):''),d);d.title=t+'：'+(v||'未提供');}
+    }
+    // 本轮步骤条：每根柱 = 一次模型调用，高度 ∝ 消耗（Trace 的输出 + 推理 token，缺时按字数估），深色段 = 思考；颜色区分模型段，⇄ 标出切换点
+    function liveCard(sid,s,live){
+      const m=sid?mon.bySid.get(sid):null;if(!m||!prefs.monOn)return;
+      const auto=m.auto,lc=live&&m.cur?.n?m.cur:null;let tc=[];
+      if(auto){const tr=auto.calls.filter(x=>x.src==='trace'),ref=s&&tr.some(x=>x.turn===s.turn&&x.attempt===(s.attempt||1))?{turn:s.turn,attempt:s.attempt||1}:tr.at(-1);if(ref)tc=tr.filter(x=>x.turn===ref.turn&&x.attempt===ref.attempt);}
+      if(!lc&&!tc.length)return;
+      const card=el('section','mc-card mc-livecard',null,body),head=el('div','mc-head',null,card);icon('pulse',head,'mc-ic');
+      el('h3','',live&&m.busy?'本轮实时':'本轮步骤',head);if(live&&m.busy)el('i','mc-live',null,head);
+      const n=Math.max(lc?.n||0,tc.length);el('span','eyebrow',n+' 步'+(auto?' · 核对 '+clock(auto.at):''),head);
+      const steps=[];
+      for(let i=0;i<n;i++){const ls=lc?.steps[i],t=tc[i],tok=t&&Number.isFinite(t.out)?t.out+(Number.isFinite(t.rsn)?t.rsn:0):null,chars=ls?ls.rc+ls.t:null;
+        steps.push({v:tok!==null?tok:chars!==null?chars/3.5:0,est:tok===null,rs:tok&&Number.isFinite(t.rsn)?t.rsn/tok:chars?ls.rc/chars:0,think:ls?ls.r>0:!!(t&&t.rsn>0),tools:ls?ls.tools:[],live:!!ls?.live||!!t?.partial,g:t?(auto.callFam||auto.callGroup)?.[t.id]:undefined,tg:t?auto.callGroup?.[t.id]:undefined,name:t?forceBest(t):null});}
+      let pg,pt;for(const x of steps){if(x.g===undefined)x.g=pg;else pg=x.g;if(x.tg===undefined)x.tg=pt;else pt=x.tg;}
+      const g0=steps.find(x=>x.g!==undefined)?.g??0,max=Math.max(1,...steps.map(x=>x.v)),shown=steps.slice(-48),strip=el('div','mc-strip',null,card);strip.setAttribute('data-noswipe','');if(shown.length<=12)strip.setAttribute('data-few','');
+      shown.forEach((x,i)=>{const pv=i?shown[i-1]:null;if(pv&&x.g!==undefined&&pv.g!==undefined&&x.g!==pv.g){const sw=el('span','mc-sw',null,strip);icon('swap',sw);sw.title='在这里换了模型';}else if(pv&&x.tg!==undefined&&pv.tg!==undefined&&x.tg!==pv.tg){const sw=el('span','mc-sw',null,strip);sw.dataset.tier='';icon('gauge',sw);sw.title='同一模型，档位变化';}
+        const col=el('div','mc-step',null,strip);col.dataset.g=String((((x.g??g0)-g0)%4+4)%4);if(x.live)col.setAttribute('data-live','');if(x.think)col.setAttribute('data-think','');
+        const bar=el('div','bar',null,col),h=Math.max(4,Math.round(46*Math.sqrt(x.v/max)));bar.style.height=h+'px';if(x.rs>0){const r=el('i','',null,bar);r.style.height=Math.max(2,Math.round(h*Math.min(1,x.rs)))+'px';}
+        const ic=el('div','mc-step-ic',null,col);if(x.think)icon('brain',ic);else if(x.tools.length)icon('terminal',ic);else el('i','dot',null,ic);
+        col.title='第 '+(steps.length-shown.length+i+1)+' 步'+(x.name?' · '+short_(x.name):'')+(x.think?' · 有思考':'')+(x.tools.length?' · 工具 '+x.tools.join(', '):'')+(x.v?' · '+(x.est?'约 ':'')+spendShort(Math.round(x.v))+' token':'');});
+      requestAnimationFrame(()=>{strip.scrollLeft=strip.scrollWidth;});
+      const st=monState(sid),v=el('div','mc-verdict',null,card);v.dataset.tone=st.tone;icon(st.icon,v);el('span','',st.text,v);
+      const fl=lc?m.flags.filter(f=>f.msg===lc.id).slice(-3).reverse():[];
+      if(fl.length){const box=el('div','mc-flags',null,card);for(const f of fl)flagRow(box,f.kind.startsWith('think-d')||f.kind.startsWith('think-r')?'gauge':'brain',f.text,flagDetail(f),f.status);}
+    }
+    const flagDetail=f=>f.status==='confirmed'?'已确认：'+short_(f.from)+' → '+short_(f.to):f.status==='cleared'?'已排除：核对仍是 '+short_(f.same)+'（可能只是档位或思考设置变化）':f.detail;
+    function flagRow(box,ic,t,d,st){const r=el('div','mc-flag',null,box);r.dataset.st=st;icon(ic,r);const tx=el('div','grow',null,r);el('div','mc-flag-t',t,tx);if(d)el('div','mc-flag-d',d,tx);el('span','mc-flag-s',{suspect:'核对中',confirmed:'已确认',cleared:'已排除'}[st]||'',r);return r;}
+    // 本次调用的 token 构成：缓存读取 / 输入 / 输出 / 推理（推理已含在输出里）
+    function callBar(parent,s,c){
+      const t=c.tokens||{},inp=number(t.input),out=number(t.output),rs=c.reasoning?.status==='conflict'?null:number(c.reasoning?.value),cr=number(t.cacheRead);if(inp===null&&out===null)return;
+      const box=el('div','mc-callbar',null,parent),hd=el('div','mc-callbar-h',null,box);el('span','',s.count>1?'第 '+(s.calls.indexOf(c)+1+s.prior)+' 次调用':'本次调用',hd);el('span','mono',t.total!==null&&t.total!==undefined?fmt(t.total)+' tokens':'',hd);
+      const bar=el('div','mc-stack',null,box),seg=(cls,v,title)=>{if(!v||v<0)return;const i=el('i',cls,null,bar);i.style.flexGrow=String(v);i.title=title;};
+      if(cr&&inp&&cr<=inp){seg('cache',cr,'缓存读取 '+fmt(cr));seg('in',inp-cr,'输入（未缓存） '+fmt(inp-cr));}else seg('in',inp,'输入 '+fmt(inp));
+      const ro=rs&&out&&rs<=out?rs:0;seg('out',(out||0)-ro,'输出 '+fmt((out||0)-ro));seg('rsn',ro||(rs&&rs>(out||0)?rs:0),'推理 '+fmt(rs));
+      const lg=el('div','mc-legend',null,box),key=(cls,tt,v)=>{const k=el('span','',null,lg);el('i',cls,null,k);el('span','',tt+' '+(v===null||v===undefined?'—':spendShort(v)),k);};
+      key('in','输入',inp);if(cr)key('cache','缓存',cr);key('out','输出',out);key('rsn','推理',rs);
+    }
+    function techCard(s,c){
+      const d=el('details','mc-card mc-tech',null,body);d.open=moreOpen;d.ontoggle=()=>{moreOpen=d.open;};
+      const sm=el('summary','',null,d);sm.dataset.focus='技术细节';icon('layers',sm,'mc-ic');el('span','grow','技术细节',sm);el('span','eyebrow','型号来源 · 配置 · 用量 · 标识',sm);icon('chevron',sm,'mc-chev');
+      const grp=(ic,t)=>{const x=el('div','mc-group',null,d),h=el('div','mc-gh',null,x);icon(ic,h);el('span','',t,h);return x;};
+      const n=grp('cube','型号来源');row(n,'请求型号',c.request);row(n,'响应型号',c.response);
+      const later=!c.internal&&s.calls.some(x=>x.internal),internal=c.internal||(s.internalNames.length&&!later?s.internalNames.join(' / '):null),ir=row(n,'内部名称',later?'尚未读到本条消息的记录':internal);if(internal&&(c.internalScope==='turn'||!c.internal)&&s.count>1)el('span','pill','轮次级',ir.lastChild);
+      if(!c.request&&c.model&&c.model!=='未提供')row(n,'Trace 标签',c.model);
+      if(c.route)row(n,'平台路由',c.route);if(c.adapter)row(n,'协议适配器',c.adapter);if(s.internalNames.length>1)row(n,'本轮内部名',s.internalNames.join('\n'));
+      if(s.routing){const rr=row(n,'路由改派',(s.routing.from||'原模型')+' → '+(s.routing.to||'其他模型'),true);el('span','pill',s.routing.cause?(/内容审核/.test(s.routing.cause)?'内容审核拦截':/空内容/.test(s.routing.cause)?'原模型空响应':/首包超时/.test(s.routing.cause)?'首包超时':'原模型失败'):s.routing.waitMs?'原模型 '+Math.round(s.routing.waitMs/1000)+' 秒无输出':'原模型失败',rr.lastChild);if(s.routing.cause)row(n,'改派类型',s.routing.cause);if(s.routing.reason)row(n,'改派原因',s.routing.reason);}
+      const e=c.effort,g=grp('gauge','推理配置');row(g,'显式档位',e.value||({conflict:'冲突',unsupported:'不支持'}[e.status])||'未发现');const sx=row(g,'名称后缀',c.hint.value||'—');sx.title=c.hint.status;for(const v of e.budgets)row(g,'推理预算',v===-1?'自动 (-1)':fmt(v)+' tokens');for(const v of e.modes)row(g,'思考模式',v);
+      const cn=e.value?(e.evidence.some(x=>x.kind==='effort'&&x.source==='span'&&x.value===e.value)?'档位来自 Span 的明确配置字段。':'档位仅见于页面请求参数。'):e.status==='conflict'?'档位字段存在不同值（'+e.levels.join(' / ')+'）。':e.status==='unsupported'?'档位字段值不在已知枚举内。':'没有明确的档位参数，档位按内部名称后缀显示。';
+      el('p','note'+(e.status==='conflict'?' warning':''),cn,g);if(!['内部标签，非显式参数','无后缀','未提供'].includes(c.hint.status))el('p','note warning','后缀：'+c.hint.status,g);
+      const u=grp('hash','报告用量'+(s.count>1?' · 第 '+(s.calls.indexOf(c)+1+s.prior)+' 次调用':''));row(u,'输入',fmt(c.tokens.input));row(u,'输出',fmt(c.tokens.output));row(u,'推理',c.reasoning.status==='conflict'?'冲突':fmt(c.reasoning.value));row(u,'总 Token',c.tokens.total!==null?fmt(c.tokens.total):c.totalLabel?'≈ '+c.totalLabel:'—');
+      const un={zero:'推理 Token 报告为 0。',missing:'推理 Token 未提供；“—”不是 0。',conflict:'推理 Token 来源冲突，不合并。'}[c.reasoning.status];if(un)el('p','note',un,u);
+      if(s.records.length&&(s.count>1||s.records.length>1))for(const rec of s.records)row(u,(s.records.length>1?clock(rec.at)+' ':'')+'本轮记录',['输入 '+fmt(rec.input),'输出 '+fmt(rec.output),'推理 '+fmt(rec.reasoning),'总 '+fmt(rec.total)].join(' · ')+(rec.internal?'\n'+rec.internal:''));
+      if(s.outcome){const lc=s.calls.at(-1);row(u,'本轮结果',(s.outcome==='failed'?'Arena 记录失败':'空回复')+(lc?.finish==='length'?' · 推理用尽输出上限':''),false);}
+      const i=grp('info','标识');if(s.prompt)row(i,'提问开头','“'+s.prompt+'”',false);if(s.sentAt)row(i,'发送时间',fullStamp(Date.parse(s.sentAt)));row(i,'调用时间',c.at?new Date(c.at).toLocaleString('zh-CN',{hour12:false}):null);row(i,'Run',s.runId);row(i,'Span',c.id);
+      creditsSection(s,d);
+      if(s.partial)el('p','note warning','部分记录：尚有字段未取得。',d);
+    }
     function overview(s,c){
-      spendCard(s);
-      const model=el('section','section model',null,body),cap=el('div','section-heading',null,model);el('span','eyebrow',c.request?'请求型号':'Trace 模型标签',cap);el('span','eyebrow',turnLabel(s)+' · '+s.count+' 次调用'+(s.prior?'（此前 '+s.prior+' 次）':''),cap);
-      const title=el('div','model-title',null,model);el('div','name',c.model,title);iconButton(title,'copy','复制型号',()=>copy(c.model));
-      const later=!c.internal&&s.calls.some(x=>x.internal),internal=c.internal||(s.internalNames.length&&!later?s.internalNames.join(' / '):null), ir=row(model,'内部名称',later?'尚未读到本条消息的记录':internal);if(internal&&(c.internalScope==='turn'||!c.internal)&&s.count>1)el('span','pill','轮次级',ir.lastChild);
-      if(s.routing){const rr=row(model,'路由改派',(s.routing.from||'原模型')+' → '+(s.routing.to||'其他模型'),true);el('span','pill',s.routing.cause?(/内容审核/.test(s.routing.cause)?'内容审核拦截':/空内容/.test(s.routing.cause)?'原模型空响应':/首包超时/.test(s.routing.cause)?'首包超时':'原模型失败'):s.routing.waitMs?'原模型 '+Math.round(s.routing.waitMs/1000)+' 秒无输出':'原模型失败',rr.lastChild);if(s.routing.cause)row(model,'改派类型',s.routing.cause);if(s.routing.reason)row(model,'改派原因',s.routing.reason);}
-      if(s.outcome){const lc=s.calls.at(-1);row(model,'本轮结果',(s.outcome==='failed'?'Arena 记录失败':'空回复')+(lc?.finish==='length'?' · 推理用尽输出上限':''),false);}
-      if(s.prompt)row(model,'提问开头','“'+s.prompt+'”',false);if(s.sentAt)row(model,'发送时间',fullStamp(Date.parse(s.sentAt)));
-      const more=el('details','model-more',null,model);more.open=moreOpen;more.ontoggle=()=>{moreOpen=more.open;};const summary=el('summary','',null,more);summary.dataset.focus='更多型号信息';icon('chevron',summary);el('span','','更多型号信息',summary);row(more,'请求型号',c.request);row(more,'响应型号',c.response);row(more,'平台路由',c.route);row(more,'协议适配器',c.adapter);if(s.internalNames.length>1)row(more,'本轮内部名',s.internalNames.join('\n'));row(more,'调用时间',c.at?new Date(c.at).toLocaleString('zh-CN',{hour12:false}):null);row(more,'Run',s.runId);row(more,'Span',c.id);
-      const config=el('section','section',null,body),cfgH=el('h3','section-heading','推理配置',config);const table=el('div','config',null,config),e=c.effort;
-      const configRow=(key,value,cls='')=>{const r=el('div','config-row',null,table);el('span','config-label',key,r);return el('span','config-value '+cls,value,r);};
-      configRow('显式推理档位',e.value||({conflict:'冲突',unsupported:'不支持'}[e.status])||'未知',e.status==='explicit'?'tag':e.status==='conflict'?'warning':'muted');const suffix=configRow('内部名称后缀',c.hint.value||'—','muted');suffix.title=c.hint.status;
-      for(const v of e.budgets)configRow('推理预算',v===-1?'自动 (-1)':fmt(v)+' tokens');for(const v of e.modes)configRow('思考模式',v);
-      const configNote=e.value?(e.evidence.some(x=>x.kind==='effort'&&x.source==='span'&&x.value===e.value)?'来自 Span 的明确配置字段。':'仅见于页面请求参数。'):e.status==='conflict'?'字段存在不同值（'+e.levels.join(' / ')+'）。':e.status==='unsupported'?'档位字段值不在已知枚举内。':'未发现明确的档位参数。';
-      if(e.status==='conflict')el('p','note warning',configNote,config);else info(cfgH,'cfg',configNote);if(!['内部标签，非显式参数','无后缀','未提供'].includes(c.hint.status))el('p','note warning','后缀：'+c.hint.status,config);
-      const usage=el('section','section',null,body);const usageHead=el('div','section-heading',null,usage),usageH3=el('h3','','报告用量',usageHead);el('span','eyebrow',s.count>1?'第 '+(s.calls.indexOf(c)+1+s.prior)+' 次调用':'单次调用',usageHead);
-      const values=el('div','usage',null,usage);for(const [key,value]of [['输入',fmt(c.tokens.input)],['输出',fmt(c.tokens.output)],['推理',c.reasoning.status==='conflict'?'冲突':fmt(c.reasoning.value)]]){const cell=el('div','usage-cell',null,values);el('div','usage-label',key,cell);el('div','usage-value',value,cell);}
-      const total=el('div','usage-total',null,usage);el('span','','总 Token',total);el('strong','mono',c.tokens.total!==null?fmt(c.tokens.total):c.totalLabel?'≈ '+c.totalLabel:'—',total);
-      const usageNote={zero:'推理 Token 报告为 0。',missing:'推理 Token 未提供；“—”不是 0。',conflict:'推理 Token 来源冲突，不合并。'};if(usageNote[c.reasoning.status])info(usageH3,'usage',usageNote[c.reasoning.status],usageHead);
-      if(s.records.length&&(s.count>1||s.records.length>1)){for(const rec of s.records){const tu=el('div','usage-turn',null,usage);el('span','',(s.records.length>1?clock(rec.at)+' · ':'')+'本轮用量记录'+(rec.internal?' · '+rec.internal:''),tu).style.flexBasis='100%';for(const [k,v]of [['输入',rec.input],['输出',rec.output],['推理',rec.reasoning],['总',rec.total]]){const sp=el('span','',k+' ',tu);el('strong','',fmt(v),sp);}}}
-      creditsSection(s);
-      if(s.partial)el('p','note warning','部分记录：尚有字段未取得。',body);
+      const live=!historyView&&!turnKey&&liveKey()===s.key;
+      heroCard(s,c,live);liveCard(s.sid,s,live);
+      spendCard(s);const sp=body.querySelector('.section.spend');if(sp)callBar(sp,s,c);
+      techCard(s,c);
     }
     // 本轮消耗：credits 来自页面费用接口；余额变化来自 /api/billing/balance 前后对比（账号级，可能含其他标签页的消耗）
-    function creditsSection(s){
+    function creditsSection(s,parent=body){
       if(!prefs.showCredits)return;const cr=s.credits,live=!historyView&&!turnKey&&liveKey()===s.key,st=live?costState.get(s.sid):null;
-      const sec=el('section','section credits',null,body),head=el('div','section-heading',null,sec),crH3=el('h3','','本轮消耗',head);
+      const sec=el('section','section credits',null,parent),head=el('div','section-heading',null,sec),crH3=el('h3','','本轮消耗',head);
       const srcText={message:'费用接口 · 按消息 id',new:'费用接口 · 新条目推断',session:'费用接口 · 累计差值'}[cr?.source]||(cr?.balance?'仅余额差值':'');el('span','eyebrow',srcText,head);
       const money=v=>v===null||v===undefined?null:'$'+(+v).toFixed(Math.abs(v)<0.01&&v!==0?5:4);
       if(cr&&cr.credits!==null&&cr.credits!==undefined){
@@ -7607,6 +7975,10 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       toggle(sec,'模型被改派时自动停止生成','默认开启：原模型首包超时被 Arena 换成别的模型后立即停止，避免替补模型长时间推理白白消耗额度；关闭则让替补模型继续回答。',prefs.stopOnResample,v=>{prefs.stopOnResample=v;savePrefs();});
       toggle(sec,'页面底部信息栏','固定在页面最底部：美金额度、Pulse、credits、限流、当前模型、抽卡进度与更新时间。',prefs.showBar,v=>{prefs.showBar=v;bar?.sync();if(v)void refreshPulse(true);});
       toggle(sec,'为信息栏预留页面空间','把 Arena 的整屏容器高度减去信息栏高度，避免遮挡输入框；遇到布局异常时可关闭。',prefs.barOffset,v=>{prefs.barOffset=v;bar?.sync();});
+      const ms=el('section','section',null,body);el('h3','section-heading','实时监控',ms);
+      toggle(ms,'实时监控换模型','默认开启：读取页面上的对话状态（不发请求），出现新的步骤或思考链变化时立即补读一次 Trace 核对型号：首步和疑点最短 2.5 秒，普通步骤 5 秒起，长回复逐步放慢到 16 秒，每轮最多 90 次，遇到限流自动暂停。每次读到 Trace 都自动逐次调用比对（不额外请求），换模型会在概览和“监控”页标出。',prefs.monOn,v=>{prefs.monOn=v;savePrefs();mon.serial++;});
+      toggle(ms,'疑似换模型时弹出提醒','默认开启：思考链从无到有、回复中途开始思考等强信号出现时，顶部弹出“疑似换模型”并立即核对；核对确认后仍由“模型变更提醒”通知，不会重复弹。',prefs.monAlert,v=>{prefs.monAlert=v;savePrefs();});
+      toggle(ms,'疑似换模型时自动停止生成','默认关闭：出现强信号时立即停止生成，避免替补模型继续消耗额度。“正文之后才出现思考链”已由抽卡设置里的“路由到 Thinking 时停止”（默认开启）处理，这里额外覆盖“连续几轮都没有思考、这一轮突然有”“工具步骤之后开始思考”等情况。启发式判断，可能误停，确有需要再开启。',prefs.monStop,v=>{prefs.monStop=v;savePrefs();});
       const cloud=el('section','section',null,body);el('h3','section-heading','云端标题',cloud);
       toggle(cloud,'把本地标题同步到 Arena 会话名','使用页面自带的重命名接口（PATCH /api/history/agentic/{id}），会覆盖 Arena 上已有的会话名；每个会话同一标题只发送一次。',prefs.cloudSync,v=>{prefs.cloudSync=v;if(v){const e=catalog.entries.get(sidOf(location.href));if(e)void syncTitle(e);}});
       const fr=el('div','setting',null,cloud),fg=el('div','grow',null,fr);info(el('span','setting-title','同步格式',fg),'set:fmt',prefs.cloudFormat==='name'?'仅内部名称，如 gpt-5.1-codex-high':'编号 + 内部名称，如 #12 gpt-5.1-codex-high',fr);const fs=el('select','selector',null,fr);fs.setAttribute('aria-label','同步格式');for(const [id,text]of [['prefix','#编号 名称'],['name','仅名称']]){const o=el('option','',text,fs);o.value=id;}fs.value=prefs.cloudFormat;fs.onchange=()=>{prefs.cloudFormat=fs.value;savePrefs();bodyStamp=[];render();};
@@ -7650,7 +8022,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
   const onVisible=()=>{if(document.hidden)return;paint();if(Date.now()-(balance?.at||0)>BALANCE_INTERVAL)void refreshBalance();};document.addEventListener('visibilitychange',onVisible);
   const resize=()=>{ui?.attach();paint();};window.addEventListener('resize',resize);
   const flushAll=()=>{for(const r of runs.values())if(r.data)save(r.data);void catalog.flush();};window.addEventListener('pagehide',flushAll);
-  function stop(){gacha.stop();gacha.setPaint(null);bar?.destroy();bar=null;legacyDisplay.onchange=null;stopped=true;onLog=null;onSnapshot=null;clearInterval(routeTimer);clearInterval(routeWatch);clearTimeout(paintTimer);for(const r of runs.values()){clearTimeout(r.timer);r.abort?.abort();r.token=null;}for(const reader of readers){try{reader.cancel().catch(()=>{});}catch{}}if(window.fetch===wrapped)window.fetch=native;if(XO?.open===xhrOpen)XO.open=oldOpen;if(XO?.send===xhrSend)XO.send=oldSend;if(window.EventSource===eventSource)window.EventSource=ES;window.removeEventListener('resize',resize);window.removeEventListener('pagehide',flushAll);window.removeEventListener('storage',onStorage);document.removeEventListener('visibilitychange',onVisible);clearInterval(statusTimer);clearTimeout(balanceTimer);clearTimeout(balanceResetTimer);for(const c of costState.values())clearTimeout(c.timer);ui?.destroy();catalog.destroy();}
+  function stop(){clearInterval(mon.timer);gacha.stop();gacha.setPaint(null);bar?.destroy();bar=null;legacyDisplay.onchange=null;stopped=true;onLog=null;onSnapshot=null;clearInterval(routeTimer);clearInterval(routeWatch);clearTimeout(paintTimer);for(const r of runs.values()){clearTimeout(r.timer);r.abort?.abort();r.token=null;}for(const reader of readers){try{reader.cancel().catch(()=>{});}catch{}}if(window.fetch===wrapped)window.fetch=native;if(XO?.open===xhrOpen)XO.open=oldOpen;if(XO?.send===xhrSend)XO.send=oldSend;if(window.EventSource===eventSource)window.EventSource=ES;window.removeEventListener('resize',resize);window.removeEventListener('pagehide',flushAll);window.removeEventListener('storage',onStorage);document.removeEventListener('visibilitychange',onVisible);clearInterval(statusTimer);clearTimeout(balanceTimer);clearTimeout(balanceResetTimer);for(const c of costState.values())clearTimeout(c.timer);ui?.destroy();catalog.destroy();}
   window.__AMP_LITE__={version:VERSION,stop,huntLive(){
     const r=selectedRun();
     const blocks=[quota.chat,quota.append].filter(q=>q?.blocked&&(!q.resetAt||q.resetAt>Date.now()));
@@ -7674,7 +8046,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
   }
   window.addEventListener('amp:account',()=>accountReset('登录账号变化'));
   try{if(localStorage.getItem('amp.account.dirty')){localStorage.removeItem('amp.account.dirty');setTimeout(()=>accountReset('切换后首次加载'),800);}}catch{}
-  window.__AMP_LITE__.gacha={start:r=>gacha.start(!!r),stop:gacha.stop,state:gacha.state,settings:gacha.settings,followModel:gacha.followModel};window.__AMP_LITE__.usd=()=>usd?{...usd}:null;window.__AMP_LITE__.pulse=()=>pulse?{...pulse}:null;
+  window.__AMP_LITE__.mon={state:sid=>mon.bySid.get(sid||sidOf(location.href))||null,verdict:sid=>monState(sid||sidOf(location.href)),tick:monTick,kick:monKick};window.__AMP_LITE__.gacha={start:r=>gacha.start(!!r),stop:gacha.stop,state:gacha.state,settings:gacha.settings,followModel:gacha.followModel};window.__AMP_LITE__.usd=()=>usd?{...usd}:null;window.__AMP_LITE__.pulse=()=>pulse?{...pulse}:null;
   log('debug','初始化','v'+VERSION+' 已就绪');
   // 存储自检：写入/读回一个测试键，失败时在日志里给出明确提示（保存无效的常见原因：存储已满、隐私模式、站点数据被清理）。
   try{const t='amp.selftest',v=String(Date.now()),ok=ampStore.set(t,v)&&localStorage.getItem(t)===v;try{localStorage.removeItem(t);}catch{}const u=ampStore.usage();log(ok?'debug':'info','存储',(ok?'本地存储正常':'本地存储不可写，设置将无法保存')+' · 已用约 '+Math.round(u.total/1024)+' KB（本脚本 '+Math.round(u.ours/1024)+' KB）');}catch{}
