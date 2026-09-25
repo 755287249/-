@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.65
+// @version      1.11.66
 // @description  【测试版】Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.65' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.66' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -4180,10 +4180,20 @@ const errReload = (() => {
     }
     return null;
   }
-  function chatStatus() {
+  // Arena 对话页的状态（React context：{ id, messages, status, … }），从对话区往上找
+  function chatValue() {
     const sid = sidNow(), log = logEl(); if (!sid || !log) return null;
-    try { let f = log[Object.keys(log).find(k => k.startsWith('__reactFiber'))]; for (let n = 0; f && n < 100; n++, f = f.return) { const v = f.memoizedProps?.value; if (v && v.id === sid && Array.isArray(v.messages)) return String(v.status || ''); } } catch {}
+    try { let f = log[Object.keys(log).find(k => k.startsWith('__reactFiber'))]; for (let n = 0; f && n < 100; n++, f = f.return) { const v = f.memoizedProps?.value; if (v && v.id === sid && Array.isArray(v.messages)) return v; } } catch {}
     return null;
+  }
+  function chatStatus() { const v = chatValue(); return v ? String(v.status || '') : null; }
+  // 任务进行中：页面状态是 submitted / streaming（Arena 自己的 isStreaming 也这样算），或者看得到“停止生成”按钮
+  const STOP_RE = /^(?:stop(?:\s+(?:generating|response|streaming))?|停止(?:生成|回答)?)$/i;
+  let runAt = 0, runVal = false;
+  function turnBusy(fresh) {
+    const now = Date.now(); if (!fresh && now - runAt < 300) return runVal; runAt = now;
+    const st = chatStatus(); if (st === 'submitted' || st === 'streaming') return (runVal = true);
+    const m = mainEl(); return (runVal = !!m && [...m.querySelectorAll('button')].some(b => STOP_RE.test(norm(b.getAttribute('aria-label') || b.textContent)) && visible(b)));
   }
   const draft = () => [...document.querySelectorAll('main div[contenteditable="true"], main textarea')].filter(visible).some(e => norm(e.value ?? e.innerText ?? e.textContent).length > 0);
   const gachaBusy = () => { try { const pk = gacha.peek(); return !!pk && ['running', 'stopping', 'paused'].includes(pk.status); } catch { return false; } };
@@ -4207,15 +4217,15 @@ const errReload = (() => {
     box.style.left = Math.round(m && m.width ? m.left + m.width / 2 : innerWidth / 2) + 'px';
     box.style.bottom = Math.round(f && f.height ? Math.max(12, innerHeight - f.top + 10) : 150) + 'px';
   }
-  function show(text, actions = [], closable = false) {
-    const b = ui(); clearTimeout(hideTimer); b.textContent = '';
+  function show(text, actions = [], closable = false, kind = '') {
+    const b = ui(); clearTimeout(hideTimer); b.textContent = ''; b.dataset.kind = kind;
     const t = document.createElement('span'); t.className = 't'; t.textContent = text; b.append(t);
     actions.forEach(([label, fn], i) => { const x = document.createElement('button'); x.type = 'button'; x.textContent = label; if (!i) x.className = 'p'; x.onclick = fn; b.append(x); });
     if (closable) { const x = document.createElement('button'); x.type = 'button'; x.className = 'x'; x.textContent = '×'; x.title = '关闭'; x.onclick = () => { stale = true; hide(); }; b.append(x); }
     b.hidden = false; place();
   }
-  function hide() { clearInterval(timer); timer = 0; errBar = false; if (box) box.hidden = true; }
-  function toast(text, ms = 3200) { show(text); hideTimer = setTimeout(hide, ms); }
+  function hide() { if (timer) busy = false; clearInterval(timer); timer = 0; errBar = false; if (box) box.hidden = true; }
+  function toast(text, ms = 3200) { show(text, [], false, 'toast'); hideTimer = setTimeout(hide, ms); }
 
   // ---------- 检测与自动刷新 ----------
   let timer = 0, busy = false, stale = false, baseSid = null, baseUntil = 0, errBar = false;
@@ -4227,6 +4237,17 @@ const errReload = (() => {
     location.reload();
   }
   function cancel() { stale = true; busy = false; hide(); }
+  function autoReload(sid, label) {
+    let n = WAIT; busy = true;
+    const paint = () => show(label.replace('{n}', n), [['立即刷新', () => reloadNow(sid, false)], ['取消', cancel]], false, 'count');
+    paint(); clearInterval(timer);
+    timer = setInterval(() => {
+      if (sidNow() !== sid) { busy = false; hide(); return; }
+      if (draft()) { clearInterval(timer); timer = 0; busy = false; show('输入框里有未发送的内容，没有自动刷新；需要时手动刷新', [['刷新', () => reloadNow(sid, false)]], true); errBar = true; return; }
+      if (--n <= 0) { clearInterval(timer); timer = 0; reloadNow(sid, false); return; }
+      paint();
+    }, 1000);
+  }
   function countdown(sid) {
     let n = WAIT; busy = true;
     const paint = () => show('检测到 “Something went wrong”，' + n + ' 秒后自动刷新当前对话', [['立即刷新', () => reloadNow(sid, false)], ['取消', cancel]]);
@@ -4278,7 +4299,7 @@ const errReload = (() => {
     addEventListener('wheel', off, { capture: true, passive: true }); addEventListener('touchstart', off, { capture: true, passive: true }); addEventListener('keydown', onKey, true); addEventListener('mousedown', onDown, true);
     const iv = setInterval(() => {
       if (done) return;
-      if (Date.now() - t0 > 15000) { off(); return; }
+      if (follow.on || Date.now() - t0 > 15000) { off(); return; } // 跟随接手后交给跟随（它会把最新内容贴在输入框上方）
       if (!sc || !sc.isConnected) sc = findScroller();
       if (!sc) return;
       const h = sc.scrollHeight, room = h - sc.clientHeight;
@@ -4288,18 +4309,22 @@ const errReload = (() => {
       if (Date.now() - stableAt > 2500 && room > 2) off();
     }, 200);
   }
-  // ---------- 跟随最新：任务进行中，最新内容（最底部的白点）一直留在输入框上方 ----------
-  // 开启：① 点页面自带的“到底部”按钮；② 任务进行中自己往下滚到露出最底部的白点（最新内容的末尾）。
-  // 跟随时只往下补：内容变长、白点被挡住就往下滚到刚好露出它，从不往上拉；页面自己把画面带走时也会补回来。
-  // Arena 回答还短时会在底部留一块空白（把你的提问顶到上方），跟随不会滚进这块空白。
-  // 取消：滚轮上滑 / 触摸下拉 / PageUp·↑·Home·Shift+空格 / 按住鼠标往上拖滚动条或选文字；切换对话也会停止。
+  // ---------- 跟随最新：最新内容（最底部的白点）一直贴在输入框上方 ----------
+  // 自动开始：① 发送消息、在交互面板里做了选择；② 打开 / 刷新对话时任务正在进行、画面停在最底部（这个对话里没往上翻过）。
+  // 手动开始：③ 点页面自带的“到底部”按钮；④ 任务进行中自己往下滚到露出最底部的白点。
+  // 跟随时：内容变长就往下补；工具组（Running commands → Ran commands、Thinking… 等）做完自动收起、内容变短时往上补，
+  //   不留空白、不把最新内容晾在屏幕中间；Arena 发送后把提问平滑滚到顶部（下面空出一大块）也会被拉回到底部。
+  // 取消：往上翻对话（手指下拉 / 滚轮上滑 / PageUp·↑·Home·Shift+空格 / 往上拖滚动条）。
+  //   在代码块、命令输出这类自带滚动、还能往上滚的小框里滑不算；点按按钮、在输入框里打字也不算。之后滚回最底部或再发消息就恢复。
   const follow = (() => {
     const LABEL = /scroll\s*(?:to\s*)?(?:the\s*)?(?:bottom|end|latest)|scroll\s*down|(?:jump|go|back|return|skip)\s*to\s*(?:the\s*)?(?:bottom|latest|present|end|recent)|(?:new|latest)\s*messages?|滚动到底|滚到底|回到底|到底部|跳到底|最新消息|回到最新|新消息/i;
     const NOT = 'aside,nav,header,form,[role="dialog"],[role="menu"],[role="listbox"],[role="tablist"],[data-sidebar],[contenteditable="true"]';
-    const STOP = /^(?:stop(?:\s+(?:generating|response|streaming))?|停止(?:生成|回答)?)$/i;
-    const PAD = 24; // 白点与输入框顶边保持的距离（Arena 自己的底部也留 24px）
-    let on = false, sc = null, findAt = 0, raf = 0, path = '', holding = false, pressed = false, downTop = 0, touchY = null, verify = 0;
-    let inAt = 0, inDir = 0, lastTop = -1, runAt = 0, runVal = false;
+    const PAD = 24, PULL = 6; // 白点与输入框顶边保持 24px（Arena 自己的底部也留 24px）；下面空出超过 6px 才往上补
+    let on = false, sc = null, findAt = 0, raf = 0, path = '', holding = false, pressed = false, pressAt = 0, downTop = 0, verify = 0;
+    let inAt = 0, inDir = 0, lastTop = -1, selfTop = -1;
+    let touching = false, touchAt = 0, touchY = null, touchMoved = false, touchBox = false, gestureUntil = 0;
+    let userUp = false, upPath = '', armedUntil = 0, armTimer = 0, told = false;
+    const running = () => turnBusy();
     const gap = e => e.scrollHeight - e.clientHeight - e.scrollTop;
     const scroller = () => { if (sc && sc.isConnected && sc !== document.scrollingElement) return sc; if (Date.now() - findAt < 400) return sc && sc.isConnected ? sc : null; findAt = Date.now(); return (sc = findScroller()); };
     const inScroller = t => { const s = scroller(); return !!(s && t && (t === s || s.contains(t))); };
@@ -4316,30 +4341,49 @@ const errReload = (() => {
       }
       return end === -Infinity ? null : { end, vis };
     }
-    const need = s => { const e = edges(s); return e ? e.end - (e.vis - PAD) : gap(s); }; // 还要往下滚多少（≤ 0：白点已在输入框上方）
+    const need = s => { const e = edges(s); return e ? e.end - (e.vis - PAD) : gap(s); }; // > 0：还要往下滚多少；< 0：下面空出多少
     const atEnd = s => { const e = edges(s); return e ? e.end <= e.vis + 2 : gap(s) <= 8; }; // 白点露出来了
-    // 任务进行中：页面状态是 submitted / streaming（Arena 自己的 isStreaming 也这样算），或者看得到“停止生成”按钮
-    function running() {
-      const now = Date.now(); if (now - runAt < 300) return runVal; runAt = now;
-      const st = chatStatus(); if (st === 'submitted' || st === 'streaming') return (runVal = true);
-      const m = mainEl(); return (runVal = !!m && [...m.querySelectorAll('button')].some(b => STOP.test(norm(b.getAttribute('aria-label') || b.textContent)) && visible(b)));
-    }
+    const isTouching = () => touching && Date.now() - touchAt < 5000; // 被点的元素消失时收不到 touchend：5 秒没动静就当松手
+    const paused = () => (holding && Date.now() - pressAt < 60000) || isTouching() || Date.now() < gestureUntil;
+    const setTop = (s, v) => { s.scrollTop = v; selfTop = s.scrollTop; };
+    const mine = s => Math.abs(s.scrollTop - selfTop) < 1.5; // 是跟随自己滚的
     function loop() {
       raf = 0; if (!on) return;
       if (location.pathname !== path) { stop(); return; }
       const s = scroller();
-      if (s && !holding) { const n = need(s), room = s.scrollHeight - s.clientHeight; if (n > 1 && s.scrollTop < room - 0.5) s.scrollTop = Math.min(room, s.scrollTop + n); }
+      if (s && !paused()) {
+        const n = need(s), room = s.scrollHeight - s.clientHeight;
+        if (n > 1 && s.scrollTop < room - 0.5) setTop(s, Math.min(room, s.scrollTop + n));
+        // 工具组收起 / 提问被顶到上方后下面空了一块：往上补，最新内容回到输入框上方（只在任务进行中，Arena 这时才留空白）
+        else if (n < -PULL && s.scrollTop > 0.5 && running()) setTop(s, Math.max(0, s.scrollTop + n));
+      }
       raf = requestAnimationFrame(loop);
     }
-    function begin() {
-      if (!sidNow()) return;
-      const was = on; on = true; path = location.pathname; if (!sc || !sc.isConnected) { findAt = 0; scroller(); }
+    function begin(quiet) {
+      if (!sidNow()) return false;
+      const was = on; on = true; path = location.pathname; userUp = false; armedUntil = 0; clearInterval(armTimer);
+      if (!sc || !sc.isConnected) { findAt = 0; scroller(); }
       if (pressed && sc) { holding = true; downTop = sc.scrollTop; } // 拖着滚动条到底时，松手前先不动
       if (!raf) raf = requestAnimationFrame(loop);
-      // 倒计时提示条在用时不弹（toast 收起时会连带取消倒计时）
-      if (!was && !timer && !errBar && (!box || box.hidden)) toast('已跟随最新消息 · 向上滚动取消', 1800);
+      // 倒计时 / 别的提示在用时不弹（toast 收起时会连带取消倒计时）；自动开始的只在本页第一次提示
+      if (!was && !(quiet && told) && !timer && !errBar && (!box || box.hidden)) { told = true; toast(quiet ? '已自动跟随最新消息 · 往上滑动即可取消' : '已跟随最新消息 · 向上滚动取消', 1800); }
+      return true;
     }
-    function stop() { on = false; holding = false; clearInterval(verify); if (raf) cancelAnimationFrame(raf); raf = 0; }
+    function stop(user) { on = false; holding = false; clearInterval(verify); if (raf) cancelAnimationFrame(raf); raf = 0; if (user) { userUp = true; upPath = location.pathname; } }
+    // 发送消息 / 交互面板选择后：马上跟随；新对话要等地址变成 /agent/<id>，20 秒内等到就开始
+    function arm() {
+      userUp = false; armedUntil = Date.now() + 20000;
+      if (begin(true)) return;
+      clearInterval(armTimer);
+      armTimer = setInterval(() => { if (on || Date.now() > armedUntil) { clearInterval(armTimer); return; } if (sidNow() && logEl()) begin(true); }, 250);
+    }
+    // 每秒看一次：任务进行中、画面在最底部、这个对话里没往上翻过 → 自动跟随
+    function watch() {
+      if (on) return;
+      if (upPath && upPath !== location.pathname) { userUp = false; upPath = ''; }
+      if (userUp || !sidNow() || paused()) return;
+      const s = scroller(); if (s && running() && atEnd(s)) begin(true);
+    }
     function onClick(e) {
       const b = e.target?.closest?.('button,[role="button"]'); if (!b || !sidNow() || b.closest(NOT) || b.hasAttribute('aria-haspopup') || b.hasAttribute('aria-expanded')) return;
       const label = norm([b.getAttribute('aria-label'), b.getAttribute('title'), b.textContent].filter(Boolean).join(' '));
@@ -4353,24 +4397,151 @@ const errReload = (() => {
       clearInterval(verify); const t0 = Date.now();
       verify = setInterval(() => { if (!s.isConnected || Date.now() - t0 > 2500) { clearInterval(verify); return; } const moved = s.scrollTop - top0; if (moved > 20 && (gap(s) <= near || moved >= g0 * 0.6)) { clearInterval(verify); sc = s; begin(); } }, 80);
     }
-    // 自己往下滚、露出了最底部的白点，并且任务正在进行 → 开始跟随
-    function auto(s) { if (on || !s || Date.now() - inAt > 900 || inDir < 0) return; if (atEnd(s) && running()) begin(); }
+    // 自己往下滚、露出了最底部的白点，并且任务正在进行 → 开始跟随（松手后的惯性滚动也算，2.5 秒内）
+    function auto(s) { if (on || !s || inDir < 0 || Date.now() - inAt > 2500) return; if (atEnd(s) && running()) begin(); }
     const note = d => { inAt = Date.now(); inDir = d; };
     const editing = t => !!t?.closest?.('[contenteditable="true"],textarea,input,select');
+    // 手指 / 滚轮下面有自带滚动、还能往上滚的小框（代码块、命令输出、思考过程等）：这次滑动滚的是小框，不是对话
+    function boxUp(t) {
+      const s = sc; if (!s) return false;
+      for (let e = t instanceof Element ? t : t?.parentElement; e && e !== s; e = e.parentElement) {
+        if (e.scrollHeight - e.clientHeight > 2 && e.scrollTop > 0.5) { const oy = getComputedStyle(e).overflowY; if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') return true; }
+      }
+      return false;
+    }
     function init() {
       addEventListener('click', onClick, true);
-      addEventListener('wheel', e => { if (!e.deltaY || !inScroller(e.target)) return; if (e.deltaY < 0) { note(-1); if (on) stop(); } else { note(1); auto(sc); } }, { capture: true, passive: true });
-      addEventListener('touchstart', e => { touchY = inScroller(e.target) ? (e.touches[0]?.clientY ?? null) : null; }, { capture: true, passive: true });
-      addEventListener('touchmove', e => { if (touchY === null) return; const dy = (e.touches[0]?.clientY ?? touchY) - touchY; if (dy > 12) { note(-1); if (on) stop(); } else if (dy < -12) { note(1); auto(sc); } }, { capture: true, passive: true });
-      addEventListener('keydown', e => { if (editing(e.target)) return; if (/^(PageUp|ArrowUp|Home)$/.test(e.key) || (e.key === ' ' && e.shiftKey)) { note(-1); if (on) stop(); } else if (/^(PageDown|ArrowDown|End)$/.test(e.key) || e.key === ' ') { note(1); setTimeout(() => auto(scroller()), 400); } }, true);
+      // 滚轮上滑 → 取消（滚的是还能往上滚的小框时不算）
+      addEventListener('wheel', e => {
+        if (!e.deltaY || !inScroller(e.target)) return;
+        if (e.deltaY < 0) { if (boxUp(e.target)) return; note(-1); if (on) stop(true); }
+        else { note(1); auto(sc); }
+      }, { capture: true, passive: true });
+      // 触摸：按住时先不贴底（不和手指抢）；手指往下拉 → 取消（按下时在还能往上滚的小框里不算）；松手后 1.2 秒惯性也先不贴底
+      addEventListener('touchstart', e => {
+        if (e.touches.length > 1 || !inScroller(e.target)) { touchY = null; return; }
+        touching = true; touchAt = Date.now(); touchMoved = false; touchY = e.touches[0]?.clientY ?? null; touchBox = boxUp(e.target);
+      }, { capture: true, passive: true });
+      addEventListener('touchmove', e => {
+        if (touchY === null) return; touchAt = Date.now();
+        const dy = (e.touches[0]?.clientY ?? touchY) - touchY; if (Math.abs(dy) > 12) touchMoved = true;
+        if (dy > 12) { if (touchBox) return; note(-1); if (on) stop(true); } else if (dy < -12) { note(1); auto(sc); }
+      }, { capture: true, passive: true });
+      const touchEnd = () => {
+        if (!touching) return; touching = false; touchY = null;
+        if (touchMoved) { gestureUntil = Date.now() + 1200; if (inDir > 0) inAt = Date.now(); }
+      };
+      addEventListener('touchend', touchEnd, { capture: true, passive: true });
+      addEventListener('touchcancel', touchEnd, { capture: true, passive: true });
+      addEventListener('keydown', e => { if (editing(e.target)) return; if (/^(PageUp|ArrowUp|Home)$/.test(e.key) || (e.key === ' ' && e.shiftKey)) { note(-1); if (on) stop(true); } else if (/^(PageDown|ArrowDown|End)$/.test(e.key) || e.key === ' ') { note(1); setTimeout(() => auto(scroller()), 400); } }, true);
       // 按住鼠标时（拖滚动条 / 选文字）先不贴底；松开时如果往上走了就取消，否则继续跟随
-      addEventListener('mousedown', e => { if (e.button !== 0 || !inScroller(e.target)) return; pressed = true; note(0); downTop = sc.scrollTop; if (on) holding = true; }, true);
-      addEventListener('mouseup', () => { if (!pressed) return; pressed = false; const s = sc; if (holding) { holding = false; if (on && s && s.scrollTop < downTop - 10) stop(); } else if (s && s.scrollTop > downTop + 10) { note(0); auto(s); } }, true);
+      addEventListener('mousedown', e => { if (e.button !== 0 || !inScroller(e.target)) return; pressed = true; pressAt = Date.now(); note(0); downTop = sc.scrollTop; if (on) holding = true; }, true);
+      addEventListener('mouseup', () => { if (!pressed) return; pressed = false; const s = sc; if (holding) { holding = false; if (on && s && s.scrollTop < downTop - 10 && !mine(s)) stop(true); } else if (s && s.scrollTop > downTop + 10) { note(0); auto(s); } }, true);
       // 滚轮惯性、拖滚动条、按键滚动：滚动过程中一露出白点就开始跟随
-      addEventListener('scroll', e => { const s = sc; if (on || !s || e.target !== s) return; const down = lastTop >= 0 && s.scrollTop > lastTop + 0.5; lastTop = s.scrollTop; if (inDir > 0 || (inDir === 0 && down)) auto(s); }, { capture: true, passive: true });
+      addEventListener('scroll', e => {
+        const s = sc; if (!s || e.target !== s) return;
+        if (on) { lastTop = s.scrollTop; return; }
+        const down = lastTop >= 0 && s.scrollTop > lastTop + 0.5; lastTop = s.scrollTop;
+        if (inDir > 0 || (inDir === 0 && down)) auto(s);
+      }, { capture: true, passive: true });
     }
-    return { init, begin, stop, get on() { return on; } };
+    return { init, begin, stop, arm, watch, get on() { return on; } };
   })();
+
+  // ---------- 收尾提示：回复写完了，页面还显示“进行中”（白点一直转、只有停止按钮）----------
+  // Arena 要等服务器发来“本轮结束”才退出进行中；回复写完后服务器还要收尾（保存这一轮；对话太长时压缩上下文），
+  // 可能要一两分钟。这时刷新，这一轮可能暂时看不见（并没有丢，收尾完成后会出现）——所以提示不用刷新、不用重发。
+  const wrap = (() => {
+    const BUSY_TOOL = /^(input-streaming|input-available|approval-requested|approval-responded)$/;
+    const TAIL = '不用刷新，也不用重发——这时刷新，这一轮可能暂时看不见（不是丢了，收尾完成后会出现）。';
+    let sid = null, sendAt = 0, finishAt = 0, sig = '', sigAt = 0, mode = '', modeAt = 0, shown = false, dismissed = '';
+    const ours = () => !!box && !box.hidden && box.dataset.kind === 'wrap';
+    function reset(s) { if (ours()) hide(); sid = s; sendAt = 0; finishAt = 0; sig = ''; sigAt = 0; mode = ''; modeAt = 0; shown = false; dismissed = ''; }
+    // 最后一条消息：写完的正文结尾、没有还在跑的工具 = 回复写完了；data-compaction（phase=start）= 正在压缩上下文
+    function lastInfo() {
+      const v = chatValue(), msgs = v?.messages; if (!Array.isArray(msgs) || !msgs.length) return null;
+      const m = msgs[msgs.length - 1] || {}, parts = Array.isArray(m.parts) ? m.parts : [], p = parts[parts.length - 1] || {};
+      let len = 0; for (const x of parts) if (x && typeof x.text === 'string') len += x.text.length;
+      const tool = parts.some(x => x && typeof x.type === 'string' && (x.type.startsWith('tool-') || x.type === 'dynamic-tool') && BUSY_TOOL.test(String(x.state || '')));
+      const compact = parts.some(x => x && ((x.type === 'data-compaction' && x.data?.phase === 'start' && !x.data?.summary) || (x.type === 'tool-compact' && x.state && x.state !== 'output-available' && x.state !== 'output-error')));
+      const done = m.role === 'assistant' && p.type === 'text' && !!String(p.text || '').trim() && p.state !== 'streaming' && !tool;
+      return { sig: msgs.length + ':' + parts.length + ':' + len + ':' + (p.type || '') + ':' + (p.state || ''), done, compact };
+    }
+    const mmss = ms => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? s + ' 秒' : Math.floor(s / 60) + ' 分 ' + String(s % 60).padStart(2, '0') + ' 秒'; };
+    function text(now) {
+      const t = mmss(now - modeAt);
+      if (mode === 'compact') return 'Arena 正在压缩对话上下文（对话太长时自动整理，已 ' + t + '）。完成前白点会一直转、只能停止；' + TAIL;
+      if (mode === 'wrap') return '回复已写完，Arena 还在收尾（已 ' + t + '）。收尾完成前白点会一直转、只能停止；' + TAIL;
+      return '已经 ' + t + '没有新内容，Arena 仍显示进行中（可能在想下一步，也可能在收尾）。' + TAIL;
+    }
+    function check() {
+      const s = sidNow(); if (s !== sid) reset(s); if (!s) return;
+      const now = Date.now();
+      if (!turnBusy()) {
+        if (shown && ours()) toast('Arena 已收尾，可以继续发送了', 2600);
+        shown = false; mode = ''; sig = ''; sigAt = 0; return;
+      }
+      const info = lastInfo(), dom = !!document.querySelector('main [role="status"][aria-label="Compacting conversation"]');
+      const key = info ? info.sig : '-'; if (key !== sig) { sig = key; sigAt = now; }
+      let m = '';
+      if (dom || info?.compact) m = 'compact';
+      else if (info?.done && finishAt && finishAt >= sendAt && now - finishAt > 6000 && now - sigAt > 6000) m = 'wrap'; // 流里已经出现 finish
+      else if (info?.done && now - sigAt > 60000) m = 'idle';
+      if (m !== mode) { mode = m; modeAt = m === 'wrap' ? finishAt : m === 'idle' ? sigAt : now; }
+      if (!m || dismissed === m + ':' + sendAt) { if (ours()) hide(); shown = false; return; }
+      if (m === 'compact' && now - modeAt < 4000) return;
+      if (ours()) { const t = box.querySelector('.t'); if (t) t.textContent = text(now); return; } // 只改文字，不重建按钮（免得点不中）
+      if (timer || errBar || (box && !box.hidden)) return; // 倒计时 / 别的提示在用
+      show(text(now), [['知道了', () => { dismissed = mode + ':' + sendAt; shown = false; hide(); }]], false, 'wrap'); shown = true;
+    }
+    function sent(s) { if (s !== sid) reset(s); sendAt = Date.now(); finishAt = 0; dismissed = ''; }
+    function finish(s) { const cur = sidNow(); if (!cur || (s && s !== cur && /^[0-9a-f-]{36}$/i.test(s))) return; if (cur !== sid) reset(cur); finishAt = Date.now(); }
+    return { check, sent, finish };
+  })();
+
+  // ---------- 刷新后最新一轮“不见了”：本机记下每个对话最近一次发送（消息 id、时间、开头几个字、服务器响应）----------
+  // 刷新后页面里找不到这条消息：说明服务器已收到、这一轮还没收尾，不用重发；看到这一轮结束后仍没显示就自动刷新一次。
+  const SEND_KEY = 'amp.native.lastSend.v1', PEND_KEY = 'amp.native.pendReload';
+  const sends = () => { try { const v = JSON.parse(localStorage.getItem(SEND_KEY) || '{}'); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch { return {}; } };
+  const saveSends = all => { try { localStorage.setItem(SEND_KEY, JSON.stringify(all)); } catch {} };
+  function noteSend(sid, info) {
+    if (!sid || !/^[\w-]{8,128}$/.test(sid)) return;
+    try { wrap.sent(sid); } catch {}
+    if (!info || typeof info.mid !== 'string' || !/^[\w-]{4,128}$/.test(info.mid)) return;
+    const all = sends(), now = Date.now();
+    all[sid] = { mid: info.mid, at: +info.at || now, text: norm(info.text).slice(0, 40), st: +info.st || 0 };
+    for (const k of Object.keys(all)) if (!all[k] || !(now - all[k].at < 86400e3)) delete all[k];
+    Object.keys(all).sort((a, b) => all[b].at - all[a].at).slice(12).forEach(k => delete all[k]);
+    saveSends(all);
+  }
+  function noteSendStatus(sid, status) { const all = sends(), e = all[sid]; if (!e || e.st || !(Date.now() - e.at < 120e3)) return; e.st = +status || 0; saveSends(all); }
+  function pendingCheck() {
+    const sid = sidNow(); if (!sid) return;
+    const e = sends()[sid]; if (!e || !e.mid || !(Date.now() - e.at < 45 * 60e3)) return;
+    const t0 = Date.now(); let seenAt = 0, wasBusy = false, idleAt = 0, closed = false;
+    const has = () => { try { return !!document.querySelector('[data-chat-message-id="' + CSS.escape(e.mid) + '"]'); } catch { return false; } };
+    const ago = () => { const m = Math.floor((Date.now() - e.at) / 60e3); return m < 1 ? '刚才' : ' ' + m + ' 分钟前'; };
+    const iv = setInterval(() => {
+      const ours = !!box && !box.hidden && box.dataset.kind === 'pending';
+      if (sidNow() !== sid || Date.now() - t0 > 20 * 60e3) { clearInterval(iv); if (ours) hide(); return; }
+      const log = logEl(); if (!log) return;
+      if (!seenAt) { if (log.querySelector('[data-chat-message-id]') || Date.now() - t0 > 12000) seenAt = Date.now(); return; }
+      if (has()) { clearInterval(iv); if (ours) { hide(); toast('最新一轮已经显示出来了', 2200); } return; }
+      if (Date.now() - seenAt < 4000) return; // 给页面一点时间恢复这一轮
+      if (turnBusy()) { wasBusy = true; idleAt = 0; } else if (wasBusy && !idleAt) idleAt = Date.now();
+      if (wasBusy && idleAt && Date.now() - idleAt > 5000) { // 看到这一轮结束了，页面还是没显示 → 刷新一次（每条消息最多一次）
+        clearInterval(iv);
+        if (read(PEND_KEY, '') !== e.mid && !timer && !busy) { write(PEND_KEY, e.mid); autoReload(sid, '上一轮已收尾，{n} 秒后刷新显示最新内容'); }
+        else if (ours) hide();
+        return;
+      }
+      if (closed || timer || errBar || (box && !box.hidden && !ours)) return;
+      const bad = e.st >= 400, got = e.st >= 200 && e.st < 300;
+      const msg = '你' + ago() + '发送的' + (e.text ? '“' + e.text + '”' : '消息') + (bad ? '，服务器返回了 ' + e.st + '，可能没发出去；过一会儿还不出现再重新发送。' : (got ? '服务器已收到，' : '，') + '这一轮还在进行或收尾，页面暂时没显示——不用重发，完成后会出现。');
+      if (ours) { const t = box.querySelector('.t'); if (t) t.textContent = msg; }
+      else show(msg, [['刷新', () => reloadNow(sid, false)], ['知道了', () => { closed = true; hide(); }]], false, 'pending');
+    }, 1000);
+  }
   function afterLoad() {
     const sid = sidNow(), j = read(JUST_KEY, null);
     try { sessionStorage.removeItem(JUST_KEY); } catch {}
@@ -4378,10 +4549,16 @@ const errReload = (() => {
     let nav = ''; try { nav = performance.getEntriesByType('navigation')[0]?.type || ''; } catch {}
     const ours = !!j && j.sid === sid && Date.now() - j.at < 60e3;
     if (nav === 'reload' || ours) bottomOnce(ours && j.auto ? '已自动刷新，回到最新消息' : '');
+    try { pendingCheck(); } catch {}
   }
-  function start() { afterLoad(); try { follow.init(); } catch {} setInterval(() => { try { tick(); } catch {} }, 2000); addEventListener('resize', () => { if (box && !box.hidden) place(); }); }
+  function start() {
+    afterLoad(); try { follow.init(); } catch {}
+    setInterval(() => { try { tick(); } catch {} }, 2000);
+    setInterval(() => { try { follow.watch(); } catch {} try { wrap.check(); } catch {} }, 1000);
+    addEventListener('resize', () => { if (box && !box.hidden) place(); });
+  }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
-  return { tick, findError, bottomOnce, follow, reloadNow, draft, gachaBusy, toast, sidNow };
+  return { tick, findError, bottomOnce, follow, reloadNow, draft, gachaBusy, toast, sidNow, turnBusy, noteSend, noteSendStatus, noteFinish: s => wrap.finish(s) };
 })();
 
 // ====================================================================================
@@ -5398,7 +5575,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.65', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.66', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -6017,9 +6194,11 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     if(!session){if(/^\/(api|ai-proxy|agent)\//.test(u.pathname)&&!/\/(events|spans)\b|telemetry|analytics|metrics|logs?\b|ping|heartbeat|presence/i.test(u.pathname))notePost(u.pathname,kind,sid);return;}
     notePost(u.pathname,kind,sid);
     const continuation=kind&&kind!=='message'||/regenerate/i.test(j.trigger||j.payload?.trigger||'');
-    if(continuation){if(sid&&!/^(stop|cancel|abort|interrupt)/i.test(kind||'')){const l=contSeen.get(sid)||[];l.push({at:Date.now(),kind:/regenerate/i.test(j.trigger||j.payload?.trigger||'')?'regenerate':kind||'continue'});contSeen.delete(sid);contSeen.set(sid,l.slice(-40));while(contSeen.size>20)contSeen.delete(contSeen.keys().next().value);}for(const r of runs.values())if(r.sid===sid){r.tries=0;r.finalReads=0;r.phase='工作流继续';later(r);}return;}
+    if(continuation){if(!/^(stop|cancel|abort|interrupt)/i.test(kind||'')){try{errReload.follow.arm();errReload.noteSend(sidOf(location.href)||sid,null);}catch{}}if(sid&&!/^(stop|cancel|abort|interrupt)/i.test(kind||'')){const l=contSeen.get(sid)||[];l.push({at:Date.now(),kind:/regenerate/i.test(j.trigger||j.payload?.trigger||'')?'regenerate':kind||'continue'});contSeen.delete(sid);contSeen.set(sid,l.slice(-40));while(contSeen.size>20)contSeen.delete(contSeen.keys().next().value);}for(const r of runs.values())if(r.sid===sid){r.tries=0;r.finalReads=0;r.phase='工作流继续';later(r);}return;}
     const preview=promptPreview(j), entry={revision:++revision,at:Date.now(),configs:configs(j,'页面请求','$'),prompt:preview,balance:balance&&Date.now()-balance.at<180000?{remaining:balance.remaining,at:balance.at}:null};
-    const mid=j.message?.id;if(typeof mid==='string'&&/^[\w-]{8,64}$/.test(mid)){try{onSent?.(mid,entry.at);}catch{}}
+    const pm=j.payload?.message,mid=j.message?.id??(pm&&typeof pm==='object'&&pm.role!=='assistant'?pm.id:undefined);if(typeof mid==='string'&&/^[\w-]{8,64}$/.test(mid)){try{onSent?.(mid,entry.at);}catch{}}
+    // 发送后自动跟随最新；记下这条消息（刷新后若页面里找不到，提示“服务器已收到、不用重发”）
+    entry.mid=typeof mid==='string'?mid:null;try{errReload.follow.arm();const ps=sidOf(location.href)||sid;if(ps)errReload.noteSend(ps,entry.mid?{mid:entry.mid,text:preview,at:entry.at}:null);}catch{}
     if(sid){submissions.set(sid,entry);void costBaseline(sid,entry);}else pendingNew=entry;
     // 记下提交前已见过的标记数与 span：后端若不写新的轮次标记（如撤回后重发），仍能靠“新出现的 span”识别本轮
     for(const r of runs.values())if(r.sid===sid){clearTimeout(r.timer);r.abort?.abort();if(r.data)save(r.data);r.revision=entry.revision;r.requestConfigs=entry.configs;r.prompt=preview;r.submittedAt=entry.at;r.baseline={markers:r.markers,spans:new Set(r.seen),since:r.newest||null};r.tries=0;r.finalReads=0;r.cache.clear();r.missing=new Map();r.rawSpans=new Map();r.rawTrace=[];r.credits=null;if(r.probe)delete r.probe.cost;r.phase='等待新一轮';later(r,1800);}
@@ -6029,7 +6208,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     frames++;const sid=ctx.sid||sidOf(location.href);inspect(frame,t=>accept(t,ctx.sid),(type,node)=>{
       // 助手消息的 id / nodeId 出现在 start 与 message-metadata 帧里；费用接口按 nodeId（缺省为消息 id）计
       if(node&&typeof node==='object'){noteTurnId(sid,node.messageId);const meta=node.messageMetadata;if(meta&&typeof meta==='object'){noteTurnId(sid,meta.nodeId);noteTurnId(sid,meta.messageId);}}
-      if(type==='finish'){for(const r of runs.values())if(r.sid===sid)r.huntFinishedAt=Date.now();log('detail','读流','检测到流结束（finish）',null,ctx);for(const r of runs.values())if(r.sid===sid&&r.finalReads<2)later(r,1200,true);clearTimeout(balanceTimer);balanceTimer=setTimeout(()=>{if(Date.now()-(balance?.at||0)>8000)void refreshBalance(true);},6000);scheduleCost(sid,COST_DELAYS[0],true);}
+      if(type==='finish'){try{errReload.noteFinish(sid);}catch{}for(const r of runs.values())if(r.sid===sid)r.huntFinishedAt=Date.now();log('detail','读流','检测到流结束（finish）',null,ctx);for(const r of runs.values())if(r.sid===sid&&r.finalReads<2)later(r,1200,true);clearTimeout(balanceTimer);balanceTimer=setTimeout(()=>{if(Date.now()-(balance?.at||0)>8000)void refreshBalance(true);},6000);scheduleCost(sid,COST_DELAYS[0],true);}
       else if(type==='error'||type==='abort'){log('detail','读流','检测到流事件 '+type,null,ctx);scheduleCost(sid,COST_DELAYS[1],true);}
     });paint();
   }
@@ -6325,9 +6504,10 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       if(!enabled||stopped)return res;
       let path='';try{path=new URL(res.url||url,location.href).pathname;}catch{}
       if(method==='POST'&&/(\/stream\/create-chat|\/in\/append)$/.test(path))gacha.notePost(path,res.status);
+      if(method==='POST'&&/\/in\/append$/.test(path)){try{errReload.noteSendStatus(sidOf(location.href)||streamSid(res.url||url),res.status);}catch{}}
       if(method==='POST'&&/\/stream\/create-chat$/.test(path)){
         if(res.status===429)res.clone().text().then(t=>noteQuota('chat',res.headers,res.status,t)).catch(()=>noteQuota('chat',res.headers,res.status));
-        else{noteQuota('chat',res.headers,res.status);if(res.ok&&res.clone){const pend=pendingNew;try{res.clone().json().then(j=>{gacha.noteChatId(j?.id);if(typeof j?.id==='string'&&/^[\w-]{8,128}$/.test(j.id))costNew(j.id,pend?.at,pend?.balance);}).catch(()=>{});}catch{}}}
+        else{noteQuota('chat',res.headers,res.status);if(res.ok&&res.clone){const pend=pendingNew;try{res.clone().json().then(j=>{gacha.noteChatId(j?.id);try{if(typeof j?.id==='string'&&pend?.mid)errReload.noteSend(j.id,{mid:pend.mid,text:pend.prompt,at:pend.at,st:res.status});}catch{}if(typeof j?.id==='string'&&/^[\w-]{8,128}$/.test(j.id))costNew(j.id,pend?.at,pend?.balance);}).catch(()=>{});}catch{}}}
       }
       else if(method==='POST'&&/\/in\/append$/.test(path)){if(res.status===429)res.clone().text().then(t=>noteQuota('append',res.headers,res.status,t)).catch(()=>noteQuota('append',res.headers,res.status));else noteQuota('append',res.headers,res.status);}
       if(res.status===200&&method==='GET'&&/\/api\/billing\/balance$/.test(path)&&res.clone){try{res.clone().json().then(j=>noteBalance(j,'页面请求')).catch(()=>{});}catch{}}
@@ -6685,8 +6865,8 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     // 手机顶栏：左上角抽屉按钮旁的“强制刷新页面”。输入框有未发送内容 / 待发附件 / 抽卡进行中时，3 秒内连点两次才刷新
     const reloadBtn=button(reloadRoot,'','强制刷新页面',()=>reloadTap(),'reload-toggle');icon('reload',reloadBtn);let reloadArm=0,reloadArmTimer=0;
     function reloadTap(){
-      let risky=false;try{risky=errReload.draft()||errReload.gachaBusy()||[...document.querySelectorAll('main button[aria-label^="Remove "]')].some(b=>!b.closest('[role="log"]')&&b.getClientRects().length>0);}catch{}
-      if(risky&&Date.now()>reloadArm){reloadArm=Date.now()+3500;reloadBtn.setAttribute('data-arm','');clearTimeout(reloadArmTimer);reloadArmTimer=setTimeout(()=>{reloadArm=0;reloadBtn.removeAttribute('data-arm');},3500);try{errReload.toast('输入框有未发送的内容（或抽卡进行中），刷新会丢失：3 秒内再点一次确认刷新',3500);}catch{}return;}
+      let risky=false,turn=false;try{risky=errReload.draft()||errReload.gachaBusy()||[...document.querySelectorAll('main button[aria-label^="Remove "]')].some(b=>!b.closest('[role="log"]')&&b.getClientRects().length>0);turn=!risky&&!!errReload.sidNow()&&errReload.turnBusy(true);}catch{}
+      if((risky||turn)&&Date.now()>reloadArm){reloadArm=Date.now()+3500;reloadBtn.setAttribute('data-arm','');clearTimeout(reloadArmTimer);reloadArmTimer=setTimeout(()=>{reloadArm=0;reloadBtn.removeAttribute('data-arm');},3500);try{errReload.toast(turn?'这一轮还在进行或收尾：现在刷新，它可能暂时看不见（不是丢了，结束后会出现）。3 秒内再点一次确认刷新':'输入框有未发送的内容（或抽卡进行中），刷新会丢失：3 秒内再点一次确认刷新',3500);}catch{}return;}
       clearTimeout(reloadArmTimer);reloadBtn.removeAttribute('data-arm');reloadBtn.setAttribute('data-spin','');
       try{errReload.reloadNow(errReload.sidNow(),false);}catch{location.reload();}
     }
