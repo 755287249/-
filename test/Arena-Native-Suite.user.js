@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.74
+// @version      1.11.75
 // @description  【测试版】Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.74' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.75' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -5654,7 +5654,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.74', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.75', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -6071,7 +6071,7 @@ const gachaUi = (() => {
   const load=(key,fallback)=>{try{return JSON.parse(localStorage.getItem(key))??fallback;}catch{return fallback;}};
   const store=(key,value)=>{try{return ampStore.set(key,JSON.stringify(value));}catch{return false;}};
   const clamp=(v,min,max,fallback)=>Number.isFinite(v)?Math.min(max,Math.max(min,Math.round(v))):fallback;
-  const stored=load(KEY+'.prefs',{}), prefs={width:clamp(stored.width,280,720,340),sidebarWidth:clamp(stored.sidebarWidth,200,560,null),cloudSync:stored.cloudSync===true,cloudFormat:stored.cloudFormat==='name'?'name':'prefix',rawBudget:BUDGET_OPTIONS.includes(stored.rawBudget)?stored.rawBudget:64,showSent:stored.showSent!==false,showQuota:stored.showQuota!==false,showCredits:stored.showCredits!==false,showBar:stored.showBar!==false,barCollapsed:stored.barCollapsed===true,barOffset:stored.barOffset!==false,showSeq:stored.showSeq===true,hideDocIcon:stored.hideDocIcon!==false,stopOnResample:stored.stopOnResample!==false,showQuotaReset:stored.showQuotaReset===true,spendUnit:stored.spendUnit==='usd'?'usd':'token',sheetH:typeof stored.sheetH==='number'&&stored.sheetH>=0.05&&stored.sheetH<=1?stored.sheetH:0.5,sheetFull:stored.sheetFull===true,pullRefresh:stored.pullRefresh!==false,glassDrawer:stored.glassDrawer!==false,gemLayout:stored.gemLayout!==false,monOn:stored.monOn!==false,monAlert:stored.monAlert!==false,monStop:stored.monStop===true,wsEdge:stored.wsEdge!==false,wsEdgeY:typeof stored.wsEdgeY==='number'&&stored.wsEdgeY>=0.12&&stored.wsEdgeY<=0.88?stored.wsEdgeY:0.6,kbResize:stored.kbResize!==false};
+  const stored=load(KEY+'.prefs',{}), prefs={width:clamp(stored.width,280,720,340),sidebarWidth:clamp(stored.sidebarWidth,200,560,null),cloudSync:stored.cloudSync===true,cloudFormat:stored.cloudFormat==='name'?'name':'prefix',rawBudget:BUDGET_OPTIONS.includes(stored.rawBudget)?stored.rawBudget:64,showSent:stored.showSent!==false,showQuota:stored.showQuota!==false,showCredits:stored.showCredits!==false,showBar:stored.showBar!==false,barCollapsed:stored.barCollapsed===true,barOffset:stored.barOffset!==false,showSeq:stored.showSeq===true,hideDocIcon:stored.hideDocIcon!==false,stopOnResample:stored.stopOnResample!==false,showQuotaReset:stored.showQuotaReset===true,spendUnit:stored.spendUnit==='usd'?'usd':'token',sheetH:typeof stored.sheetH==='number'&&stored.sheetH>=0.05&&stored.sheetH<=1?stored.sheetH:0.5,sheetFull:stored.sheetFull===true,pullRefresh:stored.pullRefresh!==false,glassDrawer:stored.glassDrawer!==false,gemLayout:stored.gemLayout!==false,monOn:stored.monOn!==false,monAlert:stored.monAlert!==false,monStop:stored.monStop===true,wsRight:stored.wsRight!==false,wsEdge:stored.wsEdge!==false,wsEdgeY:typeof stored.wsEdgeY==='number'&&stored.wsEdgeY>=0.12&&stored.wsEdgeY<=0.88?stored.wsEdgeY:0.6,kbResize:stored.kbResize!==false};
   // 手机/窄屏：底部只留一条余额栏，点击余额栏才展开模型信息
   const miniBar=()=>innerWidth<768||!!document.getElementById('amp-lite-dock')?.hasAttribute('data-compact');
   const savePrefs=()=>store(KEY+'.prefs',prefs);
@@ -7316,6 +7316,8 @@ details.mc-card .section.credits{margin-top:12px}
     // 手机端 Gemini 风格布局（设置里可关；只在 /agent 页面、屏宽 < 768 时生效，颜色沿用 Arena 原配色）：
     // 顶栏 ≡ · 模型名（与左侧卡片一致）…… 工作区 · 深浅色 · 头像（绿色圆环 = 美金余额）；输入框圆角长条：+ · 输入 · 厂商图标 · 发送；
     // 模式切换（Battle / Agent / Side by Side / Direct）从输入框挪到左侧抽屉 logo 旁。
+    // v1.11.75 工作区面板选择器：Arena 的 Radix Sheet 自带 title="Workspace" 属性 → 纯 CSS 第一帧就能接管；再加上脚本打过标记的（vaul 抽屉 / 其他方式认出的 Sheet）
+    const WSR=':is(html[data-amp-wsr] [role=dialog]:is([title="Workspace"],[title="工作区"]),[data-vaul-drawer][data-amp-wsright],[role=dialog][data-amp-wsright])';
     const gemOn=()=>!!prefs.gemLayout&&innerWidth<768&&/^\/agent(?:\/|$)/.test(location.pathname);
     const gemStyle=el('style','','@media (max-width:767px){'
       +'html[data-amp-gem] main div.grid:has(> div > button[aria-label="Open sidebar"]){display:flex!important;align-items:center;gap:4px}html[data-amp-gem] main div.grid:has(> div > button[aria-label="Open sidebar"]) > div:first-child{flex:none}html[data-amp-gem] main div.grid:has(> div > button[aria-label="Open sidebar"]) > div:nth-child(2){flex:1 1 auto;min-width:0;justify-content:flex-start!important}html[data-amp-gem] main div.grid:has(> div > button[aria-label="Open sidebar"]) > div:last-child{flex:none;gap:6px}html[data-amp-gem] main div.grid:has(> div > button[aria-label="Open sidebar"]) > div:last-child > *{order:1}'
@@ -7338,13 +7340,14 @@ details.mc-card .section.credits{margin-top:12px}
       +'html[data-amp-gem] [data-amp-native-gacha="1"][data-running="true"][data-landed] [data-amp-icon]{visibility:hidden}html[data-amp-gem] [data-amp-native-gacha="1"][data-running="true"][data-landed][data-empty]::after{opacity:0}html[data-amp-gem] [data-amp-native-gacha="1"][data-running="true"][data-landed] [data-amp-land]{display:flex;position:absolute;inset:0;align-items:center;justify-content:center;font:700 13px/1 system-ui,sans-serif;animation:ampLand .45s cubic-bezier(.3,1.6,.5,1) both}html[data-amp-gem] [data-amp-native-gacha="1"] [data-amp-land] svg{width:19px!important;height:19px!important}@keyframes ampLand{0%{transform:scale(.35) rotate(-140deg);opacity:0}100%{transform:none;opacity:1}}'
       +'html[data-amp-gem] [data-amp-native-gacha="1"][data-landed="hit"] [data-amp-ring]{background:hsl(var(--interactive-positive,125 49% 43%))}html[data-amp-gem] [data-amp-native-gacha="1"][data-hit]{animation:ampHit 1.2s ease-out both}@keyframes ampHit{0%{box-shadow:0 0 0 0 hsl(var(--interactive-positive,125 49% 43%)/.55)}100%{box-shadow:0 0 0 14px hsl(var(--interactive-positive,125 49% 43%)/0)}}'
       +'@media (prefers-reduced-motion:reduce){html[data-amp-gem] [data-amp-native-gacha="1"] :is([data-amp-icon],[data-amp-land],[data-amp-ring]),html[data-amp-gem] [data-amp-native-gacha="1"] [data-amp-ring]::before,html[data-amp-gem] [data-amp-native-gacha="1"]::after,html[data-amp-gem] [data-amp-native-gacha="1"][data-hit]{animation:none!important;transition:none!important}}'
-      // v1.11.72 工作区从右侧滑出：接管 Arena 的 vaul 底部抽屉，只改位置和进出动画（颜色、内容都是 Arena 原样）
-      +'html[data-amp-gem] [data-vaul-drawer][data-amp-wsright]{position:fixed!important;inset:var(--app-banner-height,0px) 0 0 auto!important;width:var(--amp-ws-w,min(92vw,480px))!important;max-width:none!important;height:auto!important;max-height:none!important;min-height:0!important;margin:0!important;border-radius:20px 0 0 20px!important;transform:none!important;translate:var(--amp-ws-x,0px) 0;transition:translate .3s cubic-bezier(.32,.72,0,1)!important;animation-name:ampWsIn!important;animation-duration:.36s!important;animation-timing-function:cubic-bezier(.32,.72,0,1)!important;animation-fill-mode:none!important;box-shadow:-12px 0 36px rgb(0 0 0/.2)!important;overflow:hidden!important}'
-      +'html[data-amp-gem] [data-vaul-drawer][data-amp-wsright][data-state=closed]{animation-name:ampWsOut!important;animation-duration:.28s!important;animation-fill-mode:forwards!important}html[data-amp-gem] [data-vaul-drawer][data-amp-wsright][data-amp-ws-drag]{transition:none!important;-webkit-user-select:none!important;user-select:none!important}html[data-amp-gem] [data-vaul-drawer][data-amp-wsright]::after{display:none!important}html[data-amp-gem] [data-vaul-drawer][data-amp-wsright]>div.relative.flex.w-full.justify-center:first-child{display:none!important}'
-      +'html[data-amp-gem] [data-vaul-overlay][data-amp-wsright][data-state=open]{animation-name:ampWsFadeIn!important;animation-duration:.36s!important}html[data-amp-gem] [data-vaul-overlay][data-amp-wsright][data-state=closed]{animation-name:ampWsFadeOut!important;animation-duration:.28s!important;animation-fill-mode:forwards!important}'
-      +'[data-amp-wsgrip]{position:absolute;left:0;top:0;bottom:0;width:18px;z-index:60;touch-action:none;cursor:grab;-webkit-user-select:none;user-select:none}[data-amp-wsgrip]::after{content:"";position:absolute;left:6px;top:50%;width:5px;height:44px;margin-top:-22px;border-radius:3px;background:hsl(var(--surface-tertiary,33 31% 94%))}html:not([data-amp-gem]) [data-amp-wsgrip]{display:none}'
+      // v1.11.72 工作区从右侧滑出：接管 Arena 的底部抽屉，只改位置和进出动画（颜色、内容都是 Arena 原样）
+      // v1.11.75 Arena 手机端工作区其实是 Radix Sheet（不是 vaul）：WSR 同时覆盖两种；不再要求 Gemini 布局
+      +WSR+'{position:fixed!important;inset:var(--app-banner-height,0px) 0 0 auto!important;width:var(--amp-ws-w,min(92vw,480px))!important;max-width:none!important;height:auto!important;max-height:none!important;min-height:0!important;margin:0!important;border-radius:20px 0 0 20px!important;transform:none!important;translate:var(--amp-ws-x,0px) 0;transition:translate .3s cubic-bezier(.32,.72,0,1)!important;animation-name:ampWsIn!important;animation-duration:.36s!important;animation-timing-function:cubic-bezier(.32,.72,0,1)!important;animation-fill-mode:none!important;box-shadow:-12px 0 36px rgb(0 0 0/.2)!important;overflow:hidden!important}'
+      +WSR+'[data-state=closed]{animation-name:ampWsOut!important;animation-duration:.28s!important;animation-fill-mode:forwards!important}'+WSR+'[data-amp-ws-drag]{transition:none!important;-webkit-user-select:none!important;user-select:none!important}'+WSR+'::after{display:none!important}'+WSR+'>div.relative.flex.w-full.justify-center:first-child,'+WSR+'>div.cursor-grab.touch-none{display:none!important}'
+      +':is([data-vaul-overlay],div[data-state]:not([role]))[data-amp-wsright][data-state=open]{animation-name:ampWsFadeIn!important;animation-duration:.36s!important}:is([data-vaul-overlay],div[data-state]:not([role]))[data-amp-wsright][data-state=closed]{animation-name:ampWsFadeOut!important;animation-duration:.28s!important;animation-fill-mode:forwards!important}'
+      +'[data-amp-wsgrip]{position:absolute;left:0;top:0;bottom:0;width:18px;z-index:60;touch-action:none;cursor:grab;-webkit-user-select:none;user-select:none}[data-amp-wsgrip]::after{content:"";position:absolute;left:6px;top:50%;width:5px;height:44px;margin-top:-22px;border-radius:3px;background:hsl(var(--surface-tertiary,33 31% 94%))}'
       +'@keyframes ampWsIn{from{translate:var(--amp-ws-from,100%) 0}to{translate:0 0}}@keyframes ampWsOut{from{translate:var(--amp-ws-x,0px) 0}to{translate:100% 0}}@keyframes ampWsFadeIn{from{opacity:var(--amp-ws-ov0,0)}to{opacity:1}}@keyframes ampWsFadeOut{from{opacity:var(--amp-ws-ov1,1)}to{opacity:0}}'
-      +'@media (prefers-reduced-motion:reduce){html[data-amp-gem] :is([data-vaul-drawer],[data-vaul-overlay])[data-amp-wsright]{animation-duration:.01s!important;transition:none!important}}'
+      +'@media (prefers-reduced-motion:reduce){'+WSR+',[data-amp-wsright]{animation-duration:.01s!important;transition:none!important}}'
       +'html[data-amp-gem] main div.flex.items-center.justify-end:has(> :is(button[aria-label="Open workspace"],button[aria-label="打开工作区"])):not(:has(> #amp-avatar))::after{content:"";order:3;flex:none;width:36px;height:36px;border-radius:999px;box-shadow:inset 0 0 0 1.5px color-mix(in srgb,currentColor 16%,transparent)}' // v1.11.73 头像位先占好（水合后头像放进同一个位置，顶部不再跳）
       +'html[data-amp-gem]:is([data-amp-wsedge],[data-amp-wspre]) main :is(button[aria-label="Open workspace"],button[aria-label="Toggle workspace sidebar"],button[aria-label="打开工作区"],button[aria-label="切换工作区侧边栏"]){position:absolute!important;width:1px!important;height:1px!important;min-width:0!important;min-height:0!important;padding:0!important;margin:0!important;border:0!important;opacity:0!important;pointer-events:none!important;overflow:hidden!important}'
       +'html[data-amp-gem] main button[aria-label="Add files and connections"]{position:relative}html[data-amp-gem] main button[aria-label="Add files and connections"] > span{opacity:0}'
@@ -7418,8 +7421,17 @@ details.mc-card .section.credits{margin-top:12px}
     // 别的方式打开的工作区（例如点消息里的文件）也一样从右侧出来；其他 vaul 抽屉不动。
     let wsExpect=0,wsGoT=0,wsMoT;
     const wsW=()=>Math.round(Math.min(innerWidth*0.92,480));
-    const wsIsWs=d=>{try{const id=d.getAttribute('aria-labelledby'),t=((id&&document.getElementById(id)?.textContent)||'')+' '+(d.textContent||'').slice(0,240);return /\bWorkspace\b|工作区/.test(t);}catch{return false;}};
-    const wsOv=d=>{for(let n=d.previousElementSibling,i=0;n&&i<4;n=n.previousElementSibling,i++)if(n.matches?.('[data-vaul-overlay]'))return n;return [...document.querySelectorAll('[data-vaul-overlay]')].filter(o=>o.getAttribute('data-state')!=='closed').pop()||null;};
+    // v1.11.75 手机宽度下一律接管工作区：不再要求 Gemini 布局 / 右侧把手 / 顶栏里找到原生按钮
+    const wsRightOn=()=>prefs.wsRight!==false&&innerWidth<768;
+    const WS_RX=/\bWorkspace\b|工作区|工作空间/i,WS_META=/\d+(?:\.\d+)?\s*[KMGT]?B\s*\/\s*\d+(?:\.\d+)?\s*[KMGT]B/i;
+    const wsHead=(d,n)=>{let s='';try{const w=document.createTreeWalker(d,NodeFilter.SHOW_TEXT);while(s.length<n&&w.nextNode())s+=w.currentNode.nodeValue+' ';}catch{}return s;};
+    const wsSheet=d=>{const c=d.classList;return c.contains('bottom-0')&&c.contains('inset-x-0');}; // shadcn Sheet side="bottom"
+    // 识别工作区：Sheet 的 title 属性就是 Workspace；否则只看底部抽屉（vaul / 底部 Sheet）——标题（aria-labelledby 可能多个 id）/ aria-label /
+    // 开头文字里有 Workspace·工作区·工作空间，或同时出现“13.5MB/128.0MB”这类容量和 files、或 Processes + files。居中的普通对话框不碰
+    const wsIsWs=d=>{try{if(/^(Workspace|工作区|工作空间)$/i.test((d.getAttribute('title')||'').trim()))return true;if(!d.hasAttribute('data-vaul-drawer')&&!wsSheet(d))return false;
+      const ids=(d.getAttribute('aria-labelledby')||'').split(/\s+/).filter(Boolean),lab=ids.map(i=>document.getElementById(i)?.textContent||'').join(' ')+' '+(d.getAttribute('aria-label')||'');if(WS_RX.test(lab))return true;
+      const t=wsHead(d,600);return WS_RX.test(t.slice(0,240))||WS_META.test(t)&&/\bfiles?\b|个文件/i.test(t)||/\bProcesses\b/.test(t)&&/\bfiles?\b/i.test(t);}catch{return false;}};
+    const wsOv=d=>{for(let n=d.previousElementSibling,i=0;n&&i<4;n=n.previousElementSibling,i++)if(n.matches?.('[data-vaul-overlay],div[data-state]:not([role])'))return n;if(!d.hasAttribute('data-vaul-drawer'))return null;return [...document.querySelectorAll('[data-vaul-overlay]')].filter(o=>o.getAttribute('data-state')!=='closed').pop()||null;};
     function wsClose(d){const x=[...d.querySelectorAll('button')].find(b=>/^(close|关闭)/i.test((b.getAttribute('aria-label')||b.title||'').trim()));if(x){x.click();return;}
       try{(document.activeElement||document.body).dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:true,cancelable:true}));}catch{}}
     function wsSwipe(d){if(d._ampWsSw)return;d._ampWsSw=1;let s=null,noClick=0;
@@ -7446,11 +7458,15 @@ details.mc-card .section.credits{margin-top:12px}
       wsSwipe(d);
       if(going){clearTimeout(wsGoT);wsHost.removeAttribute('data-go');wsPull(0);wsHost.removeAttribute('data-ready');}
       setTimeout(wsSync,0);}
-    function wsScan(){if(!document.documentElement.hasAttribute('data-amp-wsedge'))return;const mine=Date.now()<wsExpect;
-      for(const d of document.querySelectorAll('[data-vaul-drawer]:not([data-amp-wsright])')){if(d.getAttribute('data-state')==='closed')continue;if(mine||wsIsWs(d)){wsMark(d,mine);if(mine)wsExpect=0;}}}
-    // 抽屉挂在 body（或 Arena 的 #root-portal-target）下面：只看这两层的直接子节点，抽屉一插入就在首帧前接管
-    const wsMo=new MutationObserver(recs=>{for(const r of recs)for(const n of r.addedNodes)if(n.nodeType===1&&(n.matches('[data-vaul-drawer]')||n.querySelector?.('[data-vaul-drawer]'))){wsScan();return;}});
-    function wsWatch(){const t=document.getElementById('root-portal-target');if(wsMoT!==undefined&&wsMoT===t)return;wsMo.disconnect();if(document.body)wsMo.observe(document.body,{childList:true});if(t&&t!==document.body)wsMo.observe(t,{childList:true});wsMoT=t;}
+    let wsPend=false; // 有打开着、但还认不出是不是工作区的底部抽屉（内容可能晚一步渲染）→ 之后每次 DOM 变化再认一次
+    function wsScan(){wsPend=false;if(!wsRightOn())return;const mine=Date.now()<wsExpect;
+      for(const d of document.querySelectorAll('[data-vaul-drawer]:not([data-amp-wsright]),[role="dialog"]:not([data-amp-wsright])')){if(d.getAttribute('data-state')==='closed')continue;
+        const bottom=d.hasAttribute('data-vaul-drawer')||wsSheet(d);if(wsIsWs(d)||mine&&bottom){wsMark(d,mine);if(mine)wsExpect=0;}else if(bottom)wsPend=true;}}
+    // v1.11.75 抽屉 / Sheet 插在页面任何位置都能在首帧前接管（MutationObserver 回调在绘制前执行）：观察 body 整个子树，
+    // 插入的节点本身是对话框 / vaul 抽屉 / 遮罩就立即扫描；只有门户层（body、body 的直接子节点、#root-portal-target）才往里 querySelector
+    const wsHit=n=>n.getAttribute('role')==='dialog'||n.hasAttribute('data-vaul-drawer')||n.hasAttribute('data-vaul-overlay');
+    const wsMo=new MutationObserver(recs=>{const bd=document.body;for(const r of recs){const t=r.target,top=t===bd||t.parentNode===bd||t.id==='root-portal-target';for(const n of r.addedNodes)if(n.nodeType===1&&(wsHit(n)||top&&n.querySelector?.('[role="dialog"],[data-vaul-drawer]'))){wsScan();return;}}if(wsPend)wsScan();});
+    function wsWatch(){if(wsMoT||!document.body)return;wsMoT=1;try{wsMo.observe(document.body,{childList:true,subtree:true});const t=document.getElementById('root-portal-target');if(t&&!document.body.contains(t))wsMo.observe(t,{childList:true,subtree:true});}catch{}}
     function wsPlace(c){const h=innerHeight;c=Math.min(h*0.88,Math.max(h*0.12,c));wsHost.style.setProperty('--y',Math.round(c)+'px');return c;}
     function wsPull(dx,settle){const W=wsW(),w=Math.round(Math.max(0,dx<=W?dx:W+Math.min(24,(dx-W)*0.2)));wsHost.style.setProperty('--w',w+'px');wsHost.style.setProperty('--k',String(Math.min(1,w/W).toFixed(3)));
       const ready=w>=WS_OPEN&&!wsOff(wsBtn);if(ready!==wsHost.hasAttribute('data-ready')){wsHost.toggleAttribute('data-ready',ready);if(ready&&wsDrag)try{navigator.vibrate?.(8);}catch{}}
@@ -7463,14 +7479,16 @@ details.mc-card .section.credits{margin-top:12px}
       try{b.click();}catch{}
       clearTimeout(wsGoT);wsGoT=setTimeout(()=>{if(!wsHost.hasAttribute('data-go'))return;wsHost.removeAttribute('data-go');wsPull(0);wsHost.removeAttribute('data-ready');wsSync();},700);return true;}
     function wsSync(){
+      document.documentElement.toggleAttribute('data-amp-wsr',prefs.wsRight!==false);wsWatch();wsScan(); // v1.11.75 先接管工作区（与把手是否显示无关）
       let b=null;if(gemOn()&&prefs.wsEdge!==false&&document.body)for(const x of document.querySelectorAll(WS_SEL)){const m=x.closest('main'),r=x.getBoundingClientRect();if(m&&r.width>0&&r.height>0&&r.top<m.getBoundingClientRect().top+100){b=x;break;}}
       document.documentElement.toggleAttribute('data-amp-wsedge',!!b);
       if(!b){wsBtn=null;if(wsHost.isConnected&&!wsDrag&&!wsHost.hasAttribute('data-go'))wsHost.remove();return;}
-      wsBtn=b;if(!wsHost.isConnected)document.body.append(wsHost);if(!wsDrag)wsPlace(prefs.wsEdgeY*innerHeight);wsWatch();wsScan();
+      wsBtn=b;if(!wsHost.isConnected)document.body.append(wsHost);if(!wsDrag)wsPlace(prefs.wsEdgeY*innerHeight);
       const lab=b.getAttribute('aria-label')||'',open=/close|关闭/i.test(lab)||b.getAttribute('aria-expanded')==='true'||b.getAttribute('aria-pressed')==='true'||b.getAttribute('data-state')==='open';
       const dlg=[...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')].some(d=>d.getAttribute('data-state')!=='closed'&&d.getBoundingClientRect().width>0);
-      const ae=document.activeElement,typing=!!(ae&&ae.closest?.('main')&&(ae.isContentEditable||/^(TEXTAREA|INPUT)$/.test(ae.tagName)));
-      wsHost.toggleAttribute('data-away',!wsDrag&&!wsHost.hasAttribute('data-go')&&(open||dlg||typing));wsHost.toggleAttribute('data-disabled',wsOff(b));
+      // v1.11.75 只在输入法真正弹出时让开（data-amp-kb）；以前输入框有焦点就藏，收起键盘后焦点还在，把手一直看不见
+      const kb=document.documentElement.hasAttribute('data-amp-kb');
+      wsHost.toggleAttribute('data-away',!wsDrag&&!wsHost.hasAttribute('data-go')&&(open||dlg||kb));wsHost.toggleAttribute('data-disabled',wsOff(b));
       wsTab.setAttribute('aria-disabled',String(wsOff(b)));
     }
     wsTab.addEventListener('pointerdown',e=>{if(e.button>0||wsHost.hasAttribute('data-go'))return;const r=wsTab.getBoundingClientRect(),t=performance.now();wsDrag={id:e.pointerId,x:e.clientX,y:e.clientY,c:r.top+r.height/2,t,mode:'',hs:[[t,e.clientX]]};try{wsTab.setPointerCapture(e.pointerId);}catch{}});
@@ -7486,7 +7504,7 @@ details.mc-card .section.credits{margin-top:12px}
       if(e.type==='pointerup'&&(dx>=WS_OPEN||dx>=28&&v>0.35))wsOpen();else wsPull(0,true);};
     wsTab.addEventListener('pointerup',wsEnd);wsTab.addEventListener('pointercancel',wsEnd);wsTab.addEventListener('lostpointercapture',wsEnd);
     wsTab.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();wsOpen();}});wsTab.addEventListener('contextmenu',e=>e.preventDefault());
-    document.addEventListener('focusin',()=>{if(wsHost.isConnected)wsSync();},true);document.addEventListener('focusout',()=>{if(wsHost.isConnected)setTimeout(wsSync,0);},true);
+    document.addEventListener('focusin',()=>{wsScan();if(wsHost.isConnected)wsSync();},true);addEventListener('resize',()=>setTimeout(wsSync,80),{passive:true});document.addEventListener('focusout',()=>{if(wsHost.isConnected)setTimeout(wsSync,0);},true);
     const drawerMo=new MutationObserver(()=>requestAnimationFrame(syncMode));let drawerMoOn=false;
     const panel=el('section','panel',null,root),resizer=el('div','resizer',null,panel);resizer.title='拖动调整宽度，双击恢复';const sheetGrip=el('div','sheet-grip',null,panel);el('i','',null,sheetGrip);sheetGrip.title='上下拖动调整高度，停在哪都可以：顶到最上面全屏，拉到最底收起；轻点切换全屏';
     dragger(resizer,{start:e=>({x:e.clientX,width:host.getBoundingClientRect().width}),move:(e,s)=>{const w=clamp(s.width+(s.x-e.clientX),280,Math.max(280,Math.min(720,innerWidth-480)),prefs.width);host.style.setProperty('--amp-width',w+'px');prefs.width=w;},end:()=>{savePrefs();paint();},reset:()=>{prefs.width=340;host.style.setProperty('--amp-width','340px');savePrefs();paint();}});
@@ -7730,7 +7748,7 @@ details.mc-card .section.credits{margin-top:12px}
       if(stopped||!document.body)return;const cooling=Date.now()<cooldown;if(cooling!==lastCooling){lastCooling=cooling;paint();}const main=document.querySelector('main'),ready=document.readyState==='complete'||!!document.querySelector('next-route-announcer'); // v1.11.73 React 水合完成即可（Next.js 在提交后插入 next-route-announcer），不再等 load（手机上常晚好几秒）
       const anchor=ready?[...document.querySelectorAll('main button[aria-label="Toggle workspace sidebar"],main button[aria-label="Open workspace"],main button[aria-label="Close workspace"],main button[aria-label="打开工作区"],main button[aria-label="切换工作区侧边栏"]')].find(b=>{const r=b.getBoundingClientRect(),m=b.closest('main').getBoundingClientRect();return r.width>0&&r.height>0&&r.top<m.top+100;}):null;
       if(anchor){if(entry.parentNode!==anchor.parentNode||entry.nextSibling!==anchor)anchor.before(entry);entry.removeAttribute('data-floating');}else{if(entry.parentNode!==document.body)document.body.append(entry);entry.setAttribute('data-floating','');}
-      {const g=gemOn();document.documentElement.toggleAttribute('data-amp-gem',g);document.documentElement.toggleAttribute('data-amp-wspre',g&&prefs.wsEdge!==false);document.documentElement.toggleAttribute('data-amp-docpre',!!prefs.hideDocIcon);if(g&&anchor){if(anchor.nextSibling!==avatarHost)anchor.after(avatarHost);avatarHost.hidden=false;paintAvatar();loadMe();}else if(avatarHost.isConnected)avatarHost.remove();syncMode();wsSync();if(!drawerMoOn&&document.body){drawerMoOn=true;drawerMo.observe(document.body,{childList:true});}}
+      {const g=gemOn();document.documentElement.toggleAttribute('data-amp-gem',g);document.documentElement.toggleAttribute('data-amp-wsr',prefs.wsRight!==false);document.documentElement.toggleAttribute('data-amp-wspre',g&&prefs.wsEdge!==false);document.documentElement.toggleAttribute('data-amp-docpre',!!prefs.hideDocIcon);if(g&&anchor){if(anchor.nextSibling!==avatarHost)anchor.after(avatarHost);avatarHost.hidden=false;paintAvatar();loadMe();}else if(avatarHost.isConnected)avatarHost.remove();syncMode();wsSync();if(!drawerMoOn&&document.body){drawerMoOn=true;drawerMo.observe(document.body,{childList:true});}}
       if(reloadHost.isConnected)reloadHost.remove();document.documentElement.toggleAttribute('data-amp-glass',!!prefs.glassDrawer);if(ready)pull.bind();
       const eligible=/^\/agent(?:\/|$)/.test(location.pathname);entry.hidden=!eligible;let mode='none';
       if(eligible&&ready&&main){const parent=main.parentElement,p=getComputedStyle(parent),m=getComputedStyle(main),isSibling=host.parentNode===parent&&!host.hidden,available=main.getBoundingClientRect().width+(isSibling?host.getBoundingClientRect().width+(parseFloat(p.columnGap)||0):0),wide=innerWidth>=1024&&available>=900&&p.display.includes('flex')&&p.flexDirection==='row';
@@ -8177,7 +8195,8 @@ details.mc-card .section.credits{margin-top:12px}
       toggle(sec,'隐藏输入框里的文档图标','默认开启：目标按钮左边的纸张图标按钮没什么实际用途，隐藏后更宽松。',prefs.hideDocIcon,v=>{prefs.hideDocIcon=v;if(!v)store(DOC_KEY,'');docIcon();});
       toggle(sec,'长按输入框下拉刷新（手机）','默认开启：长按输入框约 0.3 秒，感到轻震后往下拉，整页跟着往下，顶部圆环随距离画满；画满后松开就刷新，没松手推回去就取消。\n输入框有未发送内容、待发附件、抽卡进行中或本轮还在进行时，圆环变橙色提醒。取代原来左上角的刷新按钮。',prefs.pullRefresh,v=>{prefs.pullRefresh=v;});
       toggle(sec,'手机端 Gemini 风格布局','默认开启，参考 Gemini App（颜色沿用 Arena 原配色）：\n· 顶栏：左上角 ≡ 打开侧栏，旁边是模型名（与左侧卡片一致）；右上角是深色/浅色切换和账号头像；工作区收在右侧屏幕边缘的小把手里（向左拖出来或轻点打开，上下拖动换位置）。\n· 头像外圈是美金余额圆环（剩余 / 总额度）：绿色，低于 20% 变橙，低于 5% 变红。点头像打开账号切换（需账号切换 v1.0.21+），否则打开侧栏。\n· 输入框改成圆角长条：左边 +，右边厂商图标和发送。在厂商图标上上下滑动就是“波轮”：弹出旧版透明样式的厂商滚轮（卡片直接浮在页面上、越往外越淡，没有底板和背景压暗），跟着手指一格格转，松手即选中；抽卡时图标转动、外圈显示进度，每出一张亮出抽到的厂商。\n· 模式切换（Battle / Agent / Side by Side / Direct）挪到左侧抽屉 logo 旁。',prefs.gemLayout,v=>{prefs.gemLayout=v;document.documentElement.toggleAttribute('data-amp-gem',gemOn());if(!v){avatarHost.remove();modeHost.remove();}wsSync();});
-      toggle(sec,'工作区收到右侧边缘','默认开启（手机端 Gemini 布局下）：顶栏不再单独放工作区按钮，改成右侧屏幕边缘的小把手。\n· 向左拖出来，或轻点一下，打开工作区：工作区从右侧跟着手指滑出（不再从底部升起）。\n· 收起：在工作区左边缘或标题栏向右划，或点左侧暗处 / ×。\n· 上下拖动把手可以换位置（会记住）。\n· 新对话还没有工作区时把手是灰的；工作区打开、弹窗打开或正在输入时，把手自动让开。\n· 安卓手势导航下，从屏幕最边缘往里划可能触发系统返回，按住把手中间再拖（或直接轻点）更稳。\n关闭后恢复顶栏的工作区按钮。',prefs.wsEdge,v=>{prefs.wsEdge=v;wsSync();});
+      toggle(sec,'工作区收到右侧边缘','默认开启（手机端 Gemini 布局下）：顶栏不再单独放工作区按钮，改成右侧屏幕边缘的小把手。\n· 向左拖出来，或轻点一下，打开工作区：工作区从右侧跟着手指滑出（不再从底部升起）。\n· 收起：在工作区左边缘或标题栏向右划，或点左侧暗处 / ×。\n· 上下拖动把手可以换位置（会记住）。\n· 新对话还没有工作区时把手是灰的；工作区打开、弹窗打开或输入法弹出时，把手自动让开。\n· 安卓手势导航下，从屏幕最边缘往里划可能触发系统返回，按住把手中间再拖（或直接轻点）更稳。\n关闭后恢复顶栏的工作区按钮。',prefs.wsEdge,v=>{prefs.wsEdge=v;wsSync();});
+      toggle(sec,'工作区从右侧滑出','默认开启（手机）：工作区一律贴在右侧、从右向左滑出，不再从底部升起——不管是拉右侧把手、点顶栏按钮，还是点消息里的文件打开的，也不管有没有开 Gemini 布局。\n· 收起：在工作区左边缘或标题栏向右划，或点左侧暗处 / ×。\n关闭后恢复 Arena 原来的底部弹出。',prefs.wsRight,v=>{prefs.wsRight=v;wsSync();});
       toggle(sec,'输入法弹出时一起上移','默认开启（手机端）：弹出输入法时，对话内容、输入框、底部模型信息栏一起上移——最新的内容跟着输入框推上去，不会被挡住；模型信息栏贴在输入法上方，不再藏起来。\n· 输入框变成多行时，对话内容同样跟着往上推。\n· 关闭后恢复旧行为：打字时隐藏底部信息栏。',prefs.kbResize!==false,v=>{prefs.kbResize=v;try{bar?.sync();}catch{}});
       toggle(sec,'玻璃侧栏（手机）','默认开启：左侧对话列表抽屉变窄，背景改成半透明磨砂玻璃、遮罩调淡，能看到后面的页面。关闭恢复 Arena 原样。',prefs.glassDrawer,v=>{prefs.glassDrawer=v;document.documentElement.toggleAttribute('data-amp-glass',v);});
       toggle(sec,'显示“已重置”的推断限流','默认关闭：如“新会话 10/10 · 已重置”只是按上限推断的数值，不是必要信息。',prefs.showQuotaReset,v=>{prefs.showQuotaReset=v;});
