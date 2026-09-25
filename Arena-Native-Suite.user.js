@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.64
+// @version      1.11.65
 // @description  Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.64' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.65' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -4196,7 +4196,7 @@ const errReload = (() => {
     if (box?.isConnected) return box;
     host = document.createElement('div'); host.id = 'amp-err-reload'; host.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;z-index:2147483000';
     const root = host.attachShadow({ mode: 'open' }), st = document.createElement('style');
-    st.textContent = '.b{position:fixed;display:flex;align-items:center;gap:8px;max-width:min(580px,calc(100vw - 24px));padding:8px 8px 8px 14px;border-radius:12px;background:rgba(38,37,34,.95);color:#f3f1ec;font:13px/1.45 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.28);transform:translateX(-50%);animation:in .18s ease-out}.b[hidden]{display:none}.t{flex:1;min-width:0}.b button{flex:none;height:26px;padding:0 10px;border:0;border-radius:7px;cursor:pointer;font:inherit;font-size:12px;background:rgba(255,255,255,.12);color:#f3f1ec}.b button:hover{background:rgba(255,255,255,.2)}.b button.p{background:#d8d3ca;color:#262522}.b button.p:hover{background:#fff}.b button.x{width:26px;padding:0;font-size:15px;background:transparent;color:rgba(243,241,236,.6)}@keyframes in{from{opacity:0;transform:translate(-50%,6px)}}';
+    st.textContent = '.b{position:fixed;display:flex;align-items:center;gap:8px;box-sizing:border-box;width:max-content;max-width:min(580px,calc(100vw - 24px));padding:8px 8px 8px 14px;border-radius:12px;background:rgba(38,37,34,.95);color:#f3f1ec;font:13px/1.45 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.28);transform:translateX(-50%);animation:in .18s ease-out}.b[hidden]{display:none}.t{flex:1;min-width:0}.b button{flex:none;height:26px;padding:0 10px;border:0;border-radius:7px;cursor:pointer;font:inherit;font-size:12px;background:rgba(255,255,255,.12);color:#f3f1ec}.b button:hover{background:rgba(255,255,255,.2)}.b button.p{background:#d8d3ca;color:#262522}.b button.p:hover{background:#fff}.b button.x{width:26px;padding:0;font-size:15px;background:transparent;color:rgba(243,241,236,.6)}@keyframes in{from{opacity:0;transform:translate(-50%,6px)}}';
     box = document.createElement('div'); box.className = 'b'; box.hidden = true; box.setAttribute('role', 'status');
     root.append(st, box); (document.body || document.documentElement).append(host);
     return box;
@@ -5398,7 +5398,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.64', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.65', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -6946,18 +6946,18 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       const sec=el('section','section detect',null,body),head=el('div','section-heading',null,sec);el('h3','','一键检测',head);el('span','eyebrow',res?'检测于 '+clock(res.at):'核对此刻模型',head);
       const card=el('div','detect-card',null,sec);card.dataset.tone=busy?'busy':!res?'idle':!calls?(res.error||res.notes.length?'error':'idle'):changed?'changed':'same';
       const st=el('div','detect-state',null,card);el('i','',null,st);
-      el('span','grow',busy?(force.step||'检测中')+'…':!res?'尚未检测':!calls?(res.error?'检测未完成':'没有找到模型调用记录'):changed?'中途换过 '+res.changes.length+' 次模型':'全程同一模型，未发现变更',st);
+      el('span','grow',busy?(force.step||'检测中')+'…':!sid?'未打开对话':!res?'尚未检测':!calls?(res.error?'检测未完成':'没有找到模型调用记录'):changed?'中途换过 '+res.changes.length+' 次模型':'全程同一模型，未发现变更',st);
       if(cur){
         const m=el('div','detect-model',null,card);vlogo(m,[cur.name,cur.internal,cur.response,cur.request,cur.pill]);el('span','detect-name',cur.name,m);
         const tier=brand.tierOf(cur.internal||'')||brand.tierOf(cur.name);if(tier)el('span','detect-tier',tier,m);
         const alt=FORCE_SRC.filter(k=>k!==cur.src&&cur[k]&&!forceEq(cur[k],cur.name)).slice(0,2).map(k=>FORCE_SRC_TEXT[k]+' '+cur[k]);
         el('div','detect-sub',['按'+(FORCE_SRC_TEXT[cur.src]||'名称'),...alt].join(' · '),card);
         el('div','detect-sub',(cur.partial?'正在进行':'最近一次')+' · '+clock(cur.at)+' · '+posText(cur)+(cur.local?' · 本机记录':''),card);
-      }else if(!res)el('div','detect-sub','立刻读取本对话此刻的全部记录（包括交互面板选择后继续的部分），逐次调用核对模型：中途有没有换模型、换成了谁。',card);
+      }else if(!res)el('div','detect-sub',sid?'立刻读取本对话此刻的全部记录（包括交互面板选择后继续的部分），逐次调用核对模型：中途有没有换模型、换成了谁。':'打开一个对话后再检测：读取它此刻的全部记录（包括交互面板选择后继续的部分），逐次核对中途有没有换模型、换成了谁。',card);
       if(changed){const box=el('div','detect-changes',null,card);
         for(const c of res.changes.slice(-4).reverse()){const row=el('div','detect-change',null,box),flow=el('div','detect-flow',null,row);el('span','from',c.from,flow);el('span','arrow','→',flow);el('b','',c.to,flow);el('div','detect-sub',[clock(c.at),posText(c)+'起',...c.tags].join(' · '),row);}
         if(res.changes.length>4)el('div','detect-sub','更早还有 '+(res.changes.length-4)+' 次，见下方时间线',box);}
-      const go=button(sec,busy?'检测中…':res?'重新检测':'一键检测',sid?'立刻读取本对话此刻的 Trace 与本机记录，逐次调用核对模型':'先打开一个对话',()=>{void forceDetect();},'detect-go');go.disabled=force.busy||!sid;
+      const go=button(sec,busy?'检测中…':!sid?'打开对话后可用':res?'重新检测':'一键检测',sid?'立刻读取本对话此刻的 Trace 与本机记录，逐次调用核对模型':'先打开一个对话',()=>{void forceDetect();},'detect-go');go.disabled=force.busy||!sid;
       for(const n of res?.notes||[])el('p','note warning',n,sec);
       if(res?.error)el('p','note warning','检测出错：'+res.error,sec);
       if(calls)el('p','note',['依据：'+(res.events?'Trace '+res.events+' 条事件':'本机记录'),calls+' 次调用',res.fetched?'补读 '+res.fetched+' 个详情':'',res.localTurns?'本机更早 '+res.localTurns+' 轮':'','档位 / -vertex 等后缀不同不算换模型'].filter(Boolean).join(' · '),sec);
