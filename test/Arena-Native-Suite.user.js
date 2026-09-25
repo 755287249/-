@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.66
+// @version      1.11.67
 // @description  【测试版】Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.66' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.67' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '') : n;
 // localStorage 写入：满了（QuotaExceededError）会静默失败，导致“保存了刷新又没了”。
@@ -5575,7 +5575,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.66', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.67', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -5933,7 +5933,7 @@ const gachaUi = (() => {
   const load=(key,fallback)=>{try{return JSON.parse(localStorage.getItem(key))??fallback;}catch{return fallback;}};
   const store=(key,value)=>{try{return ampStore.set(key,JSON.stringify(value));}catch{return false;}};
   const clamp=(v,min,max,fallback)=>Number.isFinite(v)?Math.min(max,Math.max(min,Math.round(v))):fallback;
-  const stored=load(KEY+'.prefs',{}), prefs={width:clamp(stored.width,280,720,340),sidebarWidth:clamp(stored.sidebarWidth,200,560,null),cloudSync:stored.cloudSync===true,cloudFormat:stored.cloudFormat==='name'?'name':'prefix',rawBudget:BUDGET_OPTIONS.includes(stored.rawBudget)?stored.rawBudget:64,showSent:stored.showSent!==false,showQuota:stored.showQuota!==false,showCredits:stored.showCredits!==false,showBar:stored.showBar!==false,barCollapsed:stored.barCollapsed===true,barOffset:stored.barOffset!==false,showSeq:stored.showSeq===true,hideDocIcon:stored.hideDocIcon!==false,stopOnResample:stored.stopOnResample!==false,showQuotaReset:stored.showQuotaReset===true,spendUnit:stored.spendUnit==='usd'?'usd':'token'};
+  const stored=load(KEY+'.prefs',{}), prefs={width:clamp(stored.width,280,720,340),sidebarWidth:clamp(stored.sidebarWidth,200,560,null),cloudSync:stored.cloudSync===true,cloudFormat:stored.cloudFormat==='name'?'name':'prefix',rawBudget:BUDGET_OPTIONS.includes(stored.rawBudget)?stored.rawBudget:64,showSent:stored.showSent!==false,showQuota:stored.showQuota!==false,showCredits:stored.showCredits!==false,showBar:stored.showBar!==false,barCollapsed:stored.barCollapsed===true,barOffset:stored.barOffset!==false,showSeq:stored.showSeq===true,hideDocIcon:stored.hideDocIcon!==false,stopOnResample:stored.stopOnResample!==false,showQuotaReset:stored.showQuotaReset===true,spendUnit:stored.spendUnit==='usd'?'usd':'token',sheetH:typeof stored.sheetH==='number'&&stored.sheetH>=0.2&&stored.sheetH<=0.95?stored.sheetH:0.5,sheetFull:stored.sheetFull===true,pullRefresh:stored.pullRefresh!==false,glassDrawer:stored.glassDrawer!==false};
   // 手机/窄屏：底部只留一条余额栏，点击余额栏才展开模型信息
   const miniBar=()=>innerWidth<768||!!document.getElementById('amp-lite-dock')?.hasAttribute('data-compact');
   const savePrefs=()=>store(KEY+'.prefs',prefs);
@@ -6663,9 +6663,9 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
 :host([data-dock]){display:block;flex:0 0 var(--amp-width,340px);width:var(--amp-width,340px);min-width:0;height:calc(100dvh - var(--amp-bar-h,0px));align-self:stretch;margin:0;z-index:1;position:relative}
 .panel{display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;background:var(--bg);border-left:1px solid var(--edge);position:relative}.resizer{position:absolute;top:0;bottom:0;left:-3px;width:7px;cursor:col-resize;z-index:5;touch-action:none}.resizer:hover,.resizer[data-active]{background:var(--edge)}.drag-shield{position:fixed;inset:0;z-index:2147483000;cursor:col-resize;user-select:none}
 .head{min-height:52px;padding:10px 14px}.head>.grow{gap:9px}.head .icon-button{margin-left:auto}.local-number{font-size:11px;color:var(--secondary)}.body{flex:1;padding:14px;min-height:0}.name{font-size:16px}.section+.section{margin-top:17px}.tabs{padding:0 14px}.config-row{padding:9px 10px}.config-label{font-size:12px}.row{grid-template-columns:76px minmax(0,1fr);gap:8px}.footer{padding:8px 9px}.cache-banner{display:flex;align-items:center;gap:8px;padding:5px 14px 9px;font-size:10px;color:var(--secondary)}.compact-bar{display:none}.log-controls{display:flex;align-items:center;gap:12px;margin-bottom:8px}.log-controls .selector{margin-left:auto;flex:none;width:100px}.log-actions{display:flex;gap:6px;flex-wrap:wrap}.log-actions button{font-size:11px;border:1px solid var(--edge);padding:4px 7px}
-:host([data-compact]){width:100%;height:auto;flex:0 0 auto;margin:0;max-height:55dvh}.panel .compact-top{display:flex;align-items:center;gap:9px}.compact-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.compact-toggle{font-size:11px;color:var(--secondary);padding:4px 8px;flex:none}.compact-info{font-size:11px;color:var(--secondary);margin-top:3px}:host([data-compact]) .panel{height:auto;max-height:55dvh;border-left:0;border-top:1px solid var(--edge)}:host([data-compact]) .resizer{display:none}:host([data-compact]) .compact-bar{display:block;padding:8px 12px;flex:none}:host([data-compact]) .head{display:none}:host([data-compact]:not([data-expanded])) .tabs,:host([data-compact]:not([data-expanded])) .cache-banner,:host([data-compact]:not([data-expanded])) .pickers,:host([data-compact]:not([data-expanded])) .body,:host([data-compact]:not([data-expanded])) .footer,:host([data-compact]:not([data-expanded])) .toast{display:none}:host([data-compact]) .body{max-height:calc(55dvh - 145px)}
+:host([data-compact]){width:100%;height:var(--amp-sheet-h,50dvh);flex:0 0 auto;margin:0;max-height:none;z-index:2}.panel .compact-top{display:flex;align-items:center;gap:2px}.compact-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 13px/1.35 var(--mono);color:var(--heading);letter-spacing:-.01em}.compact-info{display:flex;align-items:center;gap:6px;min-width:0;font-size:11px;color:var(--secondary);margin-top:1px}.ci-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}:host([data-compact]) .panel{height:100%;max-height:none;border-left:0;border-top:1px solid var(--edge);border-radius:16px 16px 0 0;box-shadow:0 -10px 28px -14px #0000004d}:host([data-compact]) .resizer{display:none}:host([data-compact]) .compact-bar{display:block;padding:0 6px 8px 14px;flex:none;touch-action:none;-webkit-user-select:none;user-select:none;cursor:grab}:host([data-compact]) .head{display:none}:host([data-compact]:not([data-expanded])) :is(.tabs,.subtabs,.cache-banner,.pickers,.body,.toast){display:none}:host([data-compact]) .body{max-height:none}
 .logbar{padding:12px 14px 0;flex:none}:host([data-compact]:not([data-expanded])) .logbar{display:none}
-@media(max-height:600px){:host([data-compact][data-expanded]),:host([data-compact][data-expanded]) .panel{max-height:75dvh}:host([data-compact][data-expanded]) .body{max-height:calc(75dvh - 145px)}}
+
 :host([data-grip]){display:block;position:fixed;top:0;width:0;height:0;z-index:60}.grip{position:fixed;width:6px;cursor:col-resize;touch-action:none;z-index:60}.grip:hover,.grip[data-active]{background:var(--edge)}
 .status{display:flex;flex-wrap:wrap;gap:4px 12px;padding:6px 14px 0;font-size:11px;color:var(--secondary);flex:none;min-height:0}.status[hidden]{display:none}.status strong{font-weight:400;color:var(--fg);font-family:var(--mono)}.status .blocked{color:hsl(var(--interactive-negative,2 63% 54%))}.status .low{color:var(--warn)}
 .setting{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid var(--line);font-size:12px}.setting:first-of-type{border-top:0}.setting .grow{display:flex;flex-direction:column;gap:2px}.setting .hint{font-size:10px;color:var(--secondary);line-height:1.5}.setting .selector{flex:none;width:112px}.switch{position:relative;width:34px;height:20px;border-radius:10px;background:var(--edge);flex:none;padding:0;transition:background .12s}.switch[aria-checked=true]{background:var(--green)}.switch::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--bg);transition:transform .12s}.switch[aria-checked=true]::after{transform:translateX(14px)}.switch:hover{background:var(--edge)}.switch[aria-checked=true]:hover{background:var(--green)}
@@ -6682,10 +6682,21 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
 .tl-row{display:grid;grid-template-columns:12px minmax(0,1fr) auto;column-gap:8px;row-gap:1px;align-items:center;padding:8px 0;border-top:1px solid var(--line)}.tl-row:first-child{border-top:0;padding-top:2px}.tl-dot{width:7px;height:7px;border-radius:50%;background:var(--edge)}.tl-row[data-current] .tl-dot{background:var(--green);box-shadow:0 0 0 3px color-mix(in srgb,var(--green) 22%,transparent)}.tl-name{display:flex;align-items:center;gap:6px;min-width:0;font:12.5px/1.45 var(--mono);color:var(--heading)}.tl-name>span:last-child{overflow-wrap:anywhere;min-width:0}.tl-name .vlogo{width:16px;height:16px}.tl-name .vlogo svg{width:10px;height:10px}.tl-name .vlogo[data-full] svg{width:16px;height:16px}.tl-count{font:11px var(--mono);color:var(--secondary);white-space:nowrap}.tl-meta{grid-column:2/4;font-size:10.5px;line-height:1.5;color:var(--secondary);overflow-wrap:anywhere}.tl-more{font-size:10.5px;color:var(--secondary);padding:0 0 6px 20px}
 .config-value.legacy-state{font-family:inherit;font-size:12.5px}.legacy-state[data-tone=ok]{color:var(--green)}.legacy-state[data-tone=busy],.legacy-state[data-tone=bad]{color:var(--warn)}.legacy-raw{margin-top:8px}.legacy-raw+.log-actions{margin-top:8px}
 :host([data-reload]){display:inline-flex;flex:none;vertical-align:top;margin:0 0 0 4px}.reload-toggle{width:32px;height:32px;padding:0;border-radius:4px;color:var(--amp-reload-fg,hsl(var(--interactive-active,60 4% 11%)))}.reload-toggle:hover{background:none;color:var(--amp-reload-fg,hsl(var(--interactive-active,60 4% 11%)));opacity:.75}.reload-toggle svg{width:22px;height:22px;transition:transform .4s cubic-bezier(.34,1.6,.5,1)}.reload-toggle:active svg{transform:rotate(-90deg)}.reload-toggle[data-arm]{color:var(--warn);background:var(--raised)}.reload-toggle[data-spin] svg{animation:ampSpin .8s linear infinite}@keyframes ampSpin{to{transform:rotate(360deg)}}
+.sheet-grip{display:none}:host([data-compact]) .sheet-grip{display:flex;align-items:center;justify-content:center;height:20px;flex:none;touch-action:none;cursor:grab;-webkit-tap-highlight-color:transparent}.sheet-grip i{display:block;width:36px;height:4px;border-radius:2px;background:var(--edge);transition:width .15s,background .15s}:host([data-dragging]) .sheet-grip i,.sheet-grip:hover i{width:46px;background:var(--secondary)}
+:host([data-compact][data-float]){position:fixed;left:0;right:0;bottom:var(--amp-bar-h,0px);height:var(--amp-sheet-h,50dvh);z-index:45}:host([data-compact][data-full]){position:fixed;left:0;right:0;top:0;bottom:var(--amp-bar-h,0px);height:auto;z-index:45}:host([data-compact][data-full]) .panel{border-radius:0;border-top:0;box-shadow:none}:host([data-compact][data-expanded]) .panel{animation:ampSheetIn .24s cubic-bezier(.22,.9,.3,1)}:host([data-dragging]) .panel{animation:none}@keyframes ampSheetIn{from{transform:translateY(18px);opacity:.5}to{transform:none;opacity:1}}
+.sheet-btn{width:32px;height:32px;padding:0;border-radius:8px;color:var(--secondary);flex:none}.sheet-btn svg{width:17px;height:17px}.sheet-btn:hover{color:var(--heading)}.head-export{width:28px;height:28px;margin-left:-4px}
+.chip{display:inline-flex;align-items:center;height:18px;padding:0 7px!important;border-radius:9px!important;font-size:10.5px;line-height:1;color:var(--secondary);background:var(--raised);box-shadow:inset 0 0 0 1px var(--edge);flex:none;gap:0}.chip[hidden]{display:none!important}.chip:hover{background:var(--raised);color:var(--heading)}
+.info-btn{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;margin:-4px -4px -4px 2px;border-radius:50%;color:var(--secondary);vertical-align:middle;flex:none;opacity:.72;font-weight:400}.info-btn svg{width:14px;height:14px;stroke-width:1.9}.info-btn:hover{background:none;opacity:1}.info-btn[aria-expanded=true]{opacity:1;color:var(--heading)}
+.info-text{font-size:11.5px;line-height:1.7;color:var(--secondary);background:var(--raised);border-radius:8px;padding:8px 10px;margin:2px 0 10px;white-space:pre-line;overflow-wrap:anywhere;font-weight:400;animation:ampInfo .16s ease-out}.info-text[hidden]{display:none}@keyframes ampInfo{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}.setting+.info-text{margin-top:0}.spend-grid+.info-text,.info-text+.info-text{margin-top:8px}.setting-title{display:block}
+.subtabs{display:flex;gap:2px;margin:10px 14px 0;padding:2px;border:1px solid var(--edge);border-radius:9px;flex:none;align-self:flex-start}.subtabs[hidden]{display:none}.subtabs button{height:24px;padding:0 12px;border-radius:7px;font-size:12px;color:var(--secondary)}.subtabs button[aria-pressed=true],.subtabs button[aria-pressed=true]:hover{background:var(--heading);color:var(--bg)}
+.tab[data-dot]::before{content:'';position:absolute;top:7px;right:-7px;width:6px;height:6px;border-radius:50%;background:#e38a1e}
+:host([data-compact]) .tabs{gap:14px}:host([data-compact]) .pickers{flex-direction:row;gap:8px;margin:10px 14px 0}:host([data-compact]) .call-picker{flex:1;min-width:0}:host([data-compact]) .call-picker>span:first-child{display:none}
+.about-head{display:flex;align-items:center;gap:11px;margin:2px 0 18px}.about-logo{width:38px;height:38px;border-radius:11px;background:var(--heading);color:var(--bg);display:flex;align-items:center;justify-content:center;font:600 16px/1 var(--mono);flex:none}.about-title{font-size:14px;font-weight:500;color:var(--heading)}.about-sub{font:11px/1.4 var(--mono);color:var(--secondary);margin-top:2px}
+.about-upds{display:flex;flex-direction:column;align-items:stretch;gap:6px;margin:0;min-width:0}.about-upds .upd{display:flex;justify-content:flex-start;width:100%;min-height:36px;margin:0;padding:8px 12px!important;border:1px solid var(--line);border-radius:10px;font:12px/1.4 var(--mono);color:var(--fg);text-align:left;white-space:normal;overflow:visible;max-width:none;text-overflow:clip}.about-upds .upd:hover{background:var(--raised)}.about-upds .upd[data-new='1']{border-color:transparent}.about-upds .upd.chentry{justify-content:center;border-style:dashed;color:var(--secondary);opacity:1}.about-upds .chform{padding:2px 0}
 `;
   function el(tag,cls,text,parent){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined&&text!==null)e.textContent=text;if(parent)parent.append(e);return e;}
   function button(parent,text,title,fn,cls=''){const b=el('button',cls,text,parent);b.type='button';b.title=title;b.setAttribute('aria-label',title);b.dataset.focus=title;b.onclick=fn;return b;}
-  const paths={sun:['M12 4V2M12 22v-2M4 12H2M22 12h-2M5.6 5.6 4.2 4.2M19.8 19.8l-1.4-1.4M5.6 18.4l-1.4 1.4M19.8 4.2l-1.4 1.4','M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z'],moon:['M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z'],cube:['m12 3 9 5-9 5-9-5 9-5Z','M3 8v9l9 5 9-5V8M12 13v9'],chevron:['m9 5 7 7-7 7'],down:['m6 9 6 6 6-6'],copy:['M9 9h12v12H9z','M15 5V3H3v12h2'],download:['M12 3v12m-5-5 5 5 5-5','M4 16v5h16v-5'],reload:['M21.17 8A10 10 0 0 0 12 2 10 10 0 0 0 2.05 11','M17 8h4.4a.6.6 0 0 0 .6-.6V3','M2.88 16A10 10 0 0 0 12.05 22 10 10 0 0 0 22 13','M7.05 16H2.65a.6.6 0 0 0-.6.6V21']};
+  const paths={sun:['M12 4V2M12 22v-2M4 12H2M22 12h-2M5.6 5.6 4.2 4.2M19.8 19.8l-1.4-1.4M5.6 18.4l-1.4 1.4M19.8 4.2l-1.4 1.4','M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z'],moon:['M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z'],cube:['m12 3 9 5-9 5-9-5 9-5Z','M3 8v9l9 5 9-5V8M12 13v9'],chevron:['m9 5 7 7-7 7'],down:['m6 9 6 6 6-6'],copy:['M9 9h12v12H9z','M15 5V3H3v12h2'],download:['M12 3v12m-5-5 5 5 5-5','M4 16v5h16v-5'],reload:['M21.17 8A10 10 0 0 0 12 2 10 10 0 0 0 2.05 11','M17 8h4.4a.6.6 0 0 0 .6-.6V3','M2.88 16A10 10 0 0 0 12.05 22 10 10 0 0 0 22 13','M7.05 16H2.65a.6.6 0 0 0-.6.6V21'],info:['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z','M12 11v5.5','M12 7.6v.01'],close:['M6.5 6.5l11 11M17.5 6.5l-11 11']};
   function icon(name,parent,cls=''){const s=document.createElementNS('http://www.w3.org/2000/svg','svg');for(const [k,v]of Object.entries({viewBox:'0 0 24 24',fill:'none',stroke:'currentColor','stroke-width':'1.5','stroke-linecap':'round','stroke-linejoin':'round','aria-hidden':'true'}))s.setAttribute(k,v);if(cls)s.setAttribute('class',cls);for(const d of paths[name]||[]){const p=document.createElementNS(s.namespaceURI,'path');p.setAttribute('d',d);s.append(p);}parent?.append(s);return s;}
   function iconButton(parent,name,title,fn){const b=button(parent,'',title,fn,'icon-button');icon(name,b);return b;}
   function download(data,name='amp-lite-export.json'){const a=document.createElement('a'),u=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));a.href=u;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),10000);}
@@ -6862,28 +6873,96 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     const trigger=button(entryRoot,'','切换深色 / 浅色模式',flipTheme,'trigger theme-toggle');const sunIcon=icon('sun',trigger),moonIcon=icon('moon',trigger);const triggerLabel=el('span','trigger-label','',trigger),mini=el('span','trigger-mini','',trigger);triggerLabel.hidden=true;mini.hidden=true;
     function paintTheme(){const dk=pageDark();sunIcon.style.display=dk?'':'none';moonIcon.style.display=dk?'none':'';trigger.title=dk?'切换到浅色模式':'切换到深色模式';trigger.setAttribute('aria-label',trigger.title);}
     paintTheme();new MutationObserver(paintTheme).observe(document.documentElement,{attributes:true,attributeFilter:['class','data-theme','style']});
-    // 手机顶栏：左上角抽屉按钮旁的“强制刷新页面”。输入框有未发送内容 / 待发附件 / 抽卡进行中时，3 秒内连点两次才刷新
-    const reloadBtn=button(reloadRoot,'','强制刷新页面',()=>reloadTap(),'reload-toggle');icon('reload',reloadBtn);let reloadArm=0,reloadArmTimer=0;
-    function reloadTap(){
-      let risky=false,turn=false;try{risky=errReload.draft()||errReload.gachaBusy()||[...document.querySelectorAll('main button[aria-label^="Remove "]')].some(b=>!b.closest('[role="log"]')&&b.getClientRects().length>0);turn=!risky&&!!errReload.sidNow()&&errReload.turnBusy(true);}catch{}
-      if((risky||turn)&&Date.now()>reloadArm){reloadArm=Date.now()+3500;reloadBtn.setAttribute('data-arm','');clearTimeout(reloadArmTimer);reloadArmTimer=setTimeout(()=>{reloadArm=0;reloadBtn.removeAttribute('data-arm');},3500);try{errReload.toast(turn?'这一轮还在进行或收尾：现在刷新，它可能暂时看不见（不是丢了，结束后会出现）。3 秒内再点一次确认刷新':'输入框有未发送的内容（或抽卡进行中），刷新会丢失：3 秒内再点一次确认刷新',3500);}catch{}return;}
-      clearTimeout(reloadArmTimer);reloadBtn.removeAttribute('data-arm');reloadBtn.setAttribute('data-spin','');
-      try{errReload.reloadNow(errReload.sidNow(),false);}catch{location.reload();}
-    }
-    const panel=el('section','panel',null,root),resizer=el('div','resizer',null,panel);resizer.title='拖动调整宽度，双击恢复';
+    // 手机：长按输入框（约 0.3 秒，轻震一下）再往下拉 = 刷新页面（取代原来左上角的刷新按钮）。
+    // 整页跟着手指往下，顶部圆环随下拉距离画满；画满后松开就刷新，没松手推回去就取消。
+    // 输入框有未发送内容 / 待发附件 / 抽卡进行中 / 本轮还在进行时圆环变橙色，并提示松开后的后果。
+    function reloadRisk(){let risky=false,turn=false;try{risky=errReload.draft()||errReload.gachaBusy()||[...document.querySelectorAll('main button[aria-label^="Remove "]')].some(b=>!b.closest('[role="log"]')&&b.getClientRects().length>0);turn=!risky&&!!errReload.sidNow()&&errReload.turnBusy(true);}catch{}return {risky,turn};}
+    const pull=(()=>{
+      const HOLD=320,SLOP=10,FULL=90,R=10,C=+(2*Math.PI*R).toFixed(2),bound=new WeakSet();
+      const ph=document.createElement('div');ph.id='amp-pull';ph.hidden=true;const pr=ph.attachShadow({mode:'open'});
+      const ps=document.createElement('style');ps.textContent=':host{all:initial;position:fixed;left:0;right:0;top:0;height:0;z-index:2147482000;pointer-events:none;display:block;--bg:hsl(var(--surface-primary,36 45% 98%));--fg:hsl(var(--text-primary,24 6% 17%));--line:hsl(var(--border-medium,30 9% 87%));--acc:var(--amp-acc,#6a5e54);--warn:#d97706;font:500 12px/1 var(--font-basel-grotesk,var(--font-inter,system-ui)),"PingFang SC","Microsoft YaHei",sans-serif}:host([hidden]){display:none}'
+        +'.w{position:absolute;left:50%;top:0;display:flex;align-items:center;gap:7px;height:36px;padding:0 13px 0 5px;border-radius:18px;background:var(--bg);color:var(--fg);box-shadow:0 4px 16px #00000030,0 0 0 1px #0000000f;white-space:nowrap;transform:translate(-50%,-60px);opacity:0;will-change:transform}'
+        +'svg{width:26px;height:26px;display:block;flex:none;transition:transform .2s cubic-bezier(.34,1.6,.5,1)}.tr{stroke:var(--line)}.arc{stroke:var(--acc);transition:stroke .15s}'
+        +'.dot{fill:var(--acc);opacity:0;transform:scale(.3);transform-origin:13px 13px;transition:opacity .15s,transform .22s cubic-bezier(.34,1.6,.5,1)}.w[data-armed] svg{transform:scale(1.12)}.w[data-armed] .dot{opacity:1;transform:none}'
+        +'.w[data-risky] .arc{stroke:var(--warn)}.w[data-risky] .dot{fill:var(--warn)}.w[data-risky][data-armed] .lbl{color:var(--warn)}'
+        +'.w[data-spin] .rot{animation:ampPullSpin .75s linear infinite;transform-origin:13px 13px}.w[data-spin] .dot{opacity:0}@keyframes ampPullSpin{to{transform:rotate(360deg)}}';
+      pr.append(ps);
+      // 用 DOM 接口画圆环（不用 innerHTML，页面启用 Trusted Types 时也不报错）
+      const w=document.createElement('div');w.className='w';pr.append(w);
+      const sv=(tag,attrs,parent)=>{const n=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const k in attrs)n.setAttribute(k,String(attrs[k]));parent.append(n);return n;};
+      const svg=sv('svg',{viewBox:'0 0 26 26','aria-hidden':'true'},w);sv('circle',{class:'tr',cx:13,cy:13,r:R,fill:'none','stroke-width':2.4},svg);const arc=sv('circle',{class:'arc',cx:13,cy:13,r:R,fill:'none','stroke-width':2.4,'stroke-linecap':'round',transform:'rotate(-90 13 13)','stroke-dasharray':C+' '+C,'stroke-dashoffset':C},sv('g',{class:'rot'},svg));sv('circle',{class:'dot',cx:13,cy:13,r:4},svg);
+      const lbl=document.createElement('span');lbl.className='lbl';lbl.textContent='下拉刷新';w.append(lbl);
+      let st=null,raf=0,resetTimer=0;
+      const damp=d=>d<=FULL?d*0.7:FULL*0.7+(d-FULL)*0.2;
+      function paint(){raf=0;if(!st||!st.pulling)return;const d=st.dy,p=Math.min(1,d/FULL),y=Math.min(140,damp(d)),b=document.body;if(b){b.style.transition='none';b.style.transform='translateY('+y.toFixed(1)+'px)';}
+        w.style.transition='none';w.style.opacity=String(Math.min(1,0.25+p*1.2));w.style.transform='translate(-50%,'+(y/2-18).toFixed(1)+'px)';arc.setAttribute('stroke-dashoffset',(C*(1-p)).toFixed(2));
+        const armed=p>=1;if(armed!==st.armed){st.armed=armed;w.toggleAttribute('data-armed',armed);if(armed){try{navigator.vibrate?.(12);}catch{}}}
+        const r=st.risk||{};w.toggleAttribute('data-risky',!!(r.risky||r.turn));const t=!armed?'下拉刷新':r.risky?'松开刷新 · 未发送内容会丢失':r.turn?'松开刷新 · 本轮还在进行':'松开刷新';if(lbl.textContent!==t)lbl.textContent=t;}
+      function frame(){if(!raf)raf=requestAnimationFrame(paint);}
+      function clear(){const b=document.body;if(b){b.style.removeProperty('transform');b.style.removeProperty('transition');}w.removeAttribute('data-armed');w.removeAttribute('data-risky');w.removeAttribute('data-spin');ph.hidden=true;}
+      function settle(){const b=document.body;clearTimeout(resetTimer);document.documentElement.removeAttribute('data-amp-pulling');if(b){b.style.transition='transform .3s cubic-bezier(.22,.9,.3,1)';b.style.transform='translateY(0px)';}w.style.transition='opacity .2s ease,transform .3s cubic-bezier(.22,.9,.3,1)';w.style.opacity='0';w.style.transform='translate(-50%,-60px)';resetTimer=setTimeout(clear,320);}
+      function cancel(){if(!st)return;const s=st;st=null;clearTimeout(s.timer);if(s.pulling)settle();}
+      function fire(){document.documentElement.removeAttribute('data-amp-pulling');w.setAttribute('data-spin','');lbl.textContent='正在刷新…';const b=document.body;if(b){b.style.transition='transform .2s ease';b.style.transform='translateY('+(FULL*0.7).toFixed(1)+'px)';}w.style.transition='transform .2s ease';w.style.transform='translate(-50%,'+(FULL*0.35-18).toFixed(1)+'px)';setTimeout(()=>{try{errReload.reloadNow(errReload.sidNow(),false);}catch{location.reload();}},160);}
+      function onStart(e){if(st&&Date.now()-st.t0>8000)cancel();if(st||!prefs.pullRefresh||innerWidth>=768||e.touches.length!==1)return;if(e.target?.closest?.('button,a,select,input,label,[role="button"],[role="menu"],[role="menuitem"],[role="listbox"],[role="option"],[role="combobox"]'))return;const p=e.touches[0];
+        st={t0:Date.now(),x:p.clientX,y:p.clientY,active:false,pulling:false,armed:false,dy:0,risk:null,timer:setTimeout(()=>{if(!st)return;st.active=true;st.risk=reloadRisk();try{navigator.vibrate?.(8);}catch{}},HOLD)};}
+      function onMove(e){if(!st)return;const p=e.touches[0];if(!p)return;const dx=p.clientX-st.x,dy=p.clientY-st.y;
+        if(!st.active){if(Math.hypot(dx,dy)>SLOP)cancel();return;}
+        if(!st.pulling){if(dy>6&&dy>Math.abs(dx)){st.pulling=true;st.y0=p.clientY;clearTimeout(resetTimer);if(!ph.isConnected)document.documentElement.append(ph);ph.hidden=false;document.documentElement.setAttribute('data-amp-pulling','');try{getSelection()?.removeAllRanges();}catch{}}else{if(Math.hypot(dx,dy)>SLOP*2)cancel();return;}}
+        if(e.cancelable)e.preventDefault();st.dy=Math.max(0,p.clientY-st.y0);frame();}
+      function onEnd(e){if(!st)return;const s=st;st=null;clearTimeout(s.timer);if(!s.pulling)return;if(e.cancelable)e.preventDefault();if(s.armed)fire();else settle();}
+      function onCtx(e){if(!st)return;if(st.pulling){e.preventDefault();return;}cancel();}
+      function card(){const m=document.querySelector('main');if(!m)return null;const ed=[...m.querySelectorAll('div[contenteditable="true"],textarea')].filter(x=>!x.closest('[role="log"]')&&x.getClientRects().length).pop();if(!ed)return null;let c=ed;for(let i=0;i<7&&c.parentElement&&c.parentElement!==m;i++){const cs=getComputedStyle(c);if(parseFloat(cs.borderTopWidth)>=1&&parseFloat(cs.borderTopLeftRadius)>=8)return c;c=c.parentElement;}return ed;}
+      function bind(){if(!prefs.pullRefresh||innerWidth>=768)return;const c=card();if(!c||bound.has(c))return;bound.add(c);c.addEventListener('touchstart',onStart,{passive:true});c.addEventListener('touchmove',onMove,{passive:false});c.addEventListener('touchend',onEnd,{passive:false});c.addEventListener('touchcancel',()=>cancel(),{passive:true});c.addEventListener('contextmenu',onCtx);}
+      // 兜底：手势中途输入框被重绘（收不到 touchend）时，下一次触摸先把页面复位
+      window.addEventListener('touchstart',()=>{if(st&&st.pulling&&Date.now()-st.t0>400)cancel();},{passive:true,capture:true});
+      document.addEventListener('visibilitychange',()=>{if(document.hidden)cancel();});
+      return {bind,destroy(){cancel();clear();ph.remove();}};
+    })();
+    // 手机侧栏（Arena 的对话列表抽屉）：变窄 + 半透明磨砂玻璃，遮罩调淡（设置里可关）；下拉刷新时整页禁止选中文字
+    const glassStyle=el('style','','@media (max-width:767px){html[data-amp-glass] [data-sidebar="sidebar"][data-mobile="true"]{--sidebar-width:min(64vw,264px)!important;background-color:hsl(var(--sidebar-background,36 45% 98%) / .6)!important;-webkit-backdrop-filter:blur(22px) saturate(1.6);backdrop-filter:blur(22px) saturate(1.6);border-right:1px solid hsl(var(--border-medium,30 9% 87%) / .6);box-shadow:12px 0 40px -10px #0000004d!important}'
+      +'html[data-amp-glass] [data-sidebar="sidebar"][data-mobile="true"] :is([data-sidebar="header"],[data-sidebar="content"],[data-sidebar="footer"],[data-sidebar="group"],[data-sidebar="group-label"]){background-color:transparent!important}'
+      +'html[data-amp-glass] body:has(> [role="dialog"][data-mobile="true"][data-state="open"]) > div.bg-black\\/80[data-state]:not([role]){background-color:rgb(0 0 0 / .16)!important}}'
+      +'html[data-amp-pulling],html[data-amp-pulling] *{-webkit-user-select:none!important;user-select:none!important;-webkit-touch-callout:none!important}',document.head||document.body);
+    const panel=el('section','panel',null,root),resizer=el('div','resizer',null,panel);resizer.title='拖动调整宽度，双击恢复';const sheetGrip=el('div','sheet-grip',null,panel);el('i','',null,sheetGrip);sheetGrip.title='上下拖动调整高度：拉到顶全屏，拉到底收起；轻点切换全屏';
     dragger(resizer,{start:e=>({x:e.clientX,width:host.getBoundingClientRect().width}),move:(e,s)=>{const w=clamp(s.width+(s.x-e.clientX),280,Math.max(280,Math.min(720,innerWidth-480)),prefs.width);host.style.setProperty('--amp-width',w+'px');prefs.width=w;},end:()=>{savePrefs();paint();},reset:()=>{prefs.width=340;host.style.setProperty('--amp-width','340px');savePrefs();paint();}});
     const grip=el('div','grip',null,gripRoot);grip.hidden=true;grip.title='拖动调整 Arena 会话栏宽度，双击恢复';
     dragger(grip,{start:e=>{const sb=findSidebar();if(!sb?.panel)return null;return {x:e.clientX,width:sidebarWidth(sb)};},move:(e,s)=>{const w=clamp(s.width+(e.clientX-s.x),200,Math.max(200,Math.min(560,innerWidth-640)),s.width);prefs.sidebarWidth=w;applySidebar(w);placeGrip();},end:()=>{savePrefs();log('debug','侧栏','Arena 会话栏宽度 '+prefs.sidebarWidth+'px');paint();},reset:()=>{prefs.sidebarWidth=null;applySidebar(null);savePrefs();placeGrip();},tap:e=>forwardTap(grip,e)});
     function placeGrip(){const sb=innerWidth>=768?applySidebar(prefs.sidebarWidth):null,panelEl=sb?.panel;if(!panelEl||sb.peer&&sb.peer.dataset.state&&sb.peer.dataset.state!=='expanded'){grip.hidden=true;return;}const rect=panelEl.getBoundingClientRect();if(rect.width<120||rect.height<100){grip.hidden=true;return;}grip.hidden=false;grip.style.left=(rect.right-3)+'px';grip.style.top=rect.top+'px';grip.style.height=rect.height+'px';}
     const compactBar=el('div','compact-bar',null,panel),compactTop=el('div','compact-top',null,compactBar),compactName=el('span','compact-name mono','模型信息',compactTop);
-    const compactToggle=button(compactTop,'详情','展开或收起详情',()=>{expanded=!expanded;render();},'compact-toggle');const compactInfo=el('div','compact-info','',compactBar);
+    {const eb=button(compactTop,'','导出当前页的记录',()=>void exportView(),'sheet-btn');icon('download',eb);}
+    const compactToggle=button(compactTop,'','收起模型信息',()=>{expanded=false;render();},'sheet-btn');icon('close',compactToggle);
+    const compactInfo=el('div','compact-info','',compactBar),compactText=el('span','ci-text','',compactInfo),compactChip=button(compactInfo,'','说明',()=>say(chipWhy(),4200),'chip');compactChip.hidden=true;
+    // 手机底部抽屉：顶部把手（和标题行）上下拖动调高度，拖到顶全屏、拖到底收起；轻点把手切换全屏。高度按屏幕比例记住。
+    const SHEET_MIN=150;
+    const sheetAvail=()=>Math.max(260,(window.innerHeight||640)-(parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--amp-bar-h'))||0));
+    // 不全屏时抽屉在页面里占位，至少给上面留出顶栏 + 输入框 + 一小段对话
+    function sheetInflowMax(){const avail=sheetAvail();let need=220;try{const m=document.querySelector('main'),ed=m&&[...m.querySelectorAll('div[contenteditable="true"],textarea')].filter(x=>!x.closest('[role="log"]')&&x.getClientRects().length).pop();if(ed){let c=ed;for(let i=0;i<7&&c.parentElement&&c.parentElement!==m;i++){const cs=getComputedStyle(c);if(parseFloat(cs.borderTopWidth)>=1&&parseFloat(cs.borderTopLeftRadius)>=8)break;c=c.parentElement;}need=Math.max(need,c.getBoundingClientRect().height+130);}}catch{}return Math.round(Math.max(SHEET_MIN,Math.min(avail-need,avail*0.8)));}
+    function applySheet(){if(!compact||!expanded||host.hidden){host.removeAttribute('data-full');host.removeAttribute('data-float');return;}if(host.hasAttribute('data-dragging'))return;const full=!!prefs.sheetFull;host.toggleAttribute('data-full',full);host.removeAttribute('data-float');if(!full){const v=Math.round(Math.max(SHEET_MIN,Math.min(sheetInflowMax(),prefs.sheetH*sheetAvail())))+'px';if(host.style.getPropertyValue('--amp-sheet-h')!==v)host.style.setProperty('--amp-sheet-h',v);}}
+    {let drag=null;
+      const down=e=>{if(!compact||!expanded||drag||e.button>0||e.target.closest?.('button,select,input,textarea,a'))return;drag={id:e.pointerId,el:e.currentTarget,y:e.clientY,h:host.getBoundingClientRect().height,moved:false,pts:[[e.clientY,e.timeStamp]]};try{drag.el.setPointerCapture(e.pointerId);}catch{}};
+      const move=e=>{if(!drag||e.pointerId!==drag.id)return;const dy=drag.y-e.clientY;if(!drag.moved){if(Math.abs(dy)<5)return;drag.moved=true;drag.max=sheetInflowMax();drag.avail=sheetAvail();host.setAttribute('data-dragging','');}
+        const h=Math.max(72,Math.min(drag.avail,drag.h+dy));drag.cur=h;drag.pts.push([e.clientY,e.timeStamp]);if(drag.pts.length>5)drag.pts.shift();host.removeAttribute('data-full');host.toggleAttribute('data-float',h>drag.max);host.style.setProperty('--amp-sheet-h',Math.round(h)+'px');if(e.cancelable)e.preventDefault();};
+      const up=e=>{if(!drag||e.pointerId!==drag.id)return;const d=drag;drag=null;try{d.el.releasePointerCapture(e.pointerId);}catch{}host.removeAttribute('data-dragging');
+        if(!d.moved){if(d.el===sheetGrip&&e.type==='pointerup'){prefs.sheetFull=!prefs.sheetFull;savePrefs();applySheet();}return;}
+        const [y0,t0]=d.pts[0],[y1,t1]=d.pts[d.pts.length-1],v=t1>t0?(y0-y1)/(t1-t0):0,h=d.cur;  // v：px/ms，正数 = 往上甩
+        host.removeAttribute('data-float');
+        if(h<SHEET_MIN*0.85||v<-1.1&&h<d.h){expanded=false;render();return;}
+        if(h>d.avail*0.84||v>1.1&&h>=d.h)prefs.sheetFull=true;
+        else{prefs.sheetFull=false;prefs.sheetH=Math.max(0.2,Math.min(0.95,Math.min(h,d.max)/d.avail));}
+        savePrefs();applySheet();};
+      for(const hd of [sheetGrip,compactBar]){hd.addEventListener('pointerdown',down);hd.addEventListener('pointermove',move);hd.addEventListener('pointerup',up);hd.addEventListener('pointercancel',up);}
+    }
     const head=el('header','head',null,panel),heading=el('div','grow',null,head);el('h2','','模型信息',heading);const numberLabel=el('span','local-number mono','',heading);numberLabel.title='本地会话编号（同一浏览器内统一递增）';
-    {const hb=button(head,'','收起模型信息（收起后点屏幕右边缘的小按钮展开）',()=>{pref.open=false;persist();render();},'head-fold');el('span','','收起',hb);icon('chevron',hb);}
+    const headChip=button(heading,'','说明',()=>say(chipWhy(),4200),'chip');headChip.hidden=true;{const eb=button(heading,'','导出当前页的记录',()=>void exportView(),'sheet-btn head-export');icon('download',eb);const hb=button(head,'','收起模型信息（收起后点屏幕右边缘的小按钮展开）',()=>{pref.open=false;persist();render();},'head-fold');el('span','','收起',hb);icon('chevron',hb);}
     const banner=el('div','cache-banner',null,panel),bannerText=el('span','grow','',banner);button(banner,'返回当前','返回当前会话的最新记录',()=>{historyView=null;turnKey=null;selected=null;rawSpan=null;tab=tab==='cache'?'overview':tab;render();},'return-live');
     const nav=el('div','tabs',null,panel);nav.setAttribute('role','tablist');nav.setAttribute('aria-label','模型信息视图');
-    const tabs=[['overview','概览'],['detector','独立检测'],['hunt','抽卡'],['sources','来源'],['raw','原始'],['cache','缓存'],['logs','日志'],['settings','设置']];
-    const tabButtons=tabs.map(([id,text])=>{const b=button(nav,text,text,()=>{tab=id;render();},'tab');b.setAttribute('role','tab');b.id='amp-tab-'+id;return b;});
-    nav.onkeydown=e=>{let i=tabs.findIndex(x=>x[0]===tab);if(e.key==='ArrowRight')i=(i+1)%tabs.length;else if(e.key==='ArrowLeft')i=(i+tabs.length-1)%tabs.length;else if(e.key==='Home')i=0;else if(e.key==='End')i=tabs.length-1;else return;e.preventDefault();tab=tabs[i][0];render();tabButtons[i].focus();};
+    // 一级标签一屏放得下：来源 + 原始 合成“数据”，缓存 + 日志 合成“记录”（页内再切）；版本与更新单独放“关于”
+    const tabs=[['overview','概览'],['detector','独立检测'],['hunt','抽卡'],['sources','来源'],['raw','原始'],['cache','缓存'],['logs','日志'],['settings','设置'],['about','关于']];
+    const groups=[['overview','概览',['overview']],['detector','独立检测',['detector']],['hunt','抽卡',['hunt']],['data','数据',['sources','raw']],['records','记录',['cache','logs']],['settings','设置',['settings']],['about','关于',['about']]];
+    const groupOf=t=>groups.find(g=>g[2].includes(t))||groups[0],groupLast={};
+    const tabButtons=groups.map(([gid,text,leaves])=>{const b=button(nav,text,text,()=>{tab=leaves.includes(groupLast[gid])?groupLast[gid]:leaves[0];render();},'tab');b.setAttribute('role','tab');b.id='amp-tab-'+gid;return b;});
+    nav.onkeydown=e=>{let i=groups.indexOf(groupOf(tab));if(e.key==='ArrowRight')i=(i+1)%groups.length;else if(e.key==='ArrowLeft')i=(i+groups.length-1)%groups.length;else if(e.key==='Home')i=0;else if(e.key==='End')i=groups.length-1;else return;e.preventDefault();tabButtons[i].click();tabButtons[i].focus();};
+    const subnav=el('div','subtabs',null,panel);subnav.setAttribute('role','group');subnav.hidden=true;let subStamp='';
     const status=el('div','status',null,panel);status.setAttribute('aria-live','polite');
     const pickers=el('div','pickers',null,panel);
     const turnPicker=el('label','call-picker',null,pickers);el('span','','轮次',turnPicker);const turnSelect=el('select','selector',null,turnPicker);turnSelect.setAttribute('aria-label','选择轮次');turnSelect.onchange=()=>{const live=liveKey();turnKey=turnSelect.value===live?null:turnSelect.value;selected=null;rawSpan=null;render();};
@@ -6892,13 +6971,16 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     const actions=el('div','log-actions',null,logBar),read=button(actions,'重读记录','重新读取当前运行记录',refresh);const clearLogs=button(actions,'清理日志','清理全部本地日志（不影响编号与缓存）',async()=>{if(!confirmLogClear){confirmLogClear=true;render();return;}await catalog.clearLogs();confirmLogClear=false;logKey='';bodyStamp=[];render();}),cancelClear=button(actions,'取消','取消清理日志',()=>{confirmLogClear=false;render();});
     const body=el('div','body',null,panel);body.setAttribute('role','tabpanel');
     const toast=el('div','toast','',panel);toast.hidden=true;toast.setAttribute('role','status');
-    const footer=el('footer','footer',null,panel),exportButton=button(footer,'','导出当前视图的记录、原始数据和日志',async()=>{if(tab==='hunt'){download(gacha.state()||{},'arena-gacha-'+Date.now()+'.json');return;}if(tab==='detector'){download({...legacyDisplay.snapshot(),oneClick:force.bySid.get(sidOf(location.href))||null},'arena-independent-detector-'+Date.now()+'.json');return;}const data=exported();data.logs=await catalog.readLogs(data.sid);download(data,'amp-lite-'+(data.sid||'export').slice(0,8)+'-'+Date.now()+'.json');});icon('download',exportButton);el('span','','导出记录',exportButton);(()=>{const cmp=(x,y)=>{const p=String(x).split('.').map(Number),q=String(y).split('.').map(Number);for(let i=0;i<Math.max(p.length,q.length);i++){const d=(p[i]||0)-(q[i]||0);if(d)return d>0?1:-1;}return 0;};const box=el('div','upds',null,footer);const BASE='https://raw.githubusercontent.com/755287249/-/main/test/';const mk=(label,file,getCur)=>{const RAW=BASE+file,CK='amp.native.upd.'+file;let latest=null,busy=false,fresh=null;const ub=el('button','footer-note upd','',box);ub.type='button';const paint=(msg)=>{const cur=getCur();ub.dataset.new=cur&&latest&&cmp(latest,cur)>0?'1':'';ub.dataset.miss=cur?'':'1';ub.title=(cur?label+' 当前 v'+cur:label+' 未检测到（未安装或未启用）')+(latest?'，GitHub 最新 v'+latest+(ub.dataset.src?'（'+ub.dataset.src+'）':''):'')+'。点击'+(ub.dataset.new||!cur?'打开安装页':'重新检查');const old=!cur&&file.includes('Switch')&&!!document.querySelector('[data-amp-switch],[data-amp-login],[data-amp-switcher],#amp-switcher-css');const ahead=cur&&latest&&cmp(cur,latest)>0;ub.textContent=label+' '+(msg||(!cur?(old?'旧版（≤1.0.17）· 安装 v'+(latest||'新版'):latest?'未检测到 · 安装 v'+latest:'未检测到 · 安装'):ub.dataset.new?'v'+cur+' → v'+latest+' · 更新':ahead?'v'+cur+' · GitHub 仍是 v'+latest:latest?'v'+cur+' · 已是最新':'v'+cur+' · 检查更新'));if(!cur&&!msg)ub.title=label+' 未检测到版本号：可能是 v1.0.17 及更早的版本（不会上报版本），或未安装/未启用。安装最新版后即可显示。'+(latest?'GitHub 最新 v'+latest+'。':'');if(ahead&&!msg)ub.title=label+' 本地 v'+cur+' 比 GitHub 上的 v'+latest+' 新，请把新版上传到 GitHub。';};const check=async(force)=>{if(busy)return;try{const c=JSON.parse(localStorage.getItem(CK)||'null');if(!force&&c&&Date.now()-c.at<5*60e3&&!(getCur()&&cmp(getCur(),c.v)>0)){latest=c.v;paint();return;}}catch{}busy=true;paint('检查中…');try{const F=window.__ampNativeFetch||fetch,vOf=t=>(String(t).match(/\/\/\s*@version\s+([\d.]+)/)||[])[1]||null,errs=[];let best=null,src='';const take=(v,from)=>{if(v&&(!best||cmp(v,best)>0)){best=v;src=from;}};
+    // 版本 / 更新 / 正式版·测试版入口：原来挤在底部，现在放“关于”页（节点常驻，切到“关于”时挂进页面）
+    const aboutBox=el('div','upds about-upds');let aboutChannel='';
+    async function exportView(){if(tab==='hunt'){download(gacha.state()||{},'arena-gacha-'+Date.now()+'.json');return;}if(tab==='detector'){download({...legacyDisplay.snapshot(),oneClick:force.bySid.get(sidOf(location.href))||null},'arena-independent-detector-'+Date.now()+'.json');return;}const data=exported();data.logs=await catalog.readLogs(data.sid);download(data,'amp-lite-'+(data.sid||'export').slice(0,8)+'-'+Date.now()+'.json');}
+    ;(()=>{const cmp=(x,y)=>{const p=String(x).split('.').map(Number),q=String(y).split('.').map(Number);for(let i=0;i<Math.max(p.length,q.length);i++){const d=(p[i]||0)-(q[i]||0);if(d)return d>0?1:-1;}return 0;};const box=aboutBox;const BASE='https://raw.githubusercontent.com/755287249/-/main/test/';const mk=(label,file,getCur)=>{const RAW=BASE+file,CK='amp.native.upd.'+file;let latest=null,busy=false,fresh=null;const ub=el('button','footer-note upd','',box);ub.type='button';ub.dataset.self='1';const paint=(msg)=>{const cur=getCur();ub.dataset.new=cur&&latest&&cmp(latest,cur)>0?'1':'';ub.dataset.miss=cur?'':'1';ub.title=(cur?label+' 当前 v'+cur:label+' 未检测到（未安装或未启用）')+(latest?'，GitHub 最新 v'+latest+(ub.dataset.src?'（'+ub.dataset.src+'）':''):'')+'。点击'+(ub.dataset.new||!cur?'打开安装页':'重新检查');const old=!cur&&file.includes('Switch')&&!!document.querySelector('[data-amp-switch],[data-amp-login],[data-amp-switcher],#amp-switcher-css');const ahead=cur&&latest&&cmp(cur,latest)>0;ub.textContent=label+' '+(msg||(!cur?(old?'旧版（≤1.0.17）· 安装 v'+(latest||'新版'):latest?'未检测到 · 安装 v'+latest:'未检测到 · 安装'):ub.dataset.new?'v'+cur+' → v'+latest+' · 更新':ahead?'v'+cur+' · GitHub 仍是 v'+latest:latest?'v'+cur+' · 已是最新':'v'+cur+' · 检查更新'));if(!cur&&!msg)ub.title=label+' 未检测到版本号：可能是 v1.0.17 及更早的版本（不会上报版本），或未安装/未启用。安装最新版后即可显示。'+(latest?'GitHub 最新 v'+latest+'。':'');if(ahead&&!msg)ub.title=label+' 本地 v'+cur+' 比 GitHub 上的 v'+latest+' 新，请把新版上传到 GitHub。';};const check=async(force)=>{if(busy)return;try{const c=JSON.parse(localStorage.getItem(CK)||'null');if(!force&&c&&Date.now()-c.at<5*60e3&&!(getCur()&&cmp(getCur(),c.v)>0)){latest=c.v;paint();return;}}catch{}busy=true;paint('检查中…');try{const F=window.__ampNativeFetch||fetch,vOf=t=>(String(t).match(/\/\/\s*@version\s+([\d.]+)/)||[])[1]||null,errs=[];let best=null,src='';const take=(v,from)=>{if(v&&(!best||cmp(v,best)>0)){best=v;src=from;}};
           // 1) GitHub API 查这个文件最新提交的 sha，再按 sha 取原文（路径唯一，不会被 CDN/镜像缓存）；2) 兜底直接取 main
           try{const c=await F.call(window,'https://api.github.com/repos/755287249/-/commits?sha=main&per_page=1&path='+encodeURIComponent((/\/test\/$/.test(BASE)?'test/':'')+file),{cache:'no-store',credentials:'omit'});if(!c.ok)throw new Error('API HTTP '+c.status);const sha=(await c.json())?.[0]?.sha;if(!sha)throw new Error('API 无提交');const r=await F.call(window,BASE.replace('/main/','/'+sha+'/')+file,{cache:'no-store',credentials:'omit',headers:{Range:'bytes=0-4095'}});if(!r.ok)throw new Error('sha HTTP '+r.status);take(vOf(await r.text()),'commit '+sha.slice(0,7));fresh=BASE.replace('/main/','/'+sha+'/')+file;}catch(e){errs.push(e.message||String(e));}
           try{const r=await F.call(window,RAW+'?t='+Date.now(),{cache:'no-store',credentials:'omit',headers:{Range:'bytes=0-4095'}});if(!r.ok)throw new Error('raw HTTP '+r.status);take(vOf(await r.text()),'raw');}catch(e){errs.push(e.message||String(e));}
           if(!best)throw new Error(errs.join('；')||'未找到版本号');latest=best;ub.dataset.src=src;try{localStorage.setItem(CK,JSON.stringify({v:latest,at:Date.now()}));}catch{}busy=false;paint();const cu=getCur();if(cu&&cmp(cu,latest)>0&&(check.n=(check.n||0)+1)<=8)setTimeout(()=>void check(true),120e3);}catch(e){busy=false;paint('检查失败 · 重试');ub.title=String(e&&e.message||e);}};ub.onclick=()=>{if(busy)return;const cur=getCur();if(!cur||latest&&cmp(latest,cur)>0){window.open(fresh||RAW,'_blank');paint('请在新标签页确认安装');try{localStorage.removeItem(CK);}catch{}return;}void check(true);};paint();setTimeout(()=>void check(false),1500);return paint;};mk('套件','Arena-Native-Suite.user.js',()=>String(VERSION).replace(/^native-/,''));const sw=mk('账号切换','Arena-Account-Switch.user.js',()=>document.documentElement.dataset.ampSwitchVer||'');      // 测试版入口：正式版里输入密码后显示测试版的安装 / 更新；测试版里显示“正式版入口”（切回正式版，无需密码）。
       // 地址都由 BASE 推出来，发布时替换链接不会影响这里。脚本里只存密码的 SHA-256，不存明文。
-      const IS_TEST=/\/test\/$/.test(BASE),CH_BASE=IS_TEST?BASE.replace(/test\/$/,''):BASE+'test/',CH_NAME=IS_TEST?'正式版':'测试版',CH_KEY='amp.native.chan.unlock',CH_HASH='a17502877cfc09fdcfd1c868acc7fb61e1842bb02fd89ffca9451a507f9caa7c';
+      const IS_TEST=/\/test\/$/.test(BASE),CH_BASE=IS_TEST?BASE.replace(/test\/$/,''):BASE+'test/',CH_NAME=IS_TEST?'正式版':'测试版',CH_KEY='amp.native.chan.unlock',CH_HASH='a17502877cfc09fdcfd1c868acc7fb61e1842bb02fd89ffca9451a507f9caa7c';aboutChannel=IS_TEST?'测试版':'正式版';
       const chPaints=[];let chLines=[],chForm=null;
       const chVer=t=>(String(t).match(/\/\/\s*@version\s+([\d.]+)/)||[])[1]||null;
       const chLatest=async file=>{const F=window.__ampNativeFetch||fetch,path=(IS_TEST?'':'test/')+file,errs=[];let best=null,fresh=null;
@@ -6921,16 +7003,22 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       chEntry.onclick=()=>{if(chLines.length){chHide(!IS_TEST);return;}let ok=IS_TEST;try{ok=ok||localStorage.getItem(CH_KEY)==='1';}catch{}if(ok)chShow();else chAsk();};
       chHide(false);try{if(!IS_TEST&&localStorage.getItem(CH_KEY)==='1')chShow();}catch{}
       try{const mo=new MutationObserver(()=>{sw();chPaints.forEach(f=>f());});mo.observe(document.documentElement,{attributes:true,attributeFilter:['data-amp-switch-ver']});}catch{}})();
+    // 有新版本时“关于”标签上亮一个小点
+    const aboutDot=()=>{const i=groups.findIndex(g=>g[0]==='about');if(tabButtons[i])tabButtons[i].toggleAttribute('data-dot',!!aboutBox.querySelector('.upd[data-self][data-new="1"]'));};try{new MutationObserver(aboutDot).observe(aboutBox,{subtree:true,childList:true,attributes:true,attributeFilter:['data-new']});}catch{}aboutDot();
     const fmt=v=>v===null||v===undefined?'—':Number(v).toLocaleString('zh-CN');
     const clock=v=>{const t=typeof v==='number'?v:Date.parse(v||'');return Number.isFinite(t)?new Date(t).toLocaleTimeString('zh-CN',{hour12:false}):'--:--:--';};
     const seqLabel=sid=>{const e=catalog.entries.get(sid);return e?(e.temporary?'临时 ':'')+'#'+e.seq:'';};
-    const say=text=>{toast.textContent=text;toast.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>{toast.hidden=true;},2000);};
+    const say=(text,ms=2000)=>{toast.textContent=text;toast.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>{toast.hidden=true;},ms);};
     const liveView=sid=>selectedRun()?.data||catalog.snapshots.get(sid)||history.find(s=>s.sid===sid)||null;
     const liveKey=()=>liveView(sidOf(location.href))?.key||null;
     const view=()=>{if(historyView)return historyView;const sid=sidOf(location.href);if(turnKey){const r=selectedRun();if(r?.data?.key===turnKey)return r.data;const t=catalog.turnCache.get(turnKey);if(t)return t;void catalog.getTurn(turnKey).then(()=>paint());return null;}return liveView(sid);};
     const turnTitle=(t,current)=>turnLabel(t)+' · '+clock(t.startedAt||t.at)+(t.prompt?' · “'+t.prompt+'”':'')+(current?' · 当前':'');
     function row(parent,key,value,mono=true){const r=el('div','row',null,parent);el('span','key',key,r);el('span','value'+(mono?' mono':''),value??'未提供',r);return r;}
     function empty(title,description){const box=el('div','empty',null,body);icon('cube',el('div','empty-icon',null,box));el('strong','',title,box);el('p','',description,box);}
+    // 说明文字默认收起：标题旁的 ⓘ 点一下展开、再点收起（展开状态记住，重绘不丢）
+    const openInfo=new Set();
+    function info(anchor,key,text,after){if(!text||!anchor)return null;const on=openInfo.has(key),b=el('button','info-btn',null,anchor);b.type='button';b.title='说明';b.setAttribute('aria-label','说明');b.setAttribute('aria-expanded',String(on));b.dataset.focus='i:'+key;icon('info',b);const p=el('div','info-text',String(text));p.hidden=!on;let ref=after||anchor;while(ref.nextElementSibling&&ref.nextElementSibling.classList.contains('info-text'))ref=ref.nextElementSibling;ref.after(p);b.onclick=e=>{e.preventDefault();e.stopPropagation();const next=!openInfo.has(key);if(next)openInfo.add(key);else openInfo.delete(key);p.hidden=!next;b.setAttribute('aria-expanded',String(next));};return b;}
+    function chipWhy(){return selectedRun()?.data?'上次记录：本轮还没读到新数据，显示的是上一次读取的结果（非本轮结论）。发送新消息后自动更新。':'本地缓存：这个页面还没读到本轮记录，显示的是本机保存的缓存（非本轮结论）。发送新消息后自动更新。';}
     async function copy(text,what='型号'){try{await navigator.clipboard.writeText(String(text));say('已复制'+what);}catch{say('复制不可用，请手动选中复制');}}
     function restoreMark(a,m){m.span.removeAttribute('data-amp-local-title');m.span.removeAttribute('data-amp-short');if(m.tip!==undefined){if(m.tip===null)a.removeAttribute('title');else a.setAttribute('title',m.tip);}if(m.description===null)a.removeAttribute('aria-description');else a.setAttribute('aria-description',m.description);}
     // 自定义/代号型号（如 dxzui）本身看不出厂商：若响应型号/内部名已识别出厂商，就显示成 dxzui-Claude。
@@ -7059,15 +7147,14 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       if(stopped||!document.body)return;const cooling=Date.now()<cooldown;if(cooling!==lastCooling){lastCooling=cooling;paint();}const main=document.querySelector('main'),ready=document.readyState==='complete';
       const anchor=ready?[...document.querySelectorAll('main button[aria-label="Toggle workspace sidebar"],main button[aria-label="Open workspace"],main button[aria-label="Close workspace"],main button[aria-label="打开工作区"],main button[aria-label="切换工作区侧边栏"]')].find(b=>{const r=b.getBoundingClientRect(),m=b.closest('main').getBoundingClientRect();return r.width>0&&r.height>0&&r.top<m.top+100;}):null;
       if(anchor){if(entry.parentNode!==anchor.parentNode||entry.nextSibling!==anchor)anchor.before(entry);entry.removeAttribute('data-floating');}else{if(entry.parentNode!==document.body)document.body.append(entry);entry.setAttribute('data-floating','');}
-      const drawer=ready&&main&&innerWidth<768?[...main.querySelectorAll('button[aria-label="Open sidebar"],button[aria-label="Toggle sidebar"],button[aria-label="Expand sidebar"],button[aria-label="打开侧边栏"],button[aria-label="展开侧边栏"]')].find(b=>{const r=b.getBoundingClientRect(),m=main.getBoundingClientRect();return r.width>0&&r.height>0&&r.top<m.top+100&&r.left<m.left+m.width/2;}):null;
-      if(drawer){if(drawer.nextSibling!==reloadHost)drawer.after(reloadHost);reloadHost.hidden=false;const fg=getComputedStyle(drawer).color;if(fg&&reloadHost.style.getPropertyValue('--amp-reload-fg')!==fg)reloadHost.style.setProperty('--amp-reload-fg',fg);}else reloadHost.hidden=true;
+      if(reloadHost.isConnected)reloadHost.remove();document.documentElement.toggleAttribute('data-amp-glass',!!prefs.glassDrawer);if(ready)pull.bind();
       const eligible=/^\/agent(?:\/|$)/.test(location.pathname);entry.hidden=!eligible;let mode='none';
       if(eligible&&ready&&main){const parent=main.parentElement,p=getComputedStyle(parent),m=getComputedStyle(main),isSibling=host.parentNode===parent&&!host.hidden,available=main.getBoundingClientRect().width+(isSibling?host.getBoundingClientRect().width+(parseFloat(p.columnGap)||0):0),wide=innerWidth>=1024&&available>=900&&p.display.includes('flex')&&p.flexDirection==='row';
         if(wide){mode='wide';if(host.parentNode!==parent||host.previousSibling!==main)main.after(host);compact=false;}
         else if(m.display.includes('flex')&&m.flexDirection==='column'){mode='compact';if(host.parentNode!==main||host!==main.lastChild)main.append(host);compact=true;}
       }
       if(mode!==lastLayout){lastLayout=mode;if(mode==='compact')expanded=false;bodyStamp=[];paint();}
-      host.toggleAttribute('data-compact',compact);host.toggleAttribute('data-expanded',expanded);host.hidden=!eligible||mode==='none'||!compact&&!pref.open||compact&&!expanded;foldAt.on=eligible&&mode==='wide';placeFold();
+      host.toggleAttribute('data-compact',compact);host.toggleAttribute('data-expanded',expanded);host.hidden=!eligible||mode==='none'||!compact&&!pref.open||compact&&!expanded;foldAt.on=eligible&&mode==='wide';placeFold();applySheet();
       if(ready){placeGrip();localTitles();sentTimes();try{headerTitle();}catch{}try{docIcon();}catch{}if(!((attach.n=(attach.n||0)+1)%4))statusBar();}
     }
     function cacheTab(){
@@ -7093,6 +7180,14 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       if(!list.length){el('p','note','这个级别下暂无日志。',body);return;}
       for(const e of list.slice(-300).reverse()){const line=el('div','logline '+e.level,null,body),meta=el('div','log-meta',null,line);el('span','',e.stage+' · '+({info:'普通',detail:'详细',debug:'调试',warn:'警告',error:'错误'}[e.level]||e.level),meta);el('time','mono',new Date(e.at).toLocaleTimeString('zh-CN',{hour12:false}),meta);el('p','',e.text,line);if(e.runId||e.spanId){const d=el('details','log-origin',null,line);el('summary','','标识',d);if(e.runId)el('code','',e.runId,d);if(e.spanId)el('code','',e.spanId,d);}}
     }
+    function aboutTab(){
+      const top=el('div','about-head',null,body);el('div','about-logo','A',top);const tx=el('div','grow',null,top);el('div','about-title','Arena Native Suite',tx);el('div','about-sub',(aboutChannel?aboutChannel+' · ':'')+'v'+String(VERSION).replace(/^native-/,''),tx);
+      const vs=el('section','section',null,body),vh=el('div','section-heading',null,vs),vh3=el('h3','','版本与更新',vh);info(vh3,'about:upd','每一行是一个脚本：点一下重新检查；有新版本时这一行变深色，点它在新标签页打开安装页。\n“'+(aboutChannel==='测试版'?'正式版':'测试版')+'入口”用来在正式版和测试版之间切换。',vh);vs.append(aboutBox);
+      const ex=el('section','section',null,body),eh=el('div','section-heading',null,ex),eh3=el('h3','','导出',eh);info(eh3,'about:exp','模型信息顶部的下载图标导出当前页；这里可以分别导出。都不含登录令牌。',eh);const acts=el('div','log-actions',null,ex);
+      button(acts,'模型记录','导出当前会话的记录、原始数据和日志',async()=>{const data=exported();data.logs=await catalog.readLogs(data.sid);download(data,'amp-lite-'+(data.sid||'export').slice(0,8)+'-'+Date.now()+'.json');});
+      button(acts,'独立检测','导出独立检测显示与一键检测结果',()=>download({...legacyDisplay.snapshot(),oneClick:force.bySid.get(sidOf(location.href))||null},'arena-independent-detector-'+Date.now()+'.json'));
+      button(acts,'抽卡记录','导出本次抽卡记录（不含令牌）',()=>download(gacha.state()||{},'arena-gacha-'+Date.now()+'.json'));
+    }
     function render(){
       if(boundPath!==location.pathname){boundPath=location.pathname;historyView=null;turnKey=null;selected=null;rawSpan=null;tab='overview';bodyStamp=[];logKey='';}
       attach();const sid=sidOf(location.href),r=selectedRun();if(sid&&!catalog.snapshots.has(sid)&&!catalog.loading.has(sid))void catalog.getSnapshot(sid).then(()=>paint());
@@ -7101,10 +7196,10 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       const originTag=r?.data&&r.data.revision!==r.revision?'上次':!r?.data&&live?'缓存':'';
       const shown=meta?.name?.name||liveCall?.internal||liveCall?.model||'模型信息',eff=liveCall?.effort,effortText=eff?.value||({conflict:'冲突',unsupported:'不支持'}[eff?.status])||'未知';
       triggerLabel.textContent=(prefs.showSeq&&seqLabel(sid)?seqLabel(sid)+' ':'')+shown;mini.textContent=liveCall?(originTag?originTag+' · ':'')+'推理 '+effortText:'';mini.hidden=true;
-      compactName.textContent=triggerLabel.textContent;compactInfo.textContent=liveCall?(originTag?originTag+' · ':'')+'显式 '+effortText+' · 推理 Token '+(liveCall.reasoning.status==='conflict'?'冲突':fmt(liveCall.reasoning.value)):'尚无模型记录';compactToggle.textContent=expanded?'收起':'详情';numberLabel.textContent=seqLabel(s?.sid||sid);
-      const historical=!!historyView||!!turnKey||!r?.data&&!!s||!!r?.data&&r.data.revision!==r.revision;banner.hidden=['detector','hunt'].includes(tab)||!historical;
+      compactName.textContent=triggerLabel.textContent;compactText.textContent=liveCall?'显式 '+effortText+' · 推理 Token '+(liveCall.reasoning.status==='conflict'?'冲突':fmt(liveCall.reasoning.value)):'尚无模型记录';numberLabel.textContent=seqLabel(s?.sid||sid);
+      const historical=!!historyView||!!turnKey||!r?.data&&!!s||!!r?.data&&r.data.revision!==r.revision,explicitHist=!!historyView||!!turnKey;banner.hidden=!explicitHist||!['overview','sources','raw'].includes(tab);{const ct=!explicitHist&&historical?(r?.data?'上次':'缓存'):'';for(const ch of [compactChip,headChip]){ch.hidden=!ct;if(ch.textContent!==ct)ch.textContent=ct;}}
       bannerText.textContent=historyView?'本地缓存 · '+(seqLabel(historyView.sid)||'')+' · '+turnLabel(historyView):turnKey?'历史轮次 · '+turnLabel(s)+' · 非最新记录':r?.data?'上次记录 · 非本轮结论':'本地缓存 · 非本轮结论';banner.querySelector('button').hidden=!(historyView||turnKey);
-      for(let i=0;i<tabs.length;i++){const on=tabs[i][0]===tab;tabButtons[i].setAttribute('aria-selected',String(on));tabButtons[i].tabIndex=on?0:-1;}body.setAttribute('aria-labelledby','amp-tab-'+tab);
+      const grp=groupOf(tab);groupLast[grp[0]]=tab;for(let i=0;i<groups.length;i++){const on=groups[i]===grp;tabButtons[i].setAttribute('aria-selected',String(on));tabButtons[i].tabIndex=on?0:-1;}body.setAttribute('aria-labelledby','amp-tab-'+grp[0]);subnav.hidden=grp[2].length<2;if(!subnav.hidden){const k=grp[0]+'|'+tab;if(subStamp!==k){subStamp=k;subnav.replaceChildren();subnav.setAttribute('aria-label',grp[1]);for(const id of grp[2]){const t=(tabs.find(x=>x[0]===id)||[id,id])[1],sb=button(subnav,t,t,()=>{tab=id;render();});sb.setAttribute('aria-pressed',String(id===tab));}}}
       logBar.hidden=tab!=='logs';clearLogs.textContent=confirmLogClear?'确认清理全部日志':'清理日志';cancelClear.hidden=!confirmLogClear;read.disabled=['detector','hunt'].includes(tab)||!!historyView||!!r?.busy||Date.now()<cooldown;
       statusBar();
       const dataTabs=['overview','sources','raw'].includes(tab),turnSid=historyView?.sid||sid,turns=catalog.turnsOf(turnSid),liveData=liveView(turnSid),options=liveData&&!turns.some(t=>t.key===liveData.key)?[...turns,{...liveData,key:liveData.key}]:turns;
@@ -7115,7 +7210,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       if(tab==='logs'){const logSid=historyView?.sid||sid,key=(logSid||'')+':'+catalog.logRevision;if(logKey!==key){logKey=key;void catalog.readLogs(logSid).then(rows=>{if(logKey!==key)return;logItems=rows;logSerial++;paint();});}}
       if(tab==='settings'&&Date.now()-usageAt>5000){usageAt=Date.now();void catalog.usage().then(u=>{usageInfo=u;settingsSerial++;paint();});}
       const next=[tab,tab==='detector'?legacyDisplay.revision+'|'+force.serial+'|'+(sid||''):tab==='hunt'?gacha.revision:0,s,c,historical,moreOpen,tab==='cache'?catalog.revision:0,cacheLimit,openSid,tab==='logs'?logSerial:0,tab==='logs'?pref.level:null,!!r?.busy,Date.now()<cooldown,rawFilter,rawSpan,tab==='raw'?rawStore.get(s?.key)?.spans.size:0,tab==='settings'?settingsSerial:0,confirmRawClear,tab==='settings'?JSON.stringify(prefs):'',tab==='raw'?JSON.stringify(rawOf(s)?.probe&&Object.keys(rawOf(s).probe)):'',tab==='overview'?spendSerial:0];
-      if(next.some((x,i)=>x!==bodyStamp[i])||!bodyStamp.length){const scroll=body.scrollTop,sameTab=bodyStamp[0]===tab,focus=root.activeElement?.dataset.focus;bodyStamp=next;body.replaceChildren();if(tab==='hunt')huntTab();else if(tab==='detector')detectorTab();else if(tab==='cache')cacheTab();else if(tab==='logs')logTab();else if(tab==='settings')settingsTab();else if(!c){if(tab==='overview'&&turnSid)spendCard({sid:turnSid});empty(turnKey?'正在读取此轮缓存':'尚无模型记录',turnKey?'如长时间无内容，说明此轮快照不可用。':'发送一条新消息后，型号与配置会自动填入。');}else if(tab==='sources')sources(s,c);else if(tab==='raw')rawTab(s,c);else overview(s,c);body.scrollTop=sameTab?scroll:0;if(focus)[...body.querySelectorAll('[data-focus]')].find(e=>e.dataset.focus===focus)?.focus({preventScroll:true});}
+      if(next.some((x,i)=>x!==bodyStamp[i])||!bodyStamp.length){const scroll=body.scrollTop,sameTab=bodyStamp[0]===tab,focus=root.activeElement?.dataset.focus;bodyStamp=next;body.replaceChildren();if(tab==='hunt')huntTab();else if(tab==='detector')detectorTab();else if(tab==='cache')cacheTab();else if(tab==='logs')logTab();else if(tab==='settings')settingsTab();else if(tab==='about')aboutTab();else if(!c){if(tab==='overview'&&turnSid)spendCard({sid:turnSid});empty(turnKey?'正在读取此轮缓存':'尚无模型记录',turnKey?'如长时间无内容，说明此轮快照不可用。':'发送一条新消息后，型号与配置会自动填入。');}else if(tab==='sources')sources(s,c);else if(tab==='raw')rawTab(s,c);else overview(s,c);body.scrollTop=sameTab?scroll:0;if(focus)[...body.querySelectorAll('[data-focus]')].find(e=>e.dataset.focus===focus)?.focus({preventScroll:true});}
     }
     // 独立检测页：上半“一键检测”（立刻读取本对话此刻的全部记录，看中途有没有换模型、换成了谁），下半“原脚本检测”（v8.1.0 原样结果，只换排版）
     const posText=c=>!c?'':(c.turn?'第 '+c.turn+' 轮':'未标记轮次')+(c.attempt>1?'（第 '+c.attempt+' 次）':'')+' · 第 '+c.n+' 次调用';
@@ -7123,7 +7218,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     let legacyRawOpen=false;
     function detectorTab(){
       const sid=sidOf(location.href),busy=force.busy&&force.sid===sid,res=sid?force.bySid.get(sid)||null:null,calls=res?.calls?.length||0,changed=!!res?.changes?.length,cur=res?.current;
-      const sec=el('section','section detect',null,body),head=el('div','section-heading',null,sec);el('h3','','一键检测',head);el('span','eyebrow',res?'检测于 '+clock(res.at):'核对此刻模型',head);
+      const sec=el('section','section detect',null,body),head=el('div','section-heading',null,sec),dh3=el('h3','','一键检测',head);el('span','eyebrow',res?'检测于 '+clock(res.at):'核对此刻模型',head);info(dh3,'det','立刻读取本对话此刻的全部记录（包括交互面板选择后继续的部分），逐次调用核对模型：中途有没有换模型、换成了谁。\n档位 / -vertex 等后缀不同不算换模型。',head);
       const card=el('div','detect-card',null,sec);card.dataset.tone=busy?'busy':!res?'idle':!calls?(res.error||res.notes.length?'error':'idle'):changed?'changed':'same';
       const st=el('div','detect-state',null,card);el('i','',null,st);
       el('span','grow',busy?(force.step||'检测中')+'…':!sid?'未打开对话':!res?'尚未检测':!calls?(res.error?'检测未完成':'没有找到模型调用记录'):changed?'中途换过 '+res.changes.length+' 次模型':'全程同一模型，未发现变更',st);
@@ -7133,14 +7228,14 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
         const alt=FORCE_SRC.filter(k=>k!==cur.src&&cur[k]&&!forceEq(cur[k],cur.name)).slice(0,2).map(k=>FORCE_SRC_TEXT[k]+' '+cur[k]);
         el('div','detect-sub',['按'+(FORCE_SRC_TEXT[cur.src]||'名称'),...alt].join(' · '),card);
         el('div','detect-sub',(cur.partial?'正在进行':'最近一次')+' · '+clock(cur.at)+' · '+posText(cur)+(cur.local?' · 本机记录':''),card);
-      }else if(!res)el('div','detect-sub',sid?'立刻读取本对话此刻的全部记录（包括交互面板选择后继续的部分），逐次调用核对模型：中途有没有换模型、换成了谁。':'打开一个对话后再检测：读取它此刻的全部记录（包括交互面板选择后继续的部分），逐次核对中途有没有换模型、换成了谁。',card);
+      }else if(!res)el('div','detect-sub',sid?'点下面的按钮开始检测':'打开一个对话后再检测',card);
       if(changed){const box=el('div','detect-changes',null,card);
         for(const c of res.changes.slice(-4).reverse()){const row=el('div','detect-change',null,box),flow=el('div','detect-flow',null,row);el('span','from',c.from,flow);el('span','arrow','→',flow);el('b','',c.to,flow);el('div','detect-sub',[clock(c.at),posText(c)+'起',...c.tags].join(' · '),row);}
         if(res.changes.length>4)el('div','detect-sub','更早还有 '+(res.changes.length-4)+' 次，见下方时间线',box);}
       const go=button(sec,busy?'检测中…':!sid?'打开对话后可用':res?'重新检测':'一键检测',sid?'立刻读取本对话此刻的 Trace 与本机记录，逐次调用核对模型':'先打开一个对话',()=>{void forceDetect();},'detect-go');go.disabled=force.busy||!sid;
       for(const n of res?.notes||[])el('p','note warning',n,sec);
       if(res?.error)el('p','note warning','检测出错：'+res.error,sec);
-      if(calls)el('p','note',['依据：'+(res.events?'Trace '+res.events+' 条事件':'本机记录'),calls+' 次调用',res.fetched?'补读 '+res.fetched+' 个详情':'',res.localTurns?'本机更早 '+res.localTurns+' 轮':'','档位 / -vertex 等后缀不同不算换模型'].filter(Boolean).join(' · '),sec);
+      if(calls)el('p','note',['依据：'+(res.events?'Trace '+res.events+' 条事件':'本机记录'),calls+' 次调用',res.fetched?'补读 '+res.fetched+' 个详情':'',res.localTurns?'本机更早 '+res.localTurns+' 轮':''].filter(Boolean).join(' · '),sec);
       if(res?.groups?.length){
         const ts=el('section','section',null,body),th=el('div','section-heading',null,ts);el('h3','','模型时间线',th);el('span','eyebrow',res.groups.length+' 段 · '+calls+' 次调用',th);
         const tl=el('div','tl',null,ts),gs=res.groups,shown=gs.slice(-8);if(gs.length>8)el('div','tl-more','更早 '+(gs.length-8)+' 段未显示',tl);
@@ -7153,12 +7248,11 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     // 原脚本 v8.1.0：把 “Key: value” 显示拆成配置行，原文收进“原始显示”
     function legacySection(res){
       const data=legacyDisplay.snapshot(),text=String(data.text||''),state=data.state||'等待初始化',waiting=text.startsWith(state+'：');
-      const ls=el('section','section',null,body),lh=el('div','section-heading',null,ls);el('h3','','原脚本检测',lh);el('span','eyebrow','v8.1.0 · 只看最新一轮',lh);
+      const ls=el('section','section',null,body),lh=el('div','section-heading',null,ls),lh3=el('h3','','原脚本检测',lh);el('span','eyebrow',data.at?'更新于 '+clock(data.at):'v8.1.0',lh);info(lh3,'legacy','原脚本 v8.1.0 的检测结果，只看最新一轮。\n与上面的一键检测互相独立；保留原脚本的 New Chat 自动刷新。',lh);
       const cfg=el('div','config',null,ls),sr=el('div','config-row',null,cfg);el('span','config-label','状态',sr);const sv=el('span','config-value legacy-state',state,sr);if(waiting){const pr=el('div','config-row',null,cfg);el('span','config-label','进度',pr);el('span','config-value legacy-state',text.slice(state.length+1),pr);}sv.dataset.tone=/检测结果/.test(state)?'ok':/进行中/.test(state)?'busy':/错误/.test(state)?'bad':'';
       if(!waiting)for(const line of text.split('\n')){const m=/^([^:：]{1,24})[:：]\s*(.+)$/.exec(line.trim());if(!m)continue;const r=el('div','config-row',null,cfg);el('span','config-label',m[1]==='Model'?'模型':m[1],r);el('span','config-value',m[2],r);}
       const raw=el('details','legacy-raw',null,ls),sm=el('summary','',null,raw);icon('chevron',sm);el('span','','原始显示',sm);raw.open=legacyRawOpen;raw.ontoggle=()=>{legacyRawOpen=raw.open;};const pre=el('pre','json',text||'等待发送内容',raw);pre.tabIndex=0;
       const actions=el('div','log-actions',null,ls);button(actions,'复制原始显示','复制原脚本完整显示文本',()=>copy(text,'独立检测信息'));button(actions,'导出本页','导出本页显示与一键检测结果，不含运行令牌',()=>download({...legacyDisplay.snapshot(),oneClick:res||null},'arena-independent-detector-'+Date.now()+'.json'));
-      el('p','note',(data.at?'显示更新于 '+clock(data.at)+' · ':'')+'与概览的检测互相独立；保留原脚本的 New Chat 自动刷新。',ls);
     }
     // 概览第一行“消耗”卡片：当前对话总量 / 最近一次，Token ↔ 美金 切换（选择会记住）。
     // 美金：Arena 费用接口的会话累计计费（含其他设备的消耗）与本轮计费；没有接口数据时用本机记录的每轮 credits 合计（标 ≈）。
@@ -7301,7 +7395,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       const seg=el('div','unit',null,head);seg.setAttribute('role','group');seg.setAttribute('aria-label','显示单位');
       for(const [k,t] of [['token','Token'],['usd','美金']]){const b=button(seg,t,k==='usd'?'按美金（计费）显示':'按 Token 数显示',()=>{if(prefs.spendUnit===k)return;prefs.spendUnit=k;savePrefs();spendSerial++;paint();});b.setAttribute('aria-pressed',String(unit===k));}
       const grid=el('div','spend-grid',null,sec);
-      const cell=(label,value,sub,title)=>{const c=el('div','spend-cell',null,grid);el('div','usage-label',label,c);el('div','spend-value',value,c);if(sub){const d=el('div','spend-sub',null,c);String(sub).split(' · ').forEach((part,i)=>{if(i)d.append(' · ');el('span','',part,d);});}if(title)c.title=title;};
+      const cell=(label,value,sub,title)=>{const c=el('div','spend-cell',null,grid),lb=el('div','usage-label',label,c);el('div','spend-value',value,c);if(sub){const d=el('div','spend-sub',null,c);String(sub).split(' · ').forEach((part,i)=>{if(i)d.append(' · ');el('span','',part,d);});}if(title){c.title=title;info(lb,'spend:'+label,label+'：'+title,grid);}};
       const tot=sessionSpend(sid,latest);
       if(unit==='token'){
         const lt=turnTokens(latest);
@@ -7332,16 +7426,16 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       if(s.outcome){const lc=s.calls.at(-1);row(model,'本轮结果',(s.outcome==='failed'?'Arena 记录失败':'空回复')+(lc?.finish==='length'?' · 推理用尽输出上限':''),false);}
       if(s.prompt)row(model,'提问开头','“'+s.prompt+'”',false);if(s.sentAt)row(model,'发送时间',fullStamp(Date.parse(s.sentAt)));
       const more=el('details','model-more',null,model);more.open=moreOpen;more.ontoggle=()=>{moreOpen=more.open;};const summary=el('summary','',null,more);summary.dataset.focus='更多型号信息';icon('chevron',summary);el('span','','更多型号信息',summary);row(more,'请求型号',c.request);row(more,'响应型号',c.response);row(more,'平台路由',c.route);row(more,'协议适配器',c.adapter);if(s.internalNames.length>1)row(more,'本轮内部名',s.internalNames.join('\n'));row(more,'调用时间',c.at?new Date(c.at).toLocaleString('zh-CN',{hour12:false}):null);row(more,'Run',s.runId);row(more,'Span',c.id);
-      const config=el('section','section',null,body);el('h3','section-heading','推理配置',config);const table=el('div','config',null,config),e=c.effort;
+      const config=el('section','section',null,body),cfgH=el('h3','section-heading','推理配置',config);const table=el('div','config',null,config),e=c.effort;
       const configRow=(key,value,cls='')=>{const r=el('div','config-row',null,table);el('span','config-label',key,r);return el('span','config-value '+cls,value,r);};
       configRow('显式推理档位',e.value||({conflict:'冲突',unsupported:'不支持'}[e.status])||'未知',e.status==='explicit'?'tag':e.status==='conflict'?'warning':'muted');const suffix=configRow('内部名称后缀',c.hint.value||'—','muted');suffix.title=c.hint.status;
       for(const v of e.budgets)configRow('推理预算',v===-1?'自动 (-1)':fmt(v)+' tokens');for(const v of e.modes)configRow('思考模式',v);
       const configNote=e.value?(e.evidence.some(x=>x.kind==='effort'&&x.source==='span'&&x.value===e.value)?'来自 Span 的明确配置字段。':'仅见于页面请求参数。'):e.status==='conflict'?'字段存在不同值（'+e.levels.join(' / ')+'）。':e.status==='unsupported'?'档位字段值不在已知枚举内。':'未发现明确的档位参数。';
-      el('p','note'+(e.status==='conflict'?' warning':''),configNote,config);if(!['内部标签，非显式参数','无后缀','未提供'].includes(c.hint.status))el('p','note warning','后缀：'+c.hint.status,config);
-      const usage=el('section','section',null,body);const usageHead=el('div','section-heading',null,usage);el('h3','','报告用量',usageHead);el('span','eyebrow',s.count>1?'第 '+(s.calls.indexOf(c)+1+s.prior)+' 次调用':'单次调用',usageHead);
+      if(e.status==='conflict')el('p','note warning',configNote,config);else info(cfgH,'cfg',configNote);if(!['内部标签，非显式参数','无后缀','未提供'].includes(c.hint.status))el('p','note warning','后缀：'+c.hint.status,config);
+      const usage=el('section','section',null,body);const usageHead=el('div','section-heading',null,usage),usageH3=el('h3','','报告用量',usageHead);el('span','eyebrow',s.count>1?'第 '+(s.calls.indexOf(c)+1+s.prior)+' 次调用':'单次调用',usageHead);
       const values=el('div','usage',null,usage);for(const [key,value]of [['输入',fmt(c.tokens.input)],['输出',fmt(c.tokens.output)],['推理',c.reasoning.status==='conflict'?'冲突':fmt(c.reasoning.value)]]){const cell=el('div','usage-cell',null,values);el('div','usage-label',key,cell);el('div','usage-value',value,cell);}
       const total=el('div','usage-total',null,usage);el('span','','总 Token',total);el('strong','mono',c.tokens.total!==null?fmt(c.tokens.total):c.totalLabel?'≈ '+c.totalLabel:'—',total);
-      const usageNote={zero:'推理 Token 报告为 0。',missing:'推理 Token 未提供；“—”不是 0。',conflict:'推理 Token 来源冲突，不合并。'};if(usageNote[c.reasoning.status])el('p','note',usageNote[c.reasoning.status],usage);
+      const usageNote={zero:'推理 Token 报告为 0。',missing:'推理 Token 未提供；“—”不是 0。',conflict:'推理 Token 来源冲突，不合并。'};if(usageNote[c.reasoning.status])info(usageH3,'usage',usageNote[c.reasoning.status],usageHead);
       if(s.records.length&&(s.count>1||s.records.length>1)){for(const rec of s.records){const tu=el('div','usage-turn',null,usage);el('span','',(s.records.length>1?clock(rec.at)+' · ':'')+'本轮用量记录'+(rec.internal?' · '+rec.internal:''),tu).style.flexBasis='100%';for(const [k,v]of [['输入',rec.input],['输出',rec.output],['推理',rec.reasoning],['总',rec.total]]){const sp=el('span','',k+' ',tu);el('strong','',fmt(v),sp);}}}
       creditsSection(s);
       if(s.partial)el('p','note warning','部分记录：尚有字段未取得。',body);
@@ -7349,7 +7443,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     // 本轮消耗：credits 来自页面费用接口；余额变化来自 /api/billing/balance 前后对比（账号级，可能含其他标签页的消耗）
     function creditsSection(s){
       if(!prefs.showCredits)return;const cr=s.credits,live=!historyView&&!turnKey&&liveKey()===s.key,st=live?costState.get(s.sid):null;
-      const sec=el('section','section credits',null,body),head=el('div','section-heading',null,sec);el('h3','','本轮消耗',head);
+      const sec=el('section','section credits',null,body),head=el('div','section-heading',null,sec),crH3=el('h3','','本轮消耗',head);
       const srcText={message:'费用接口 · 按消息 id',new:'费用接口 · 新条目推断',session:'费用接口 · 累计差值'}[cr?.source]||(cr?.balance?'仅余额差值':'');el('span','eyebrow',srcText,head);
       const money=v=>v===null||v===undefined?null:'$'+(+v).toFixed(Math.abs(v)<0.01&&v!==0?5:4);
       if(cr&&cr.credits!==null&&cr.credits!==undefined){
@@ -7358,16 +7452,16 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
         if(cr.parts.length>1)row(sec,'条目',cr.parts.map(x=>Math.round(x.credits)+' credits').join(' + '));
         if(cr.keys.length)row(sec,'消息 id',cr.keys.join('\n'));
       }else{
-        el('p','note',live?(st?.tries?'已读取 '+st.tries+' 次，尚未命中本轮的计费条目；'+(st.tries<COST_DELAYS.length?'稍后继续。':'已停止重试，可点“重读”再试。'):'流结束后约 3 秒读取 /api/chat/{id}/cost。'):'此轮没有取得费用记录。',sec);
+        el('p','note',live?(st?.tries?'已读取 '+st.tries+' 次，尚未命中本轮的计费条目；'+(st.tries<COST_DELAYS.length?'稍后继续。':'已停止重试，可点“重读”再试。'):'等待读取（回复结束后约 3 秒）'):'此轮没有取得费用记录。',sec);
       }
       if(cr?.session&&(cr.session.credits!==null||cr.session.chargedUsd!==null))row(sec,'会话累计',(cr.session.credits!==null?Math.round(cr.session.credits).toLocaleString('zh-CN')+' credits':'')+(cr.session.chargedUsd!==null?' · 计费 '+money(cr.session.chargedUsd):'')+(cr.session.actualUsd!==null?' · 实际 '+money(cr.session.actualUsd):'')+(cr.session.messages!==null?' · '+cr.session.messages+' 条消息':''));
       if(cr?.balance)row(sec,'余额变化',cr.balance.before+' → '+cr.balance.after+'（'+(cr.balance.delta>0?'−':cr.balance.delta<0?'+':'')+Math.abs(cr.balance.delta)+'）');
       if(s.costs?.length){const d=el('details','model-more',null,sec),sm=el('summary','',null,d);icon('chevron',sm);el('span','','Trace 花费记录（spend.recorded）',sm);for(const c of s.costs){if(!c.fields.length){el('p','note','该记录里没有识别出费用类字段。',d);continue;}for(const f of c.fields.slice(0,12))row(d,f.key.slice(0,14),String(f.value));}}
-      if(cr&&cr.credits!==null&&cr.credits!==undefined&&cr.source!=='message')el('p','note','推断值：未能按本轮消息 id 命中，改用'+(cr.source==='new'?'基线之后新出现的计费条目':'会话累计的前后差值')+'；若其他标签页同时在此会话发消息，可能不准。',sec);
+      if(cr&&cr.credits!==null&&cr.credits!==undefined&&cr.source!=='message')info(crH3,'credits','推断值：未能按本轮消息 id 命中，改用'+(cr.source==='new'?'基线之后新出现的计费条目':'会话累计的前后差值')+'；若其他标签页同时在此会话发消息，可能不准。',head);
     }
     const SOURCE_TEXT={span:'Span · AI SDK 遥测',record:'用量记录 · token.usage.recorded',providerMetadata:'供应商元数据',页面请求:'页面请求参数'},KIND_TEXT={effort:'显式档位',budget:'预算',mode:'模式',input:'输入 Token',output:'输出 Token',total:'总 Token',reasoning:'推理 Token',token:'Token'};
     function sources(s,c){
-      el('h3','section-heading','字段与记录来源',body);
+      {const srcH=el('h3','section-heading','字段与记录来源',body);info(srcH,'src','路径前缀：\n$.properties.ai.usage.* = AI SDK 字段\n$.properties.gen_ai.usage.* = OpenTelemetry GenAI 标准字段（同一数值的重复上报）\n$.properties.*Tokens（无前缀）= Arena 用量记录，携带内部名称');}
       const ids=el('section','section',null,body);row(ids,'请求型号',c.request);row(ids,'内部名称',c.internal||(s.internalNames.join(' / ')||null));row(ids,'Run',s.runId);row(ids,'Span',c.id);row(ids,'后缀解读',c.hint.status,false);
       const evidence=[...c.effort.evidence,...c.reasoning.evidence,...c.tokenSources],groups=new Map();
       for(const e of evidence){const k=e.source||'span';if(!groups.has(k))groups.set(k,[]);groups.get(k).push(e);}
@@ -7376,7 +7470,6 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       if(s.costs?.some(c=>c.fields.length)){el('div','group-title','花费记录 · spend.recorded',body);for(const c of s.costs)for(const f of c.fields.slice(0,24)){const d=el('div','entry',null,body),top=el('div','entry-top',null,d);el('span','',f.key+' · '+f.value,top);el('span','entry-source',c.internal||'',top);el('code','',f.path,d);}}
       if(!evidence.length&&!s.records.length)el('p','note','暂无明确配置或用量字段。',body);
       if(Object.keys(c.settings).length){const section=el('section','section',null,body);el('h3','section-heading','其他配置',section);for(const [k,v]of Object.entries(c.settings))row(section,k,v);}
-      const legend=el('div','legend',null,body);legend.append('路径前缀：',el('code','','$.properties.ai.usage.*'),' = AI SDK 字段；',el('code','','$.properties.gen_ai.usage.*'),' = OpenTelemetry GenAI 标准字段（同一数值的重复上报）；',el('code','','$.properties.*Tokens'),'（无前缀）= Arena 用量记录，携带内部名称。');
     }
     function rawTab(s,c){
       const raw=rawOf(s),r=selectedRun(),liveRun=r&&r.data?.key===s.key?r:null;
@@ -7411,8 +7504,8 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     }
     function huntTab(){
       const g=gacha.state(),s=gacha.settings(),active=gacha.running();
-      const h=el('div','section-heading',null,body);el('h3','','老虎机抽卡（单标签页 · 9.23.2 引擎）',h);el('span','eyebrow',g?({running:'进行中',stopping:'正在停止',paused:'已暂停',hit:'已命中',done:'已完成'}[g.status]||g.status):'未开始',h);
-      el('p','note','点击发送按钮左侧的厂商名称打开抽卡卡片。每抽：新对话 → 发送 → 识别模型 → 改名 → 黑名单归档；未识别时在同一对话重发。',body);
+      const h=el('div','section-heading',null,body),hh3=el('h3','','老虎机抽卡',h);el('span','eyebrow',g?({running:'进行中',stopping:'正在停止',paused:'已暂停',hit:'已命中',done:'已完成'}[g.status]||g.status):'未开始',h);
+      info(hh3,'hunt','点击发送按钮左侧的厂商名称打开抽卡卡片。\n每抽：新对话 → 发送 → 识别模型 → 改名 → 黑名单归档；未识别时在同一对话重发。\n单标签页运行 · 9.23.2 引擎。',h);
       const cfg=el('div','section',null,body);
       const gs=g?.settings??s;row(cfg,'目标厂商',gs.targetModel||'不限',false);
       row(cfg,'张数',String(gs.maxAttempts));row(cfg,'间隔',(gs.intervalMs/1000)+' 秒');row(cfg,'提示词',gs.prompt,false);
@@ -7432,16 +7525,18 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       for(const e of g.log.slice(-80).reverse())row(lg,new Date(e.at).toLocaleTimeString('zh-CN',{hour12:false}),e.text,false);
     }
     function settingsTab(){
-      const toggle=(parent,title,hint,value,fn)=>{const r=el('div','setting',null,parent),g=el('div','grow',null,r);el('span','',title,g);if(hint)el('span','hint',hint,g);const b=el('button','switch','',r);b.type='button';b.setAttribute('role','switch');b.setAttribute('aria-checked',String(!!value));b.setAttribute('aria-label',title);b.dataset.focus=title;b.onclick=()=>{fn(!value);savePrefs();bodyStamp=[];render();};return b;};
+      const toggle=(parent,title,hint,value,fn)=>{const r=el('div','setting',null,parent),g=el('div','grow',null,r),tt=el('span','setting-title',title,g);if(hint)info(tt,'set:'+title,hint,r);const b=el('button','switch','',r);b.type='button';b.setAttribute('role','switch');b.setAttribute('aria-checked',String(!!value));b.setAttribute('aria-label',title);b.dataset.focus=title;b.onclick=()=>{fn(!value);savePrefs();bodyStamp=[];render();};return b;};
       const sec=el('section','section',null,body);el('h3','section-heading','显示',sec);
       toggle(sec,'隐藏输入框里的文档图标','默认开启：目标按钮左边的纸张图标按钮没什么实际用途，隐藏后更宽松。',prefs.hideDocIcon,v=>{prefs.hideDocIcon=v;if(!v)store(DOC_KEY,'');docIcon();});
+      toggle(sec,'长按输入框下拉刷新（手机）','默认开启：长按输入框约 0.3 秒，感到轻震后往下拉，整页跟着往下，顶部圆环随距离画满；画满后松开就刷新，没松手推回去就取消。\n输入框有未发送内容、待发附件、抽卡进行中或本轮还在进行时，圆环变橙色提醒。取代原来左上角的刷新按钮。',prefs.pullRefresh,v=>{prefs.pullRefresh=v;});
+      toggle(sec,'玻璃侧栏（手机）','默认开启：左侧对话列表抽屉变窄，背景改成半透明磨砂玻璃、遮罩调淡，能看到后面的页面。关闭恢复 Arena 原样。',prefs.glassDrawer,v=>{prefs.glassDrawer=v;document.documentElement.toggleAttribute('data-amp-glass',v);});
       toggle(sec,'显示“已重置”的推断限流','默认关闭：如“新会话 10/10 · 已重置”只是按上限推断的数值，不是必要信息。',prefs.showQuotaReset,v=>{prefs.showQuotaReset=v;});
       toggle(sec,'对话名显示本地编号 #N','默认关闭：左侧对话名只显示模型名，避免与加载进度、厂商图标挤在一起。',prefs.showSeq,v=>{prefs.showSeq=v;for(const m of marks.values()){m.span.removeAttribute('data-amp-local-title');m.span.removeAttribute('data-amp-short');}localTitles();});
       toggle(sec,'消息旁显示发送时间','来自消息 id 内的 UUIDv7 时间戳；无法解析时用本机记录的提交时间。',prefs.showSent,v=>{prefs.showSent=v;if(!v)clearSent();});
       toggle(sec,'显示限流与额度状态','新会话限流来自 create-chat 响应头；额度来自 /api/billing/balance。',prefs.showQuota,v=>{prefs.showQuota=v;if(v)void refreshBalance(true);});
       toggle(sec,'读取每轮 credits 消耗','流结束后读取页面自带的费用接口 GET /api/chat/{id}/cost（同源，与页面“N credits”同源数据），并记录提交前后的余额变化。',prefs.showCredits,v=>{prefs.showCredits=v;});
       {const gs=gacha.settings();toggle(sec,'首包看门狗（实验）','默认关闭：发送后 '+gs.watchdogSec+' 秒仍没有任何输出（Arena 约 90 秒会改派别的模型），自动停止并在同一对话重发，最多 '+gs.watchdogRetries+' 次；日志会验证重发后是否仍是原模型。',gs.watchdog,v=>{gacha.saveSettings({watchdog:v});});
-        const wr=el('div','setting',null,sec),wg=el('div','grow',null,wr);el('span','','看门狗秒数 / 重试次数',wg);el('span','hint','秒数从点发送算起；服务端从开始调用模型才计时（通常晚 5–10 秒），不建议超过 80。',wg);
+        const wr=el('div','setting',null,sec),wg=el('div','grow',null,wr);info(el('span','setting-title','看门狗秒数 / 重试次数',wg),'set:wd','秒数从点发送算起；服务端从开始调用模型才计时（通常晚 5–10 秒），不建议超过 80。',wr);
         const ss=el('select','selector',null,wr);for(const v of [65,70,75,80]){const o=el('option','',v+' 秒',ss);o.value=String(v);}ss.value=String(gs.watchdogSec);ss.onchange=()=>gacha.saveSettings({watchdogSec:+ss.value});
         const rs=el('select','selector',null,wr);for(const v of [1,2,3]){const o=el('option','',v+' 次',rs);o.value=String(v);}rs.value=String(gs.watchdogRetries);rs.onchange=()=>gacha.saveSettings({watchdogRetries:+rs.value});}
       {const gs=gacha.settings();toggle(sec,'首包提示（实验）','默认关闭：手动发送的每条消息末尾自动追加一句，让模型先输出“思考中…”再继续。服务端尽早收到首包就不会因约 90 秒无输出而改派；看门狗也会看到输出而不去停止。抽卡时不追加。代价：模型的隐藏深度思考会变短，分析改为写在正文里；刷新页面后消息里能看到这句。',gs.warmup,v=>{gacha.saveSettings({warmup:v});});
@@ -7451,21 +7546,20 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       toggle(sec,'为信息栏预留页面空间','把 Arena 的整屏容器高度减去信息栏高度，避免遮挡输入框；遇到布局异常时可关闭。',prefs.barOffset,v=>{prefs.barOffset=v;bar?.sync();});
       const cloud=el('section','section',null,body);el('h3','section-heading','云端标题',cloud);
       toggle(cloud,'把本地标题同步到 Arena 会话名','使用页面自带的重命名接口（PATCH /api/history/agentic/{id}），会覆盖 Arena 上已有的会话名；每个会话同一标题只发送一次。',prefs.cloudSync,v=>{prefs.cloudSync=v;if(v){const e=catalog.entries.get(sidOf(location.href));if(e)void syncTitle(e);}});
-      const fr=el('div','setting',null,cloud),fg=el('div','grow',null,fr);el('span','','同步格式',fg);el('span','hint',prefs.cloudFormat==='name'?'仅内部名称，如 gpt-5.1-codex-high':'编号 + 内部名称，如 #12 gpt-5.1-codex-high',fg);const fs=el('select','selector',null,fr);fs.setAttribute('aria-label','同步格式');for(const [id,text]of [['prefix','#编号 名称'],['name','仅名称']]){const o=el('option','',text,fs);o.value=id;}fs.value=prefs.cloudFormat;fs.onchange=()=>{prefs.cloudFormat=fs.value;savePrefs();bodyStamp=[];render();};
+      const fr=el('div','setting',null,cloud),fg=el('div','grow',null,fr);info(el('span','setting-title','同步格式',fg),'set:fmt',prefs.cloudFormat==='name'?'仅内部名称，如 gpt-5.1-codex-high':'编号 + 内部名称，如 #12 gpt-5.1-codex-high',fr);const fs=el('select','selector',null,fr);fs.setAttribute('aria-label','同步格式');for(const [id,text]of [['prefix','#编号 名称'],['name','仅名称']]){const o=el('option','',text,fs);o.value=id;}fs.value=prefs.cloudFormat;fs.onchange=()=>{prefs.cloudFormat=fs.value;savePrefs();bodyStamp=[];render();};
       const cur=catalog.entries.get(sidOf(location.href));const cr=el('div','setting',null,cloud),cg=el('div','grow',null,cr);el('span','','当前会话',cg);el('span','hint',cur?(cur.cloud?.title?'已同步：'+cur.cloud.title:'未同步')+' · 本地：'+cur.title:'尚无本地标题',cg);if(cur)button(cr,'立即同步','把当前会话的本地标题写入 Arena',async()=>{say('正在同步…');const ok=await syncTitle(cur,true);say(ok?'已同步':'未同步，见日志');},'clear').style.marginTop='0';
-      const st=el('section','section',null,body);el('h3','section-heading','本地存储',st);const u=usageInfo;
+      const st=el('section','section',null,body),stH=el('h3','section-heading','本地存储',st);const u=usageInfo;info(stH,'set:storage','站点存储总量由浏览器统计，包含 Arena 自身的缓存；本脚本的结构化记录每轮 2–20 KB，日志上限约 1 MB。');
       const grid=el('div','stat-grid',null,st),cell=(label,value,ratio)=>{const c=el('div','stat',null,grid);el('div','stat-label',label,c);el('div','stat-value',value,c);if(ratio!==undefined){const b=el('div','bar',null,c);el('i','',null,b).style.width=Math.min(100,Math.round(ratio*100))+'%';}};
       const mb=v=>v===null||v===undefined?'—':v>=1073741824?(v/1073741824).toFixed(1)+' GB':(v/1048576).toFixed(v>=10485760?0:1)+' MB';
       cell('原始数据（raw 表）',u?mb(u.rawTotal)+' · '+(u.rawCount??'—')+' 轮':'读取中…',u&&u.rawTotal!==null?u.rawTotal/(prefs.rawBudget*1048576):undefined);
       cell('站点存储总量'+(u?.estimate?.quota?' · 上限 '+mb(u.estimate.quota):''),u?.estimate?mb(u.estimate.usage):'—',u?.estimate?.quota?u.estimate.usage/u.estimate.quota:undefined);
       cell('会话 / 轮次',u?(u.counts.sessions??'—')+' / '+(u.counts.turns??'—'):'—');cell('日志 / 发送时间',u?(u.counts.logs??'—')+' / '+(u.counts.sent??'—'):'—');
-      const br=el('div','setting',null,st),bg=el('div','grow',null,br);el('span','','原始数据预算',bg);el('span','hint','超出后自动删除最旧轮次的原始 Trace 与 Span（结构化记录与标题不受影响）。',bg);const bs=el('select','selector',null,br);bs.setAttribute('aria-label','原始数据预算');for(const v of BUDGET_OPTIONS){const o=el('option','',v+' MB',bs);o.value=String(v);}bs.value=String(prefs.rawBudget);bs.onchange=()=>{prefs.rawBudget=Number(bs.value);savePrefs();bodyStamp=[];render();};
+      const br=el('div','setting',null,st),bg=el('div','grow',null,br);info(el('span','setting-title','原始数据预算',bg),'set:budget','超出后自动删除最旧轮次的原始 Trace 与 Span（结构化记录与标题不受影响）。',br);const bs=el('select','selector',null,br);bs.setAttribute('aria-label','原始数据预算');for(const v of BUDGET_OPTIONS){const o=el('option','',v+' MB',bs);o.value=String(v);}bs.value=String(prefs.rawBudget);bs.onchange=()=>{prefs.rawBudget=Number(bs.value);savePrefs();bodyStamp=[];render();};
       const acts=el('div','log-actions',null,st);acts.style.marginTop='10px';
       const exportAll=async withRaw=>{say('正在整理…');const all=await catalog.exportAll(withRaw);download({tool:'Arena Model Probe Lite',version:VERSION,at:new Date().toISOString(),kind:withRaw?'all-turns-raw':'all-turns',quota,balance,...all},'amp-lite-all-'+(withRaw?'raw-':'')+Date.now()+'.json');say('已导出 '+all.turns.length+' 轮');};
       button(acts,'导出全部轮次','导出所有会话与轮次的结构化记录（不含原始数据）',()=>exportAll(false));button(acts,'导出全部（含原始）','同时附上 raw 表中每轮的原始 Trace 与 Span，文件可能很大',()=>exportAll(true));
       const clr=button(acts,confirmRawClear?'确认清理原始数据':'清理原始数据','删除全部已保存的原始 Trace 与 Span',async()=>{if(!confirmRawClear){confirmRawClear=true;render();return;}await catalog.clearRaw();confirmRawClear=false;usageAt=0;say('已清理');render();});
       if(confirmRawClear)button(acts,'取消','取消清理',()=>{confirmRawClear=false;render();});
-      const note=el('p','note',null,st);note.textContent='站点存储总量由浏览器统计，包含 Arena 自身的缓存；本脚本的结构化记录每轮 2–20 KB，日志上限约 1 MB。';
     }
     // 用户消息旁的发送时间：写在气泡下方操作格（data-user-message-action，复制按钮所在）的属性上，由 ::before 渲染在按钮左侧；不插入节点
     function clearSent(){for(const [node]of sentMarks){node.removeAttribute('data-amp-sent');node.removeAttribute('title');}sentMarks.clear();}
@@ -7483,7 +7577,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       if(need.length)void catalog.sentAt(need).then(()=>{for(const id of need)sentPending.delete(id);paint();});
       if(changed)log('debug','发送时间','标注 '+changed+' 条消息');
     }
-    ui={host,entry,attach,render,view,spendBrief,show(t){if(typeof t==='string'&&tabs.some(x=>x[0]===t)){tab=t;historyView=null;turnKey=null;}if(compact)expanded=true;else pref.open=true;persist();render();},toggle(){if(compact)expanded=!expanded;else pref.open=!pref.open;persist();render();},destroy(){clearTimeout(toastTimer);try{clearHeader();}catch{}for(const [a,m]of marks)restoreMark(a,m);marks.clear();clearSent();if(aliasSheet)document.adoptedStyleSheets=document.adoptedStyleSheets.filter(s=>s!==aliasSheet);aliasStyle?.remove();applySidebar(null);entry.remove();host.remove();gripHost.remove();foldHost.remove();reloadHost.remove();}};render();
+    ui={host,entry,attach,render,view,spendBrief,show(t){if(typeof t==='string'&&tabs.some(x=>x[0]===t)){tab=t;historyView=null;turnKey=null;}if(compact)expanded=true;else pref.open=true;persist();render();},toggle(){if(compact)expanded=!expanded;else pref.open=!pref.open;persist();render();},destroy(){clearTimeout(toastTimer);try{clearHeader();}catch{}for(const [a,m]of marks)restoreMark(a,m);marks.clear();clearSent();if(aliasSheet)document.adoptedStyleSheets=document.adoptedStyleSheets.filter(s=>s!==aliasSheet);aliasStyle?.remove();applySidebar(null);entry.remove();host.remove();gripHost.remove();foldHost.remove();reloadHost.remove();pull.destroy();glassStyle.remove();document.documentElement.removeAttribute('data-amp-glass');}};render();
   }
   const mountAll=()=>{mount();mountBar();gachaUi.mount();};
   if(document.body)mountAll();else{const observer=new MutationObserver(()=>{if(document.body){observer.disconnect();mountAll();}});observer.observe(document.documentElement||document,{childList:true,subtree:true});}
