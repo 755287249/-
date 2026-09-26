@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arena 账号切换（Arena Native Suite 配套）
 // @namespace    local.amp.native.accounts
-// @version      1.0.22
+// @version      1.0.23
 // @description  【测试版】在 Arena 个人卡片里一键切换已保存的账号；显示各账号最近记录的额度；一键导出/导入账号合集
 // @match        https://arena.ai/*
 // @include      https://arena.ai/*
@@ -20,7 +20,7 @@
 
 (function arenaAccountSwitch() {
   'use strict';
-  const VERSION = '1.0.22';
+  const VERSION = '1.0.23';
   try { document.documentElement.dataset.ampSwitchVer = VERSION; } catch {}
   const ORIGIN = 'https://' + location.host;
   const AUTH_RE = /^arena-auth-prod-v1(\.\d+)?$/;
@@ -579,11 +579,12 @@
     if (!all.length) { toast('还没有可导出的账号'); return; }
     const pack = {
       v: 1, from: location.host, at: Date.now(),
-      accounts: all.map(a => ({ email: a.email, pw: a.pw || undefined, name: a.name || undefined, avatar: a.avatar || undefined, id: a.id || undefined, addedAt: a.addedAt || undefined, cookies: a.cookies?.length ? a.cookies : undefined })),
+      accounts: all.map(a => ({ email: a.email, pw: a.pw || undefined, name: a.name || undefined, avatar: a.avatar || undefined, id: a.id || undefined, addedAt: a.addedAt || undefined, invalid: a.invalid ? true : undefined, cookies: a.cookies?.length ? a.cookies : undefined })),
     };
     copyText(PACK_PREFIX + utf8b64(JSON.stringify(pack)), btn);
-    const np = all.filter(a => a.pw).length;
-    toast('已复制 ' + all.length + ' 个账号到剪贴板（' + np + ' 个带密码）。内含密码和登录凭据，请勿发给他人');
+    const np = all.filter(a => a.pw).length, nop = all.length - np;
+    toast('已复制 ' + all.length + ' 个账号到剪贴板（' + np + ' 个带密码）。内含密码和登录凭据，请勿发给他人'
+      + (nop ? '。另有 ' + nop + ' 个账号没记录密码：登录凭据有时效，失效后只能手动输密码，建议先在“备忘录”里补上密码再导出' : ''));
   }
 
   const LINE_RE = /^\s*([^\s@:|,;]+@[^\s@:|,;]+\.[^\s@:|,;]+)(?:\s*(?:----|[\t :|,;])\s*(.*?))?\s*$/;
@@ -627,6 +628,7 @@
       if (opt.remember && a.pw && a.pw !== local.pw) mutate(l => { const x = l.find(y => keyOf(y) === k); if (x) x.pw = a.pw; });
       return { ok: true, skipped: true };
     }
+    if (!a.pw && local?.pw) a = { ...a, pw: local.pw }; // 本机备忘录里有密码也能用
     let err = '', wrong = false;
     if (a.pw) {
       stage('正在用密码登录…');
@@ -645,13 +647,13 @@
       if (e1) { await setJar(prev); return { ok: false, error: (err ? err + '；' : '') + '写入 Cookie 失败：' + e1 }; }
       if (jarSig(authOf(await listCookies())) !== jarSig(a.cookies)) { await setJar(prev); return { ok: false, error: '无法写入登录 Cookie（需要 Tampermonkey 的 Cookie 权限）' }; }
       const v = await verifySession({ email: a.email, id: a.id });
-      if (v === false) { await setJar(prev); return { ok: false, error: (err ? err + '；' : '') + '导出的登录凭据已失效' }; }
+      if (v === false) { await setJar(prev); return { ok: false, needPw: true, error: (err ? err + '；登录凭据也已失效' : '登录凭据已失效（有时效），且没有记录密码') + ' · 在下面输入密码即可登录并更新凭据' }; }
       const fresh = authOf(await listCookies());
       const s = decodeSession(fresh);
       const rec = upsert({ id: s.id || a.id || null, email: a.email, name: a.name || s.name, avatar: a.avatar || s.avatar, cookies: (fresh.length ? fresh : a.cookies).map(cookieRec), exp: s.exp, savedAt: Date.now(), pw: opt.remember && a.pw && !wrong ? a.pw : null });
       return { ok: true, via: v === null ? 'cookie?' : 'cookie', rec };
     }
-    return { ok: false, error: err || '没有密码也没有登录凭据，无法登录' };
+    return { ok: false, needPw: true, error: err ? err + ' · 可在下面重新输入密码' : '没有密码也没有登录凭据 · 在下面输入密码即可登录' };
   }
 
   // 逐个导入；结束后恢复原来的登录（原来未登录则进入最后一个成功的账号）
@@ -717,6 +719,11 @@
 [data-amp-login-form] .imp-st.run{color:#e8d49a}[data-amp-login-form] .imp-st.ok{color:#a8d8a8}[data-amp-login-form] .imp-st.err{color:#f2a39b}
 [data-amp-login-form] .imp-dot{width:8px;height:8px;border-radius:50%;flex:none;background:rgba(255,255,255,.2)}
 [data-amp-login-form] .imp-dot.run{background:#e8d49a;animation:swp 1s ease-in-out infinite}[data-amp-login-form] .imp-dot.ok{background:#8fd18f}[data-amp-login-form] .imp-dot.err{background:#e0493a}
+[data-amp-login-form] .imp-pw{display:flex;gap:6px;margin-top:6px}
+[data-amp-login-form] .imp-pw input{height:30px;font-size:12.5px;padding:0 10px;border-radius:8px}
+[data-amp-login-form] .imp-pw .lf-mb{flex:none;padding:0 12px;font-size:12px;border-radius:8px;background:#d8d3ca;color:#262522;font-weight:600}
+[data-amp-login-form] .imp-pw .lf-mb:hover{background:#e8e3da;color:#262522}
+[data-amp-login-form] .imp-pw .lf-mb[disabled]{opacity:.6;cursor:default}
 @keyframes swp{50%{opacity:.35}}
 `;
   function openImport(prefill) {
@@ -781,13 +788,41 @@
         const l = el('div', null, null, r); l.className = 'lf-l';
         el('div', null, a.email, l).className = 'lf-e';
         const st = el('div', null, a.pw ? '等待中 · 有密码' : a.cookies?.length ? '等待中 · 仅登录凭据' : '等待中 · 无密码', l); st.className = 'imp-st';
-        rowEls.push({ dot, st, r });
+        rowEls.push({ dot, st, r, l, a });
       }
     };
     const onRow = (i, state, text) => {
       const x = rowEls[i]; if (!x) return;
       x.dot.className = 'imp-dot ' + state; x.st.className = 'imp-st ' + state; x.st.textContent = text;
       if (state === 'run') x.r.scrollIntoView({ block: 'nearest' });
+    };
+    // 失败的账号：行内输入密码，登录成功即保存并更新凭据
+    const syncPending = () => {
+      if (!pending || !pending.length) pending = null;
+      if (!done) return;
+      setGo(pending ? '重试失败的 ' + pending.length + ' 个' : enter ? '完成并进入 ' + enter.email : '完成');
+      cancel.textContent = pending ? (enter ? '跳过，进入 ' + enter.email : '关闭') : '关闭';
+    };
+    const addPwForm = i => {
+      const x = rowEls[i]; if (!x || x.pwf) return;
+      const f = el('form', null, null, x.l); f.className = 'imp-pw'; f.noValidate = true; x.pwf = f;
+      const inp = el('input', null, null, f); inp.type = 'password'; inp.autocomplete = 'current-password'; inp.placeholder = '输入 ' + x.a.email.split('@')[0] + ' 的密码';
+      const b = el('button', null, '登录', f); b.type = 'submit'; b.className = 'lf-mb';
+      f.onsubmit = async e => {
+        e.preventDefault(); e.stopPropagation();
+        if (busy) return; const pw = inp.value; if (!pw) { inp.focus(); return; }
+        busy = true; inp.disabled = b.disabled = true; go.disabled = true; cancel.style.visibility = 'hidden';
+        const one = { email: x.a.email, pw, name: x.a.name, avatar: x.a.avatar, id: x.a.id };
+        let res = [];
+        try { res = await runImport([one], { remember: true, skip: false }, (j, st, t) => onRow(i, st, t)); } catch (err) { onRow(i, 'err', String(err?.message || err)); }
+        busy = false; go.disabled = false; cancel.style.visibility = '';
+        enter = res.enter || enter;
+        if (res[0]?.ok) {
+          f.remove(); x.pwf = null;
+          pending = (pending || []).filter(y => emailKey(y) !== emailKey(x.a)); syncPending();
+          toast('已登录并保存 ' + x.a.email);
+        } else { inp.disabled = b.disabled = false; inp.select(); inp.focus(); }
+      };
     };
     const start = async list => {
       busy = true; ta.disabled = remember.disabled = skip.disabled = true; cancel.style.visibility = 'hidden';
@@ -800,6 +835,7 @@
       busy = false; cancel.style.visibility = ''; ta.disabled = remember.disabled = skip.disabled = false;
       const ok = res.filter(r => r.ok && !r.skipped).length, sk = res.filter(r => r.skipped).length;
       const failed = list.filter((a, i) => !res[i]?.ok);
+      list.forEach((a, i) => { if (!res[i]?.ok) addPwForm(i); });
       enter = res.enter || enter;
       msg.className = 'lf-msg' + (failed.length ? '' : ' ok');
       msg.textContent = '完成：' + ok + ' 个已登录保存' + (sk ? '，' + sk + ' 个已跳过' : '') + (failed.length ? '，' + failed.length + ' 个失败' : '') + (enter ? '。将进入 ' + enter.email : '');
