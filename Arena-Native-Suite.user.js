@@ -1,21 +1,43 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.85
-// @description  【测试版】Arena 原生
+// @version      1.11.86
+// @description  Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
 // @grant        none
 // @noframes
-// @downloadURL  https://raw.githubusercontent.com/755287249/-/main/test/Arena-Native-Suite.user.js
-// @updateURL    https://raw.githubusercontent.com/755287249/-/main/test/Arena-Native-Suite.user.js
+// @downloadURL  https://raw.githubusercontent.com/755287249/-/main/Arena-Native-Suite.user.js
+// @updateURL    https://raw.githubusercontent.com/755287249/-/main/Arena-Native-Suite.user.js
 // ==/UserScript==
 
 (function mergedArenaTools(){
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.85' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.86' }); } catch {}
+// v1.11.86 回复写完后白点一直转、只能手动刷新：
+//   · 收尾卡住自救：旁路认出“本轮结束”信号（turn-complete）并记录实时通道心跳；回复写完几秒还没结束 → 让页面无感重连实时通道（带断点续上，补收结束信号）；
+//     再不行查 Arena 自带的 run-status；服务器确认这一轮已结束才自动重新载入对话（先只重建对话区，不整页刷新；还卡才整页刷新）。输入框上方显示进度与按钮。
+//   · 刷新尽量不整页：出错后重新载入、下拉刷新、脚本提示卡上的「重新载入」都先只重新载入对话；点 New Chat 不再整页刷新。
+//   · 稳定性：finish 按页面正在用的连接归属；收尾阶段不再自动点“停止”；任何 localStorage 写满时先清脚本自己的缓存再重试（保护 Arena 的恢复状态）。
+//   · 性能：旧检测器不再重复读实时流（由 Lite 旁路统一解析后转给它）；“继续工作”观察器不再监听 class/style；跟随最新只量最后几个元素。
+//   · 界面：卡片有备注时备注在前（大字）、模型名在后（小字、不加粗）；同一模型的卡片按时间最新在上；左侧栏账号头像加额度圆环；Leaderboard 收进 logo 菜单。
+// v1.11.86 按审阅意见二次修改（两条原则：不在你不知道的情况下自动停止生成；服务器上这一轮可能还在跑时不自动刷新 / 重新载入）：
+//   · 路由到 Thinking 自动停止只在抽卡轮次生效（抽卡设置改名「抽卡时：回复中途路由到 Thinking 就停止」）；普通对话不停，也不再每 0.6 秒读一遍页面。
+//   · 「模型被改派时自动停止生成」默认关闭（设置是整份保存的，老用户一次性迁移为关闭）；停止时侧栏卡片变色 + 顶部提示；首包看门狗停止时同样提示。
+//   · 出现 “Something went wrong” 不再倒计时刷新、从不点 Retry：显示「这一轮可能还在服务器上运行」+「完成后重新载入 / 现在重新载入 / 忽略」；
+//     新设置「出错后自动重新载入（仅在确认这一轮已结束后）」（默认开）按服务器要求的间隔（≥10 秒）查 run-status，确认结束才重新载入；
+//     查不到就只留按钮。顶部提示跟着阶段走：检测到出错 → 等待这一轮完成 → 已重新载入，请确认回复是否完整；忽略 / 取消或提示自己消失时清掉。
+//   · 收尾卡住：只有服务器确认这一轮已结束（收到结束信号也要先确认）才自动重新载入；确认不了只给按钮。下拉刷新在这一轮进行中不刷新，只提示。
+//   · 所有重新载入统一检查前提（这一轮不在进行、输入框没有未发送内容和附件、抽卡没在跑、出错时须确认已结束）；手动重新载入会把输入框里的文字放回去；
+//     重新载入期间设 window.__AMP_SOFT_NAV__，其他模块忽略这次短暂的 /agent；日志记录“重新载入对话 / 整页刷新”的用时。
+//   · 删除“点 New Chat 整页刷新”（和它的设置）；检测面板在页面内切到新对话时复位。
+//   · 新设置「标签页标题显示备注」（默认开）：有备注时标签页标题只显示备注，没备注保持 Arena 的标题。
+//   · 性能（长对话）：整页只用一个 MutationObserver 分发（对话区里的流式变化不再分给各模块）；出错检测改查提示条本身（不再 XPath 扫全文）；
+//     页面状态读 React、按钮只在输入框那一块找；侧栏 / 顶部摆放改为元素缓存 + 有变化才做（兜底 2.5 秒）；跟随最新改用 ResizeObserver；
+//     周期任务后台暂停、空闲时做；发送时间、长对话占位只处理新消息；旧对话最多自动加载 3 页；排行榜延后拉取；版本检查缓存 1 小时。
+//   · 发布：正式版头部不再标【测试版】，更新地址和“关于”页的版本检查都指向根目录（test/ 版仍指向 test/）。
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 // v1.11.78 “-public”也是部署标记（grok-4.7-xhigh-public）：和 -vertex 一样不显示，档位才能识别出来（xhigh）
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '').replace(/-public(?=$|[\s·])/ig, '') : n;
@@ -42,7 +64,30 @@ const ampStore = (() => {
     failed++; console.warn('[Arena Native] 本地存储写入失败：' + key); return false;
   }
   function usage() { let n = 0, ours = 0; try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i), v = localStorage.getItem(k) || ''; n += k.length + v.length; if (/^amp\./.test(k)) ours += k.length + v.length; } } catch {} return { total: n * 2, ours: ours * 2 }; }
-  return { set, usage, get failed() { return failed; } };
+  // v1.11.86 空间快满时（接近浏览器约 5M 字符的上限）提前清掉脚本自己可重建的缓存，给 Arena 自己的“对话恢复状态”留地方
+  function headroom() { const u = usage(), out = []; if (u.total / 2 < 4.5e6) return out; for (const k of PRUNE) { try { if (localStorage.getItem(k) === null) continue; localStorage.removeItem(k); out.push(k); } catch {} if (usage().total / 2 < 4e6) break; } return out; }
+  return { set, usage, headroom, PRUNE, get failed() { return failed; } };
+})();
+// v1.11.86 任何人（包括 Arena 自己）写 localStorage 遇到“空间已满”：先清掉脚本自己可重建的缓存再重试一次。
+// Arena 把对话的恢复状态存在 localStorage，写不进去会提示 “The browser cannot save recovery state” 并卡住，要重连才好。
+(() => {
+  try {
+    const SP = window.Storage && Storage.prototype, orig = SP && SP.setItem; if (!orig || orig.__ampQuota) return;
+    const quota = e => !!e && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22 || e.code === 1014);
+    const guarded = function (k, v) {
+      try { return orig.call(this, k, v); } catch (e) {
+        let ls = null; try { ls = window.localStorage; } catch {}
+        if (!quota(e) || this !== ls) throw e;
+        for (const p of ampStore.PRUNE) {
+          if (p === String(k)) continue;
+          try { if (ls.getItem(p) === null) continue; ls.removeItem(p); } catch { continue; }
+          try { const r = orig.call(this, k, v); console.warn('[Arena Native] 本地存储已满：已清理脚本缓存 ' + p + '，' + String(k).slice(0, 60) + ' 写入成功'); return r; } catch (e2) { if (!quota(e2)) throw e2; }
+        }
+        throw e;
+      }
+    };
+    guarded.__ampQuota = true; guarded.__orig = orig; SP.setItem = guarded;
+  } catch {}
 })();
 
 // ====================================================================================
@@ -53,6 +98,74 @@ const ampStore = (() => {
 // sideNow：侧栏节点变化时、画出来之前要同步做的事（本地标题、提醒颜色），由抽卡模块的观察器在微任务里调用。
 // ====================================================================================
 const sideNow = (() => { const fns = new Map(); const run = () => { for (const f of fns.values()) { try { f(); } catch {} } }; run.set = (k, f) => { fns.set(k, f); }; return run; })();
+// ====================================================================================
+// v1.11.86 性能（P6）：整页的 DOM 变化只用一个 MutationObserver 观察、分发给各模块（以前 6 个观察器各自观察整页 / 整个 body）。
+// 对话区（main 里的 role="log"）里的变化——流式输出每一小段都会触发——默认不分给订阅者；要的（长对话占位标记）订阅时说明。
+// gen：对话区以外的 DOM 变了多少批（缓存页面元素时据此判断要不要重新查）；logGen：对话区里的。只观察 childList，不观察属性。
+// ====================================================================================
+const domHub = (() => {
+  const subs = []; let mo = null, logC = null, gen = 0, logGen = 0, outAt = 0, missAt = 0;
+  // 对话区：缓存；找不到时 1 秒内不再整页找（新对话页没有对话区，页面加载时每批变化都整页找一遍太贵），新插进来的对话区直接从变化里认出来
+  const logNow = () => { if (logC && logC.isConnected) return logC; const t = Date.now(); if (t - missAt < 1000) return null; logC = document.querySelector('main [role="log"]'); if (!logC) missAt = t; return logC; };
+  function onRecs(recs) {
+    if (!(logC && logC.isConnected)) for (const r of recs) { for (const n of r.addedNodes) if (n.nodeType === 1 && (n.getAttribute('role') === 'log' ? n.closest('main') : n.querySelector?.('main [role="log"],[role="log"]'))) { const x = n.getAttribute('role') === 'log' ? n : n.querySelector('[role="log"]'); if (x && x.closest('main')) { logC = x; missAt = 0; break; } } if (logC && logC.isConnected) break; }
+    const lg = logNow(); let out = null, inl = null;
+    for (const r of recs) { const t = r.target; if (lg && (t === lg || lg.contains(t))) (inl || (inl = [])).push(r); else (out || (out = [])).push(r); }
+    if (out) { gen++; outAt = Date.now(); } if (inl) logGen++;
+    for (const x of subs) { const list = x.log ? recs : out; if (list) { try { x.fn(list); } catch {} } }
+  }
+  function start() { if (mo) return; try { mo = new MutationObserver(onRecs); mo.observe(document, { childList: true, subtree: true }); } catch {} }
+  return {
+    on(fn, opt) { const x = { fn, log: !!opt?.log }; subs.push(x); start(); return () => { const i = subs.indexOf(x); if (i >= 0) subs.splice(i, 1); }; },
+    get gen() { return gen; }, get logGen() { return logGen; }, get outAt() { return outAt; }, log: logNow
+  };
+})();
+// v1.11.86 性能（P3）：常用页面元素（侧栏、顶部按钮、输入框里的按钮……）的查询结果缓存起来，直到对话区以外的 DOM 变化（domHub.gen 变了）
+// 或超过 ttl 毫秒才重新查；缓存的元素不在页面上了也重新查。长对话里整页查询要遍历几万个节点，以前每 0.5 秒查十几次。
+const domQ = (() => {
+  const memo = new Map();
+  function all(key, fn, ttl = 30000) { const e = memo.get(key), t = Date.now(); if (e && e.gen === domHub.gen && t - e.at < ttl && e.v.every(n => n.isConnected)) return e.v; let v = []; try { v = [...fn()]; } catch {} memo.set(key, { v, gen: domHub.gen, at: t }); return v; }
+  function one(key, fn, ttl = 30000) { const e = memo.get(key), t = Date.now(); if (e && e.gen === domHub.gen && t - e.at < ttl && (!e.v || e.v.isConnected)) return e.v; let v = null; try { v = fn() || null; } catch {} memo.set(key, { v, gen: domHub.gen, at: t }); return v; }
+  return { all, one, drop: key => memo.delete(key) };
+})();
+// v1.11.86 性能：页面里新出现的出错提示条（role="alert"）和“正在压缩上下文”（role="status"）由共用观察器顺手记下来，
+// 用的时候只看这几个节点（以前每 1~2 秒整页查一遍）。启动时整页扫一次补上已有的。
+const domMark = (() => {
+  const SEL = { alert: '[role="alert"]', compact: '[role="status"][aria-label="Compacting conversation"]' }, ALL = SEL.alert + ',' + SEL.compact;
+  const sets = { alert: new Set(), compact: new Set() }; let seeded = false;
+  const put = n => { if (n.matches(SEL.alert)) sets.alert.add(n); else if (n.matches(SEL.compact)) sets.compact.add(n); };
+  const take = n => { put(n); if (n.firstElementChild) for (const x of n.querySelectorAll(ALL)) put(x); };
+  domHub.on(recs => { for (const r of recs) for (const n of r.addedNodes) if (n.nodeType === 1) take(n); }, { log: true });
+  function get(k) { if (!seeded && document.documentElement) { seeded = true; take(document.documentElement); } const st = sets[k]; for (const n of st) if (!n.isConnected) st.delete(n); return st; }
+  return { get };
+})();
+// ====================================================================================
+// v1.11.86（P7）周期性的小任务统一调度：标签页在后台时暂停（切回来马上补一次），不急的放到浏览器空闲时做
+// （requestIdleCallback，最多晚半个周期）。只用于界面整理类的任务；收尾自救、出错检测等仍用自己的定时器（后台也要跑）。
+// ====================================================================================
+const sched = (() => {
+  const tasks = []; let timer = 0;
+  const ric = typeof window.requestIdleCallback === 'function' ? (fn, t) => window.requestIdleCallback(fn, { timeout: t }) : fn => setTimeout(fn, 0);
+  function arm() { clearTimeout(timer); timer = 0; let n = Infinity; for (const t of tasks) if (!t.busy) n = Math.min(n, t.next); if (n === Infinity) return; timer = setTimeout(loop, Math.max(16, n - Date.now())); }
+  function loop() {
+    timer = 0; const now = Date.now(), hid = document.hidden;
+    for (const t of tasks) {
+      if (t.busy || now < t.next) continue; t.next = now + t.ms; if (hid && !t.hidden) continue;
+      if (t.idle) { t.busy = true; ric(() => { t.busy = false; try { t.fn(); } catch {} arm(); }, Math.max(200, t.ms >> 1)); } else { try { t.fn(); } catch {} }
+    }
+    arm();
+  }
+  function every(ms, fn, o = {}) { const t = { ms, fn, idle: !!o.idle, hidden: !!o.hidden, next: Date.now() + (o.delay ?? ms), busy: false }; tasks.push(t); clearTimeout(timer); timer = 0; arm(); return () => { const i = tasks.indexOf(t); if (i >= 0) tasks.splice(i, 1); }; }
+  try { document.addEventListener('visibilitychange', () => { if (document.hidden) return; const now = Date.now(); for (const t of tasks) if (!t.hidden) t.next = Math.min(t.next, now + 30); clearTimeout(timer); timer = 0; arm(); }); } catch {}
+  return { every };
+})();
+// v1.11.86 性能：要读尺寸的小步骤放到下一次排版之后（一次性的 ResizeObserver 回调里排版一定是新的，读尺寸不会强制重新排版；
+// 流式输出时在别处读尺寸会把页面还没做的整页排版提前算到脚本头上，形成长任务）。元素没显示时退回“下一帧之后”。
+const afterLayout = (el, fn) => {
+  let done = false; const run = () => { if (done) return; done = true; try { fn(); } catch {} };
+  try { if (el && window.ResizeObserver) { const ro = new ResizeObserver(() => { ro.disconnect(); run(); }); ro.observe(el); setTimeout(() => { try { ro.disconnect(); } catch {} requestAnimationFrame(() => setTimeout(run, 0)); }, 250); return; } } catch {}
+  requestAnimationFrame(() => setTimeout(run, 0));
+};
 const attn = (() => {
   const KEY = 'amp.native.attn.v1', TTL = 24 * 3600e3, MAX = 40;
   const KIND = {
@@ -66,8 +179,8 @@ const attn = (() => {
   const write = () => { try { const e = Object.entries(map).sort((a, b) => b[1].at - a[1].at).slice(0, MAX); map = Object.fromEntries(e); if (e.length) localStorage.setItem(KEY, JSON.stringify(map)); else localStorage.removeItem(KEY); } catch {} };
   const here = () => (location.pathname.match(/^\/agent\/([\w-]{8,128})/) || [])[1] || '';
   const sidOfHref = a => ((a?.getAttribute('href') || '').match(/^\/agent\/([\w-]{8,128})\/?(?:[?#].*)?$/) || [])[1] || '';
-  const cards = sid => okSid(sid) ? [...document.querySelectorAll('a[href="/agent/' + sid + '"]')].filter(a => a.closest('aside,nav,[data-sidebar]')) : [];
-  const nameOf = sid => { const a = cards(sid)[0]; if (!a) return ''; const t = a.querySelector('[data-amp-short]')?.getAttribute('data-amp-short') || a.querySelector('span.truncate,div.truncate')?.textContent || ''; return t.replace(/\s+/g, ' ').trim().slice(0, 90); };
+  const cards = sid => { if (!okSid(sid)) return []; const out = []; for (const r of domQ.all('attnSideRoots', () => document.querySelectorAll('aside,nav,[data-sidebar="sidebar"],[data-sidebar="content"]'))) for (const a of r.querySelectorAll('a[href="/agent/' + sid + '"]')) if (!out.includes(a)) out.push(a); return out; }; // v1.11.86 只在侧栏里找
+  const nameOf = sid => { const a = cards(sid)[0]; if (!a) return ''; const sp = a.querySelector('[data-amp-short]'), t = (sp ? sp.getAttribute('data-amp-short') + (sp.getAttribute('data-amp-sub') ? ' · ' + sp.getAttribute('data-amp-sub') : '') : '') || a.querySelector('span.truncate,div.truncate')?.textContent || ''; return t.replace(/\s+/g, ' ').trim().slice(0, 90); };
   const hm = at => { const d = new Date(at), p = n => String(n).padStart(2, '0'), t = p(d.getHours()) + ':' + p(d.getMinutes()); return new Date().toDateString() === d.toDateString() ? t : (d.getMonth() + 1) + '-' + d.getDate() + ' ' + t; };
   const isDark = () => { const c = document.documentElement.classList; if (c.contains('dark')) return true; if (c.contains('light')) return false; try { return matchMedia('(prefers-color-scheme: dark)').matches; } catch { return false; } };
   const pulse = sid => { fresh.add(sid); setTimeout(() => fresh.delete(sid), 4500); };
@@ -93,16 +206,19 @@ const attn = (() => {
     document.head.append(st);
   }
   // 侧栏卡片：有提醒的变色（React 重建出来的新节点在同一帧补上），没有的去掉
+  // v1.11.86 性能：自己标过的节点记在集合里，清理时只看它们（以前每次整页查两遍，侧栏每 1.5 秒同步一次都会调）；没有提醒也没有标记就直接返回
+  const markedA = new Set(), markedLi = new Set();
   function paint() {
     const keys = Object.keys(map);
+    if (!keys.length && !markedA.size && !markedLi.size) return;
     if (keys.length) css();
-    for (const a of document.querySelectorAll('a[data-amp-attn]')) { const s = sidOfHref(a); if (!s || !map[s]) { a.removeAttribute('data-amp-attn'); a.removeAttribute('data-amp-attn-new'); } }
-    for (const li of document.querySelectorAll('[data-amp-attn-li]')) { const a = li.matches('a') ? li : li.querySelector('a[href^="/agent/"]'), s = sidOfHref(a); if (!s || !map[s]) li.removeAttribute('data-amp-attn-li'); }
+    for (const a of [...markedA]) { if (!a.isConnected || !a.hasAttribute('data-amp-attn')) { markedA.delete(a); continue; } const s = sidOfHref(a); if (!s || !map[s]) { a.removeAttribute('data-amp-attn'); a.removeAttribute('data-amp-attn-new'); markedA.delete(a); } }
+    for (const li of [...markedLi]) { if (!li.isConnected || !li.hasAttribute('data-amp-attn-li')) { markedLi.delete(li); continue; } const a = li.matches('a') ? li : li.querySelector('a[href^="/agent/"]'), s = sidOfHref(a); if (!s || !map[s]) { li.removeAttribute('data-amp-attn-li'); markedLi.delete(li); } }
     for (const sid of keys) {
       const v = map[sid], k = KIND[v.kind];
       for (const a of cards(sid)) {
-        if (a.getAttribute('data-amp-attn') !== v.kind) a.setAttribute('data-amp-attn', v.kind);
-        const li = a.closest('li') || a.parentElement; if (li && li.getAttribute('data-amp-attn-li') !== k.tag) li.setAttribute('data-amp-attn-li', k.tag);
+        if (a.getAttribute('data-amp-attn') !== v.kind) a.setAttribute('data-amp-attn', v.kind); markedA.add(a);
+        const li = a.closest('li') || a.parentElement; if (li && li.getAttribute('data-amp-attn-li') !== k.tag) li.setAttribute('data-amp-attn-li', k.tag); if (li) markedLi.add(li);
         if (fresh.has(sid) && !a.hasAttribute('data-amp-attn-new')) { a.setAttribute('data-amp-attn-new', ''); setTimeout(() => a.removeAttribute('data-amp-attn-new'), 4500); }
       }
     }
@@ -123,7 +239,7 @@ const attn = (() => {
     box = root.querySelector('.stack'); document.body.append(host); return true;
   }
   const mk = (tag, cls, text, parent) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; if (parent) parent.append(e); return e; };
-  const go = sid => { const a = cards(sid)[0]; if (a) a.click(); else location.assign('/agent/' + sid); };
+  const go = sid => { const a = cards(sid)[0]; if (a) { a.click(); return; } try { const r = window.next?.router; if (typeof r?.push === 'function') { r.push('/agent/' + sid); return; } } catch {} location.assign('/agent/' + sid); }; // v1.11.86 卡片不在侧栏里时也用页面内跳转，不整页打开
   function render() {
     try { paint(); } catch {}
     const list = Object.entries(map).sort((a, b) => b[1].at - a[1].at);
@@ -147,7 +263,7 @@ const attn = (() => {
       }
       if (list.length > 3) { const m = mk('button', 'more', '还有 ' + (list.length - 3) + ' 个对话需要处理（侧栏里变色的卡片）', box); m.type = 'button'; m.onclick = () => { open = false; render(); }; }
     }
-    requestAnimationFrame(() => { if (host?.isConnected) document.documentElement.style.setProperty('--amp-attn-h', (Math.ceil(host.getBoundingClientRect().height) + 8) + 'px'); });
+    requestAnimationFrame(() => { if (host?.isConnected) { const v = (Math.ceil(host.getBoundingClientRect().height) + 8) + 'px', st = document.documentElement.style; if (st.getPropertyValue('--amp-attn-h') !== v) st.setProperty('--amp-attn-h', v); } }); // v1.11.86 值没变不写（写 html 的 style 会唤醒主题观察器）
   }
   addEventListener('storage', e => { if (e.key !== null && e.key !== KEY) return; const before = map; map = read(); for (const [k, v] of Object.entries(map)) if (!before[k] || before[k].at !== v.at) { pulse(k); open = true; } render(); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) return; const before = JSON.stringify(map); map = read(); if (JSON.stringify(map) !== before) render(); });
@@ -155,7 +271,7 @@ const attn = (() => {
   setInterval(() => { if (location.pathname === lastPath) return; lastPath = location.pathname; if (Object.keys(map).length) render(); }, 1000);
   const boot = () => { if (!document.body) { setTimeout(boot, 300); return; } map = read(); lastPath = location.pathname; if (Object.keys(map).length) render(); };
   boot();
-  sideNow.set('attn', () => { if (Object.keys(map).length || document.querySelector('[data-amp-attn-li]')) paint(); });
+  sideNow.set('attn', () => { if (Object.keys(map).length || markedLi.size || markedA.size) paint(); });
   return { raise, clear, all: () => ({ ...(map = read()) }), paint: () => { try { paint(); } catch {} }, render };
 })();
 
@@ -236,138 +352,20 @@ function mountLegacyDisplayBridge() {
      * ------------------------------------------------------------
      */
 
-    let newChatReloadScheduled = false;
-
-    function isNewChatLink(element) {
-
-        if (!element) {
-            return false;
-        }
-
-        const link =
-            element.closest?.(
-                'a[href="/agent"]'
-            );
-
-        if (!link) {
-            return false;
-        }
-
-        const menuItem =
-            link.closest(
-                'li[data-sidebar="menu-item"]'
-            );
-
-        if (!menuItem) {
-            return false;
-        }
-
-        const text =
-            (link.textContent || '').trim();
-
-        return (
-            text.includes('New Chat') ||
-            link.getAttribute('href') === '/agent'
-        );
-    }
-
-    function scheduleNewChatReload() {
-
-        if (newChatReloadScheduled) {
-            return;
-        }
-
-        newChatReloadScheduled = true;
-
-        log(
-            'NEW CHAT CLICKED - waiting for /agent navigation...'
-        );
-
-        let attempts = 0;
-
-        const checkNavigation = () => {
-
-            attempts++;
-
-            const pathname =
-                window.location.pathname;
-
-            if (
-                pathname === '/agent' &&
-                !(window.__AMP_NATIVE_GACHA_NAV__ > Date.now())
-            ) {
-
-                log(
-                    'NEW CHAT NAVIGATION DETECTED - reloading page...'
-                );
-
-                try {
-
-                    sessionStorage.setItem(
-                        '__ARENA_NEW_CHAT_RELOADED__',
-                        '1'
-                    );
-
-                } catch {}
-
-                window.location.reload();
-
-                return;
-            }
-
-            if (
-                attempts < 50
-            ) {
-
-                setTimeout(
-                    checkNavigation,
-                    100
-                );
-
-                return;
-            }
-
-            log(
-                'NEW CHAT navigation timeout.'
-            );
-
-            newChatReloadScheduled =
-                false;
-        };
-
-        setTimeout(
-            checkNavigation,
-            100
-        );
-    }
-
-    document.addEventListener(
-        'click',
-        event => {
-
-            try {
-
-                if (
-                    !(window.__AMP_NATIVE_GACHA_NAV__ > Date.now()) &&
-                    isNewChatLink(
-                        event.target
-                    )
-                ) {
-
-                    scheduleNewChatReload();
-                }
-
-            } catch (e) {
-
-                warn(
-                    'NEW CHAT CLICK DETECTION ERROR',
-                    e
-                );
-            }
-
-        },
-        true
-    );
+    // v1.11.86 删除“点 New Chat 整页刷新”（v8.1 原有的 scheduleNewChatReload 和它的点击监听、设置开关）：
+    // 页面内打开新对话就行。检测面板改为页面内切到新对话页（/agent）时回到“等待验证”，效果和以前刷新后一样；
+    // 抽卡切页、脚本“重新载入对话”时短暂经过 /agent 不算（见 window.__AMP_NATIVE_GACHA_NAV__ / __AMP_SOFT_NAV__）。
+    // 其余状态（processedRuns / processedSpans 只是去重，按 runId / spanId 记）不用重置。
+    let lastPathForPanel = location.pathname;
+    setInterval(() => {
+        try {
+            const p = location.pathname;
+            if (p === lastPathForPanel) return;
+            lastPathForPanel = p;
+            const soft = window.__AMP_SOFT_NAV__;
+            if (p === '/agent' && !(window.__AMP_NATIVE_GACHA_NAV__ > Date.now()) && !(soft && soft.until > Date.now())) setPanelWaiting();
+        } catch {}
+    }, 500);
 
     /* Compact UI: isolated styles; local preferences contain UI state only. */
     const UI_KEY = '__arena_detector_ui_v81__';
@@ -3250,6 +3248,17 @@ function mountLegacyDisplayBridge() {
      * ------------------------------------------------------------
      */
 
+    // v1.11.86 Lite 旁路已经在读同一条实时流：由它把 batch 事件转给这里（少一次 clone、少一个读流循环）
+    try {
+        window.__AMP_LEGACY_BATCH__ = parsed => {
+            try {
+                processBatch(parsed);
+            } catch (e) {
+                warn('SSE batch forward failed', e);
+            }
+        };
+    } catch {}
+
     window.fetch =
         function (...args) {
 
@@ -3292,6 +3301,12 @@ function mountLegacyDisplayBridge() {
                 );
             }
 
+            // v1.11.86 Lite 会把这条流的 batch 事件转过来（见 __AMP_LEGACY_BATCH__）
+            const forwarded =
+                window.__AMP_SSE_FWD__ === 1;
+
+            window.__AMP_SSE_FWD__ = 0;
+
             const promise =
                 originalFetch.apply(
                     this,
@@ -3318,6 +3333,10 @@ function mountLegacyDisplayBridge() {
                                 )
                         }
                     );
+
+                    if (forwarded) {
+                        return;
+                    }
 
                     try {
 
@@ -3557,9 +3576,21 @@ const continueWork = (() => {
   // v1.11.73 抽卡进行中 / 抽卡产生的对话：不点“继续工作”，只把反馈卡片收起（避免模型接着干活、页面跳动）
   const quietNow = () => { try { return !!window.__AMP_GACHA_QUIET__?.(); } catch { return false; } };
   const enabled = () => !quietNow(); // otherwise always on (v1.5): the only choice clicked is Keep working
+  // v1.11.86 性能（P4）：“此任务成功了吗？”卡片是替换输入框渲染的，只在对话区（role="log"）以外找——
+  // main 里对话区外面的部分（沿对话区往上每一层的兄弟节点）+ body 下不含 main 的节点（弹层 / portal）；不再把整段对话里几千个按钮的文字挨个读一遍
+  const CW_SEL = 'button,[role="button"],[role="menuitem"],[role="menuitemradio"],[role="option"],[role="radio"]';
+  function scopes() {
+    const m = document.querySelector('main'), b = document.body, out = [];
+    if (!m) { if (b) out.push(b); return out; }
+    const log = m.querySelector('[role="log"]');
+    if (log) { for (let n = log; n && n !== m; n = n.parentElement) { const p = n.parentElement; if (p) for (const sib of p.children) if (sib !== n) out.push(sib); } }
+    else out.push(m);
+    if (b) for (const c of b.children) if (!c.contains(m) && c.tagName !== 'SCRIPT' && c.tagName !== 'STYLE') out.push(c);
+    return out;
+  }
   function candidates() {
-    const out = [];
-    const pre = [...document.querySelectorAll('button,[role="button"],[role="menuitem"],[role="menuitemradio"],[role="option"],[role="radio"]')].filter(b => continueText.test(norm(b.getAttribute('aria-label') || b.textContent)));
+    const out = [], pre = [];
+    for (const root of scopes()) { if (root.matches?.(CW_SEL) && continueText.test(norm(root.getAttribute('aria-label') || root.textContent))) pre.push(root); for (const b of root.querySelectorAll(CW_SEL)) if (continueText.test(norm(b.getAttribute('aria-label') || b.textContent))) pre.push(b); }
     if (!pre.length) return out;
     for (const button of pre.filter(visible).filter(b => continueText.test(label(b)))) {
       if (button.closest('pre,code,[contenteditable="true"],[data-message-author-role="user"],[data-role="user"],[data-user-message-layout]')) continue;
@@ -3601,7 +3632,8 @@ const continueWork = (() => {
   // （抽卡时 / 抽卡开出的对话里输入框消失）。现在藏起来的同时点它自己的关闭键（= 按 Esc，只记“已忽略”，不会让模型继续干活），
   // 面板关掉、输入框立刻回来；关不掉（Arena 改版）试 3 次后放弃隐藏，至少让面板显示出来能手动点。
   const closeBtn = root => [...root.querySelectorAll('button')].find(b => /^(close review panel|close|dismiss|关闭|关闭评审面板|忽略)$/i.test(norm(b.getAttribute('aria-label') || '')));
-  const giveUp = new WeakSet();
+  const giveUp = new WeakSet(), quietRoots = new Set();
+  const hasQuiet = () => { for (const r of quietRoots) if (!r.isConnected || !r.hasAttribute('data-amp-cw-quiet')) quietRoots.delete(r); return quietRoots.size > 0; };
   function dismiss(root) {
     if (!root.isConnected || giveUp.has(root)) return;
     const t = Date.now(); if (root._ampCwX && t - root._ampCwX < 1200) return;
@@ -3611,8 +3643,8 @@ const continueWork = (() => {
   }
   function quiet() {
     let n = 0;
-    for (const { root } of candidates()) { if (giveUp.has(root)) continue; if (!root.hasAttribute('data-amp-cw-quiet')) { root.setAttribute('data-amp-cw-quiet', ''); n++; } dismiss(root); }
-    for (const root of document.querySelectorAll('[data-amp-cw-quiet]')) dismiss(root);
+    for (const { root } of candidates()) { if (giveUp.has(root)) continue; if (!root.hasAttribute('data-amp-cw-quiet')) { root.setAttribute('data-amp-cw-quiet', ''); n++; } quietRoots.add(root); dismiss(root); }
+    if (hasQuiet()) for (const root of [...quietRoots]) dismiss(root);
     return n;
   }
   let scheduled = false, qRaf = 0;
@@ -3620,9 +3652,9 @@ const continueWork = (() => {
   function start() {
     if (!document.documentElement) return;
     try { const st = document.createElement('style'); st.textContent = '[data-amp-cw-quiet]{display:none!important}'; (document.head || document.documentElement).append(st); } catch {}
-    new MutationObserver(auto).observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden', 'aria-hidden', 'style', 'class'] });
-    setInterval(auto, 2000);
-    setInterval(() => { if (document.querySelector('[data-amp-cw-quiet]')) quiet(); }, 1300);
+    domHub.on(auto); // v1.11.86 共用观察器：只看对话区以外的节点增删（不再监听属性）；另有 2 秒一次的兜底
+    sched.every(2000, auto, { idle: true });
+    sched.every(1300, () => { if (hasQuiet()) quiet(); });
   }
   const api = { version: 3, inspect, tick, quiet, enabled, set(v) { try { localStorage.setItem(KEY, v ? '1' : '0'); } catch {} if (v) auto(); }, onClick(fn) { onClick = fn; }, get clicks() { return state.clicks; } };
   if (!window.__arenaContinueWork || window.__arenaContinueWork.version < 3) window.__arenaContinueWork = api;
@@ -3687,7 +3719,14 @@ const gacha = (() => {
   const writeJSON = (store, key, value) => { try { if (store === localStorage) return ampStore.set(key, JSON.stringify(value)); store.setItem(key, JSON.stringify(value)); return true; } catch { return false; } };
   const list = (v, fallback) => Array.isArray(v) ? [...new Set(v.filter(x => typeof x === 'string').map(x => x.trim()).filter(x => x && x.length <= 200))].slice(0, 50) : [...fallback];
   const WARMUP_TEXT = '（请先立即单独输出一行“思考中…”，然后再开始思考并完成任务；需要分析的内容直接写在回复正文里。）';
+  // v1.11.86 性能：按 localStorage 里的原文缓存解析结果（定时器每秒要读好几次），原文变了才重新解析；返回副本，调用方改了也不影响缓存
+  let setMemo = null;
   function settings() {
+    let raw = null; try { raw = localStorage.getItem(SETTINGS); } catch {}
+    if (setMemo && setMemo.raw === raw) { const c = setMemo.v; return { ...c, targetKeywords: [...c.targetKeywords], archiveKeywords: [...c.archiveKeywords] }; }
+    const v = settingsParse(); setMemo = { raw, v }; return { ...v, targetKeywords: [...v.targetKeywords], archiveKeywords: [...v.archiveKeywords] };
+  }
+  function settingsParse() {
     const s = readJSON(localStorage, SETTINGS, {}) || {};
     // v1.5 migration: an older free-text target (e.g. "gpt-6-astra") maps to its vendor.
     const customKeyword = typeof s.customKeyword === 'string' ? s.customKeyword.trim().slice(0, 60) : '';
@@ -3764,16 +3803,27 @@ const gacha = (() => {
     const buttons = scope => scope ? [...scope.querySelectorAll('button')].filter(visible) : [];
     const find = (names, scope = document) => scope ? [...scope.querySelectorAll('button')].find(e => names.includes(label(e)) && visible(e)) : undefined;
     const SEND = ['Send message', '发送消息'], STOP = ['Stop generating', '停止生成', 'Stop response'];
-    const main = () => [...document.querySelectorAll('main')].find(visible) || null;
-    const input = () => { const all = [...document.querySelectorAll('main div[contenteditable="true"]')].filter(visible); return all.find(e => e.closest('form')) || all.at(-1) || null; };
+    // v1.11.86 性能（P2）：main / 对话区 / 输入框缓存起来（还在页面上、还看得见就直接用）；按钮只在对话区以外找（先找输入框那一块），
+    // 不再把整段对话里几千个按钮挨个读一遍；“有没有对话内容”看有没有消息节点，不读整段对话的文字
+    let mainC = null, logC = null, edC = null;
+    const main = () => (mainC && mainC.isConnected && visible(mainC)) ? mainC : (mainC = [...document.querySelectorAll('main')].find(visible) || null);
+    const input = () => { if (edC && edC.isConnected && visible(edC) && edC.closest('main')) return edC; const m = main(); if (!m) return (edC = null); const all = [...m.querySelectorAll('div[contenteditable="true"]')].filter(e => !e.closest('[role="log"]') && visible(e)); return (edC = all.find(e => e.closest('form')) || all.at(-1) || null); };
+    const logOf = m => { if (!m) return null; if (logC && logC.isConnected && m.contains(logC) && visible(logC)) return logC; return (logC = [...m.querySelectorAll('[role="log"]')].find(visible) || null); };
+    const CTRL_SEL = 'button[aria-label="Send message"],button[aria-label="发送消息"],button[aria-label="Stop generating"],button[aria-label="停止生成"],button[aria-label="Stop response"]';
+    // main 里对话区以外的部分：沿对话区往上每一层的兄弟节点（没有对话区就是整个 main）
+    const outside = m => { if (!m) return []; const log = logOf(m); if (!log) return [m]; const out = []; for (let n = log; n && n !== m; n = n.parentElement) { const p = n.parentElement; if (p) for (const sib of p.children) if (sib !== n) out.push(sib); } return out; };
+    const composer = m => { const ed = input(); for (let c = ed && ed.parentElement, n = 0; c && n < 10 && c !== m; c = c.parentElement, n++) if (c.querySelector(CTRL_SEL)) return c; return null; };
+    const outButtons = m => { const out = []; for (const r of outside(m)) { if (r.matches?.('button')) out.push(r); for (const b of r.querySelectorAll('button')) out.push(b); } return out; };
+    const ctrlButtons = m => { const c = composer(m); return c ? [...c.querySelectorAll('button')] : outButtons(m); };
     // 草稿比较前统一空白：零宽字符、不间断空格、多余换行都不算差异（以前因此误判“草稿不一致”而暂停）。
     const norm = t => String(t || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
-    const sendBtns = m => m ? [...m.querySelectorAll('button')].filter(e => SEND.includes(label(e)) && !e.closest('[role="log"]') && visible(e)) : [];
+    const sendBtns = m => m ? ctrlButtons(m).filter(e => SEND.includes(label(e)) && !e.closest('[role="log"]') && visible(e)) : [];
     const sendBtn = m => { const b = sendBtns(m).filter(e => !e.disabled && e.getAttribute('aria-disabled') !== 'true'); return b.find(e => e.closest('form')) || b.at(-1) || null; };
     const dialogs = () => [...document.querySelectorAll('[role="dialog"]')].filter(visible);
-    const newChatLinks = () => [...document.querySelectorAll('a[href="/agent"]')].filter(e => visible(e) && label(e) === 'New Chat');
-    const expander = () => find(['Expand sidebar', 'Open sidebar']);
-    const stagedNames = m => m ? [...m.querySelectorAll('button')].filter(e => label(e).startsWith('Remove ') && !e.closest('[role="log"]') && visible(e)).map(label).map(t => t.slice(7)) : [];
+    const newChatLinks = () => domQ.all('newChatLinks', () => document.querySelectorAll('a[href="/agent"]')).filter(e => visible(e) && label(e) === 'New Chat');
+    // 展开侧栏的按钮不在对话区里：先按 aria-label 找，再看 main 以外的按钮
+    const expander = () => { const names = ['Expand sidebar', 'Open sidebar']; const a = domQ.all('expanders', () => document.querySelectorAll('button[aria-label="Expand sidebar"],button[aria-label="Open sidebar"]')).find(e => visible(e)); if (a) return a; let pool; try { pool = domQ.all('offMainButtons', () => document.querySelectorAll('button:not(main *)')); } catch { pool = []; } return pool.find(e => names.includes(label(e)) && visible(e)); };
+    const stagedNames = m => m ? outButtons(m).filter(e => label(e).startsWith('Remove ') && visible(e)).map(label).map(t => t.slice(7)) : [];
     function completion(log) {
       const match = /^\/agent\/([0-9a-f-]{36})\/?$/i.exec(location.pathname);
       if (!log || !match) return null;
@@ -3802,7 +3852,7 @@ const gacha = (() => {
     }
     // 首包看门狗用：最后一条用户消息之后，助手是否已经产出任何内容（文字 / 推理文字 / 工具调用）。
     function chatState() {
-      const m = main(), log = m && [...m.querySelectorAll('[role="log"]')].find(visible);
+      const m = main(), log = logOf(m);
       const match = /^\/agent\/([0-9a-f-]{36})\/?$/i.exec(location.pathname); if (!log || !match) return null;
       try {
         let fiber = log[Object.keys(log).find(k => k.startsWith('__reactFiber'))];
@@ -3822,20 +3872,29 @@ const gacha = (() => {
     function blocker() {
       const ds = dialogs();
       if (ds.some(e => /Security Verification|人机身份验证|Verify you are human/i.test(e.innerText || e.textContent || ''))) return 'CAPTCHA';
-      if (find(['Log In']) || ds.some(e => /Log In to your account|Log In or Create Account/.test(e.innerText || e.textContent || ''))) return 'LOGIN';
+      let login = false; try { login = domQ.all('offLogButtons', () => document.querySelectorAll('button:not([role="log"] *)')).some(e => label(e) === 'Log In' && visible(e)); } catch { login = !!find(['Log In']); }
+      if (login || ds.some(e => /Log In to your account|Log In or Create Account/.test(e.innerText || e.textContent || ''))) return 'LOGIN';
       if (ds.some(e => /Terms of Use & Privacy Policy/.test(e.innerText || e.textContent || ''))) return 'TERMS';
       const alerts = [...document.querySelectorAll('[role="alert"]')].filter(visible).map(e => e.innerText || e.textContent || '').join('\n');
       if (/too many requests|rate limit|try again later|quota exceeded|limit reached/i.test(alerts)) return 'ALERT_LIMIT';
       return '';
     }
+    // 只要“在不在生成”（改名前等页面空闲用，流式输出时每 0.5~0.8 秒调一次）：只读 React 状态和输入框那里的停止按钮
+    function busy() {
+      const m = main(), live = completion(logOf(m));
+      const feedbackPending = window.__arenaContinueWork?.inspect?.().pending === true;
+      if (feedbackPending) return true; if (live && live.busy) return true;
+      const stop = !!m && ctrlButtons(m).some(e => STOP.includes(label(e)) && !e.closest('[role="log"]') && visible(e));
+      return live ? !live.complete && stop : stop;
+    }
     function view() {
-      const m = main(), log = m && [...m.querySelectorAll('[role="log"]')].find(visible);
-      const text = log ? /\S/.test(log.textContent || '') : false; // 性能：不用 innerText（整段对话会强制重排）
+      const m = main(), log = logOf(m);
+      const text = log ? (!!log.querySelector('[data-agent-transcript-message],[data-chat-message-id]') || /\S/.test(log.textContent || '')) : false; // 有消息节点就不读整段文字
       const live = completion(log);
       const feedbackPending = window.__arenaContinueWork?.inspect?.().pending === true;
-      const stop = !!m && [...m.querySelectorAll('button')].some(e => STOP.includes(label(e)) && !e.closest('[role="log"]') && visible(e));
+      const stop = !!m && ctrlButtons(m).some(e => STOP.includes(label(e)) && !e.closest('[role="log"]') && visible(e));
       const sb = sendBtn(m);
-      const spinner = !!m && [...m.querySelectorAll('[role="progressbar"],.animate-spin')].some(e => visible(e) && !e.closest('[role="log"]'));
+      const spinner = !!m && outside(m).some(r => [...(r.matches?.('[role="progressbar"],.animate-spin') ? [r] : []), ...r.querySelectorAll('[role="progressbar"],.animate-spin')].some(e => visible(e)));
       const ed = input();
       return { main: !!m, conversation: !!text, generating: feedbackPending || (live ? live.busy || (!live.complete && stop) : stop),
         complete: !!live?.complete, routed: live?.routed || '', editor: !!ed, draft: norm(ed?.innerText ?? ed?.textContent ?? ''), sendReady: !!sb,
@@ -3865,8 +3924,8 @@ const gacha = (() => {
     // 兜底：在输入框里按 Enter（Arena 的输入框回车即发送）。
     const pressEnter = () => { const el = input(); if (!el) return false; kbOff(el); el.focus(); for (const type of ['keydown', 'keypress', 'keyup']) el.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true })); return true; };
     function clearDraft() { const el = input(); if (!el) return; kbOff(el); el.focus(); const r = document.createRange(); r.selectNodeContents(el); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); document.execCommand('delete', false); }
-    const clickStop = () => { const m = main(), b = m && buttons(m).filter(e => STOP.includes(label(e)) && !e.closest('[role="log"]') && !e.disabled); if (!b || b.length !== 1) return false; b[0].click(); return true; };
-    return { view, chatState, writeDraft, clickSend, clickStop, pressEnter, clearDraft, kbRestore, norm, newChatLinks, expander, visible, label };
+    const clickStop = () => { const m = main(), b = m && ctrlButtons(m).filter(e => STOP.includes(label(e)) && !e.closest('[role="log"]') && !e.disabled && visible(e)); if (!b || b.length !== 1) return false; b[0].click(); return true; };
+    return { view, busy, chatState, writeDraft, clickSend, clickStop, pressEnter, clearDraft, kbRestore, norm, newChatLinks, expander, visible, label };
   })();
   const sidOf = url => { try { return new URL(url, location.href).pathname.match(/^\/agent\/([0-9a-f-]{36})\/?$/i)?.[1] || null; } catch { return null; } };
   const blank = v => /^\/agent\/?$/.test(location.pathname) && v.main && v.editor && !v.conversation && !v.generating;
@@ -3918,7 +3977,7 @@ const gacha = (() => {
   async function waitIdle(max = 900000) {
     const end = Date.now() + max; let quiet = 0;
     while (Date.now() < end) {
-      let busy = false; try { busy = !!page.view().generating; } catch {}
+      let busy = false; try { busy = page.busy(); } catch {} // v1.11.86 只要“在不在生成”，不用整份 view()
       if (busy) quiet = 0; else if (++quiet >= 3) return true;
       await nap(busy ? 800 : 500);
     }
@@ -3973,11 +4032,14 @@ const gacha = (() => {
     queueRename(sid, next, false).catch(e => log('标题跟随模型失败 ' + (e.status ? 'HTTP ' + e.status : e.message), 'warn'));
     return next;
   }
-  // Routed-thinking guard (all Agent chats, default on): stop once per reply when thinking appears mid-answer.
+  // Routed-thinking guard（v1.11.86 只在抽卡轮次里生效，默认开）：抽卡进行中、或抽卡开出的对话里由抽卡发出的那一轮，回复中途出现思考链就停止。
+  // 普通对话一律不停：多步回复（先说一句 → 调工具 → 下一步才开始思考）也会出现“正文之后才有思考链”，以前会被误停；
+  // 普通对话里的疑似换模型由实时监控提示（「疑似换模型 · 正在核对」），这里不重复弹。不在抽卡就直接返回，不读页面（性能）。
   let routedStopped = '';
   setInterval(() => {
     try {
-      if (!settings().stopOnThinking || !/^\/agent\/[0-9a-f-]{36}/i.test(location.pathname)) return;
+      const rm = /^\/agent\/([0-9a-f-]{36})/i.exec(location.pathname); if (!rm) return;
+      if (!(run?.status === 'running' || quietTurn(rm[1])) || !settings().stopOnThinking) return;
       const v = page.view(); if (!v.routed || !v.generating) return;
       const key = location.pathname + '|' + v.routed; if (key === routedStopped) return;
       if (page.clickStop()) { routedStopped = key; if (run?.status === 'running') log('回复中途被路由到 thinking，已停止生成', 'warn'); console.info('[Arena Native] 回复中途被路由到 thinking，已停止生成');
@@ -4013,13 +4075,16 @@ const gacha = (() => {
     try {
       wdNote('warn', '首包看门狗：' + s.watchdogSec + ' 秒没有任何输出，停止并在同一对话重发（第 ' + wd.tries + '/' + s.watchdogRetries + ' 次）' + (expected ? ' · 当前模型 ' + expected : ''));
       if (!page.clickStop()) { wdNote('warn', '首包看门狗：找不到停止按钮，放弃'); return; }
+      // v1.11.86 自动停止必须让人知道：侧栏卡片变色 + 顶部提示（抽卡进行中由抽卡流程自己处理，不提醒）
+      const wdAttn = t => { if (run?.status !== 'running') { try { attn.raise(st.sid, 'route', t); } catch {} } };
+      wdAttn('首包看门狗：' + s.watchdogSec + ' 秒没有任何输出，已自动停止生成并在同一对话重发');
       const end = now() + 15000; while (now() < end && page.view().generating) await nap(300);
       await nap(1500);
-      if (page.view().draft) { wdNote('warn', '首包看门狗：输入框里有内容，未自动重发（请手动发送）'); return; }
+      if (page.view().draft) { wdNote('warn', '首包看门狗：输入框里有内容，未自动重发（请手动发送）'); wdAttn('首包看门狗：已自动停止生成；输入框里有内容，没有重发，请手动发送'); return; }
       page.writeDraft(st.userText);
       const want = page.norm(st.userText), end2 = now() + 6000; let ok = false;
       while (now() < end2 && !(ok = page.view().sendReady && page.view().draft === want)) await nap(150);
-      if (!ok || !page.clickSend()) { if (!page.pressEnter()) { wdNote('warn', '首包看门狗：重发失败，请手动发送'); return; } }
+      if (!ok || !page.clickSend()) { if (!page.pressEnter()) { wdNote('warn', '首包看门狗：重发失败，请手动发送'); wdAttn('首包看门狗：已自动停止生成，但没能重发，请手动发送'); return; } }
       wdStats.stops = (wdStats.stops || 0) + 1; wdSave();
       wd.checks.push({ sid: st.sid, expected, at: now(), want: String(st.userText).replace(/[\x00-\x1f\x7f]+|\s+/g, ' ').trim().slice(0, 20) });
     } catch (e) { wdNote('warn', '首包看门狗出错：' + (e.message || e)); }
@@ -4373,18 +4438,27 @@ const errReload = (() => {
   const read = (k, d) => { try { const v = JSON.parse(sessionStorage.getItem(k) || 'null'); return v ?? d; } catch { return d; } };
   const write = (k, v) => { try { sessionStorage.setItem(k, JSON.stringify(v)); } catch {} };
   const mainEl = () => document.querySelector('main');
-  const logEl = () => { const m = mainEl(); return m && [...m.querySelectorAll('[role="log"]')].find(visible) || null; };
+  // v1.11.86 性能：对话区元素缓存起来（只检查还在不在页面里，不再每次都查一遍 + 读布局）
+  let logC = null;
+  const logEl = () => { if (logC && logC.isConnected) return logC; const m = mainEl(); if (!m) return (logC = null); const all = m.querySelectorAll('[role="log"]'); return (logC = all.length === 1 ? all[0] : [...all].find(visible) || null); }; // 只有一个对话区时不读布局
 
-  // 只认“整段文字就是这句话”的提示元素；消息正文、代码、输入框里出现同样的句子不算
-  function findError() {
+  // v1.11.86 性能：出错提示只查两处，不再用 XPath 扫整段对话的文字（长对话每 2 秒几十毫秒）：
+  //   ① 流出错提示条：对话里的 role="alert"（“Something went wrong. Please try again.” + Retry 按钮）→ kind 'stream'
+  //   ② 整页加载失败：main 里的 h1 “Something went wrong”（“We couldn't load this chat”）→ kind 'load'
+  // 只认“去掉按钮文字后整段就是这句话”的提示；消息正文、代码里出现同样的句子不算。返回 { el, kind } 或 null
+  function findError(streamOnly) {
     const m = mainEl(); if (!m) return null;
-    let snap; try { snap = document.evaluate(".//*[contains(text(),'Something went wrong') or contains(text(),'something went wrong') or contains(text(),'出了点问题') or contains(text(),'出错了')]", m, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null); } catch { return null; }
-    for (let i = snap.snapshotLength - 1; i >= 0; i--) {
-      let el = snap.snapshotItem(i);
-      if (el.closest(SKIP)) continue;
-      for (let up = el.parentElement, n = 0; up && up !== m && n < 3; up = up.parentElement, n++) { if (PHRASE.test(norm(up.textContent))) el = up; else break; }
-      if (PHRASE.test(norm(el.textContent)) && visible(el)) return el;
+    let hit = null;
+    for (const a of domMark.get('alert')) {
+      if (!m.contains(a) || a.closest(SKIP) || a.getAttribute('role') !== 'alert') continue;
+      let t = norm(a.textContent); if (t.length > 200) continue;
+      for (const b of a.querySelectorAll('button')) { const bt = norm(b.textContent); if (bt) t = t.replace(bt, ''); }
+      if (PHRASE.test(norm(t)) && visible(a)) hit = a; // 多个时取最后出现的
     }
+    if (hit) return { el: hit, kind: 'stream' };
+    if (streamOnly) return null;
+    const hs = m.getElementsByTagName('h1');
+    for (let i = 0; i < hs.length; i++) if (PHRASE.test(norm(hs[i].textContent)) && visible(hs[i])) return { el: hs[i], kind: 'load' };
     return null;
   }
   // Arena 对话页的状态（React context：{ id, messages, status, … }），从对话区往上找
@@ -4394,18 +4468,69 @@ const errReload = (() => {
     return null;
   }
   function chatStatus() { const v = chatValue(); return v ? String(v.status || '') : null; }
-  // 任务进行中：页面状态是 submitted / streaming（Arena 自己的 isStreaming 也这样算），或者看得到“停止生成”按钮
+  function lastUserMsgId() { try { const msgs = chatValue()?.messages || []; for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i]?.role === 'user' && typeof msgs[i].id === 'string') return msgs[i].id; } catch {} return ''; }
+  // v1.11.86 输入框那一块（编辑器 + 发送 / 停止按钮）：从编辑器往上找到含发送或停止按钮的那一层，缓存起来。
+  // 停止 / 发送按钮只在这里找，不再把整段对话里几千个按钮挨个读一遍。
+  const CTRL = 'button[aria-label="Send message"],button[aria-label="Stop generating"],button[aria-label="Stop response"],button[aria-label="发送消息"],button[aria-label="停止生成"]';
+  let compC = null;
+  function composer() {
+    if (compC && compC.isConnected && compC.querySelector(CTRL)) return compC;
+    compC = null; const m = mainEl(); if (!m) return null;
+    const eds = m.querySelectorAll('div[contenteditable="true"], textarea'); let ed = null;
+    for (let i = eds.length - 1; i >= 0; i--) if (!eds[i].closest('[role="log"]')) { ed = eds[i]; break; }
+    for (let c = ed && ed.parentElement, n = 0; c && n < 10; c = c.parentElement, n++) { if (c.querySelector(CTRL)) return (compC = c); if (c === m) break; }
+    return null;
+  }
+  const outsideLogButtons = () => { const c = composer(); if (c) return c.querySelectorAll('button'); const m = mainEl(); try { return m ? m.querySelectorAll('button:not([role="log"] *)') : []; } catch { return m ? [...m.querySelectorAll('button')].filter(b => !b.closest('[role="log"]')) : []; } };
+  // 任务进行中：页面状态是 submitted / streaming（Arena 的停止按钮正是这时才显示），或者输入框那里看得到“停止生成”按钮
   const STOP_RE = /^(?:stop(?:\s+(?:generating|response|streaming))?|停止(?:生成|回答)?)$/i;
   let runAt = 0, runVal = false;
   function turnBusy(fresh) {
     const now = Date.now(); if (!fresh && now - runAt < 300) return runVal; runAt = now;
     const st = chatStatus(); if (st === 'submitted' || st === 'streaming') return (runVal = true);
-    const m = mainEl(); return (runVal = !!m && [...m.querySelectorAll('button')].some(b => STOP_RE.test(norm(b.getAttribute('aria-label') || b.textContent)) && visible(b)));
+    for (const b of outsideLogButtons()) if (STOP_RE.test(norm(b.getAttribute('aria-label') || b.textContent)) && visible(b)) return (runVal = true);
+    return (runVal = false);
   }
   const draft = () => [...document.querySelectorAll('main div[contenteditable="true"], main textarea')].filter(visible).some(e => norm(e.value ?? e.innerText ?? e.textContent).length > 0);
+  // 输入框里待发送的附件（附件卡片上的“Remove …”按钮）
+  const attached = () => { const m = mainEl(); if (!m) return false; for (const b of m.querySelectorAll('button[aria-label^="Remove "]')) if (!b.closest('[role="log"]') && b.getClientRects().length) return true; return false; };
   const gachaBusy = () => { try { const pk = gacha.peek(); return !!pk && ['running', 'stopping'].includes(pk.status); } catch { return false; } };
   const limited = () => { try { return [...document.querySelectorAll('[role="alert"]')].some(e => visible(e) && /too many requests|rate limit|try again later|quota exceeded|limit reached|429/i.test(e.textContent || '')); } catch { return false; } };
   function budget(sid) { const now = Date.now(), list = read(LOG_KEY, []).filter(x => x && now - x.at < WINDOW); return { list, ok: !list.some(x => x.sid === sid && now - x.at < PER_SID_GAP) && list.length < MAX_IN_WINDOW, n: list.length }; }
+  // ---------- v1.11.86 设置（在 Lite 面板里改，存在 amp.lite.v2.prefs）/ 日志 / 网络 ----------
+  let prefCache = null, prefAt = 0;
+  const prefAll = () => { const t = Date.now(); if (!prefCache || t - prefAt > 1500) { try { prefCache = JSON.parse(localStorage.getItem('amp.lite.v2.prefs') || '{}') || {}; } catch { prefCache = {}; } prefAt = t; } return prefCache; };
+  const pOn = (k, d = true) => { const v = prefAll()[k]; return typeof v === 'boolean' ? v : d; };
+  const pNum = (k, d, lo, hi) => { const v = Number(prefAll()[k]); return Number.isFinite(v) && v >= lo && v <= hi ? v : d; };
+  const elog = (lv, text) => { try { window.__AMP_LOG__?.(lv, '收尾', text); } catch {} };
+  const netFetch = (() => { try { let f = window.fetch; for (let i = 0; i < 8 && f && f.__orig && f.__orig !== f; i++) f = f.__orig; return f.bind(window); } catch { return (...a) => fetch(...a); } })();
+  const traceHold = ms => { try { window.__AMP_TRACE_HOLD__ = Math.max(+window.__AMP_TRACE_HOLD__ || 0, Date.now() + ms); } catch {} }; // 自救期间后台先不读 Trace，不和页面的重连抢额度
+  const mmss = ms => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? s + ' 秒' : Math.floor(s / 60) + ' 分 ' + String(s % 60).padStart(2, '0') + ' 秒'; };
+  // v1.11.86 这一轮在服务器上结束了没有：Arena 页面自带的看门狗用的同一个接口 GET /api/chat/{id}/run-status?inputId={这一轮用户消息的 id}
+  // 返回 k：completed（服务器已完成，inputId 对得上）/ failed / active（还在处理：active、cooldown、temporary_failure）/ limited（429）/ error / unknown（没有消息 id）
+  // retry = 收尾自救用的下次查询间隔（默认 60 秒）；ra = 服务器要求的最短间隔（retryAfterMs / Retry-After，没有就是 0）
+  function parseRunStatus(j, id, ra) {
+    if (!j || typeof j !== 'object') return { k: 'error' };
+    if (j.failure && typeof j.failure === 'object' && (!j.failure.inputId || j.failure.inputId === id)) return { k: 'failed', text: String(j.failure.errorText || '').slice(0, 160) };
+    const raw = Math.max(ra || 0, Number(j.retryAfterMs) || 0);
+    if (j.status === 'completed') return j.completion?.inputId === id ? { k: 'completed', completion: j.completion } : { k: 'active', sub: 'pending', retry: 20000, ra: raw };
+    const retry = Math.max(ra || 0, Number(j.retryAfterMs) || 60000);
+    if (j.status === 'active' || j.status === 'cooldown' || j.status === 'temporary_failure') return { k: 'active', sub: j.status, retry, ra: raw };
+    return { k: 'unknown', retry, ra: raw };
+  }
+  async function fetchRunStatus(s, id) {
+    if (!s || !id) return { k: 'unknown' };
+    try {
+      const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 12000);
+      try {
+        const res = await netFetch('/api/chat/' + encodeURIComponent(s) + '/run-status?inputId=' + encodeURIComponent(id), { headers: { Accept: 'application/json' }, credentials: 'same-origin', cache: 'no-store', signal: ctl.signal });
+        const h = res.headers.get('Retry-After'), ra = h ? (Number.isFinite(+h) ? +h * 1000 : Math.max(0, Date.parse(h) - Date.now()) || 0) : 0;
+        if (!res.ok) { try { await res.body?.cancel(); } catch {} return { k: res.status === 429 ? 'limited' : 'error', code: res.status, retry: ra, ra }; }
+        let j = null; try { j = JSON.parse(await res.text()); } catch {}
+        return parseRunStatus(j, id, ra);
+      } finally { clearTimeout(to); }
+    } catch { return { k: 'error', code: 0 }; }
+  }
 
   // ---------- 提示条 ----------
   let host = null, box = null, hideTimer = 0;
@@ -4422,10 +4547,11 @@ const errReload = (() => {
     if (!box) return;
     const m = mainEl()?.getBoundingClientRect(), ed = [...document.querySelectorAll('main div[contenteditable="true"], main textarea')].find(visible), f = (ed?.closest('form') || ed)?.getBoundingClientRect();
     box.style.left = Math.round(m && m.width ? m.left + m.width / 2 : innerWidth / 2) + 'px';
-    box.style.bottom = Math.round(f && f.height ? Math.max(12, innerHeight - f.top + 10) : 150) + 'px';
+    let lift = 0; try { lift = stall.height(); } catch {} // v1.11.86 收尾状态条显示时，这条提示放在它上面
+    box.style.bottom = Math.round((f && f.height ? Math.max(12, innerHeight - f.top + 10) : 150) + (lift ? lift + 8 : 0)) + 'px';
   }
   function show(text, actions = [], closable = false, kind = '') {
-    const b = ui(); clearTimeout(hideTimer); b.textContent = ''; b.dataset.kind = kind;
+    const b = ui(); clearTimeout(hideTimer); b.textContent = ''; b.dataset.kind = kind; delete b.dataset.stage;
     const t = document.createElement('span'); t.className = 't'; t.textContent = text; b.append(t);
     actions.forEach(([label, fn], i) => { const x = document.createElement('button'); x.type = 'button'; x.textContent = label; if (!i) x.className = 'p'; x.onclick = fn; b.append(x); });
     if (closable) { const x = document.createElement('button'); x.type = 'button'; x.className = 'x'; x.textContent = '×'; x.title = '关闭'; x.onclick = () => { stale = true; hide(); }; b.append(x); }
@@ -4434,57 +4560,220 @@ const errReload = (() => {
   function hide() { if (timer) busy = false; clearInterval(timer); timer = 0; errBar = false; if (box) box.hidden = true; }
   function toast(text, ms = 3200) { show(text, [], false, 'toast'); hideTimer = setTimeout(hide, ms); }
 
-  // ---------- 检测与自动刷新 ----------
+  // ---------- 检测与处理 ----------
   let timer = 0, busy = false, stale = false, baseSid = null, baseUntil = 0, errBar = false;
-  function reloadNow(sid, auto) {
+  function hardReload(sid, auto) {
     sid = sid || sidNow();
     if (auto) { const b = budget(sid); b.list.push({ sid, at: Date.now() }); write(LOG_KEY, b.list); }
     write(JUST_KEY, { sid, at: Date.now(), auto: !!auto });
     clearInterval(timer); timer = 0; show('正在刷新当前对话…');
     location.reload();
   }
+  // v1.11.86 重新载入的前提（所有重新载入都从 reloadNow 进来，这里统一检查；不满足就不重新载入，返回原因，由调用方显示按钮）：
+  //   自动（倒计时结束 / 服务器确认结束后）：这一轮不在进行（页面状态不是 submitted/streaming、没有停止按钮——服务器已确认结束的除外）、
+  //     输入框里没有未发送的文字和附件、抽卡没在跑、页面上有出错提示时必须是服务器已确认这一轮结束。
+  //   手动（点按钮 / 下拉刷新）：只要求抽卡没在跑；输入框里的文字先存起来、重新载入后放回去；有附件时先问一次。
+  function reloadBlock(sid, o) {
+    if (gachaBusy()) return '抽卡进行中';
+    if (o.manual) return '';
+    if (!o.confirmed && turnBusy(true)) return '这一轮还在进行';
+    if (draft()) return '输入框里有未发送的内容';
+    if (attached()) return '输入框里有待发送的附件';
+    if (!o.confirmed && findError(true)?.kind === 'stream') return '出错后还没确认这一轮已结束';
+    return '';
+  }
+  // 刷新先只重新载入对话（不整页刷新）：见 softReload。路由不可用 / 没切过去时才整页刷新。
+  // 返回 Promise（正在重新载入对话，结果是否成功）/ null（整页刷新）/ 字符串（没有重新载入，原因）
+  function reloadNow(sid, auto, hard, opt) {
+    sid = sid || sidNow(); const o = { manual: !auto, ...(opt || {}) };
+    const block = reloadBlock(sid, o); if (block) { elog('info', '没有' + (o.manual ? '' : '自动') + '重新载入：' + block); return block; }
+    if (o.manual && !o.force && attached()) {
+      show('输入框里有待发送的附件，重新载入后需要重新添加。仍然重新载入？', [['仍然重新载入', () => { hide(); reloadNow(sid, auto, hard, { ...o, force: true }); }], ['取消', hide]], false, 'confirm'); errBar = true;
+      return '输入框里有附件，等你确认';
+    }
+    if (o.manual) saveDraft(sid);
+    try { o.onGo?.(); } catch {}
+    if (!hard && pOn('softReload')) {
+      const p = softReload(sid, o.why || (auto ? '自动' : '手动'), o);
+      if (p) {
+        if (auto && !o.noBudget) { const b = budget(sid); b.list.push({ sid, at: Date.now() }); write(LOG_KEY, b.list); }
+        clearInterval(timer); timer = 0; busy = false; errBar = false; if (box) box.hidden = true;
+        return p.then(ok => { if (!ok) hardReload(sid, false); return ok; });
+      }
+    }
+    hardReload(sid, auto); return null;
+  }
+  // ---------- v1.11.86 手动重新载入时保留输入框里的文字 ----------
+  const DRAFT_KEY = 'amp.native.softDraft';
+  const editorEl = () => [...document.querySelectorAll('main div[contenteditable="true"], main textarea')].filter(e => !e.closest('[role="log"]') && visible(e)).pop() || null;
+  function draftText() {
+    const ed = editorEl(); if (!ed) return '';
+    if (typeof ed.value === 'string') return ed.value;
+    const blocks = ed.querySelectorAll(':scope > p, :scope > div');
+    return blocks.length ? [...blocks].map(b => String(b.innerText ?? b.textContent ?? '').replace(/\n$/, '')).join('\n') : String(ed.innerText ?? ed.textContent ?? '');
+  }
+  function saveDraft(sid) { try { const t = draftText(); if (norm(t)) write(DRAFT_KEY, { sid, text: t.slice(0, 20000), at: Date.now() }); else sessionStorage.removeItem(DRAFT_KEY); } catch {} }
+  function restoreDraft(sid) {
+    const d = read(DRAFT_KEY, null); if (!d || d.sid !== sid || !(Date.now() - d.at < 5 * 60e3) || typeof d.text !== 'string') return;
+    let n = 0, seen = 0; const iv = setInterval(() => {
+      if (sidNow() !== sid || ++n > 60) { clearInterval(iv); return; }
+      const ed = editorEl(); if (!ed) return;
+      if (!seen) { seen = n; return; } if (n - seen < 3) return; // 输入框出现后再等一会儿：Arena 自己恢复了草稿就不覆盖
+      clearInterval(iv); try { sessionStorage.removeItem(DRAFT_KEY); } catch {}
+      if (norm(draftText())) return;
+      try { const pg = gacha._test.page; pg.writeDraft(d.text); pg.kbRestore(); toast('已把重新载入前输入框里的内容放回去', 2400); }
+      catch { show('重新载入前输入框里的内容没能自动放回去', [['复制那段内容', () => { try { navigator.clipboard.writeText(d.text).then(() => toast('已复制', 1600), () => {}); } catch {} }]], true); errBar = true; }
+    }, 250);
+  }
+  // ---------- v1.11.86 重新载入对话（不整页刷新）----------
+  // 用页面自己的路由先切到新对话页、再切回这个对话：Arena 的对话组件整个重建——重新向服务器拉这个对话、重连实时通道，
+  // 对这个对话的效果和整页刷新一样；侧栏、脚本、样式都不重新加载，快很多。切的过程中对话区盖一层“正在重新载入对话…”。
+  // 第一跳 ≤3 秒（到 /agent、旧对话区已卸载），第二跳 ≤10 秒（回到这个对话、新的对话区、React 状态里就是这个对话且消息已载入）。
+  // 切的时候设 window.__AMP_SOFT_NAV__ = { sid, until }：其他模块忽略这次短暂的 /agent（标签页标题、新对话检测等）。
+  // 第一跳没切过去 → 返回 false，由调用方整页刷新；切过去了没切回来 → 直接整页打开这个对话。
+  let softBusy = false, softHop = false;
+  const until = (fn, ms, step = 60) => new Promise(res => { const t0 = Date.now(); const f = () => { let ok = false; try { ok = !!fn(); } catch {} if (ok) res(true); else if (Date.now() - t0 >= ms) res(false); else setTimeout(f, step); }; f(); });
+  function coverOn(text) {
+    try {
+      let c = document.getElementById('amp-soft-cover'); const m = mainEl()?.getBoundingClientRect();
+      if (!c) { c = document.createElement('div'); c.id = 'amp-soft-cover'; c.setAttribute('role', 'status'); }
+      const r = m && m.width > 40 && m.height > 40 ? m : { left: 0, top: 0, width: innerWidth, height: innerHeight };
+      c.style.cssText = 'position:fixed;left:' + Math.round(r.left) + 'px;top:' + Math.round(r.top) + 'px;width:' + Math.round(r.width) + 'px;height:' + Math.round(r.height) + 'px;z-index:2147482600;display:flex;align-items:center;justify-content:center;gap:10px;background:hsl(var(--surface-primary,36 45% 98%));color:hsl(var(--text-secondary,30 5% 35%));font:13px/1.4 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;opacity:0;transition:opacity .12s ease';
+      c.textContent = '';
+      const st = document.createElement('style'); st.textContent = '@keyframes ampSoftSpin{to{transform:rotate(360deg)}}';
+      const sp = document.createElement('i'); sp.style.cssText = 'width:14px;height:14px;box-sizing:border-box;border-radius:50%;border:2px solid currentColor;border-top-color:transparent;opacity:.7;animation:ampSoftSpin .8s linear infinite';
+      c.append(st, sp, document.createTextNode(text));
+      if (!c.isConnected) (document.body || document.documentElement).append(c);
+      requestAnimationFrame(() => { c.style.opacity = '1'; });
+    } catch {}
+  }
+  function coverOff() { const c = document.getElementById('amp-soft-cover'); if (!c) return; c.style.opacity = '0'; setTimeout(() => { if (!softBusy) c.remove(); }, 160); }
+  function softReload(sid, why, o = {}) {
+    sid = sid || sidNow();
+    let r = null; try { r = window.next?.router; } catch {}
+    if (softBusy || !sid || sidNow() !== sid || typeof r?.replace !== 'function') return null;
+    softBusy = true; const t0 = Date.now(); traceHold(20000);
+    try { window.__AMP_SOFT_NAV__ = { sid, until: Date.now() + 16000 }; } catch {}
+    elog('info', '重新载入对话（' + (why || '手动') + '，不整页刷新）');
+    const run = (async () => {
+      const old = logEl(); coverOn('正在重新载入对话…');
+      try { window.__AMP_NATIVE_GACHA_NAV__ = Date.now() + 8000; } catch {}
+      try {
+        // 旧对话组件的实时连接：卸载后可能还会自己续一会儿（服务器收尾后会自行结束），标成“遗留”，自救逻辑不再看它们
+        for (const c of conns) if (!c.closedAt && (c.page === sid || !c.page)) c.orphan = true;
+        softHop = true; r.replace('/agent');
+        await until(() => location.pathname === '/agent' && !(old && old.isConnected), 3000);
+        if (location.pathname !== '/agent') { softHop = false; for (const c of conns) c.orphan = false; return false; } // 没切过去：交给整页刷新
+        await new Promise(res => setTimeout(res, 80));
+        softHop = false; r.replace('/agent/' + sid);
+        let away = false;
+        const back = await until(() => { const cur = sidNow(); if (cur && cur !== sid) { away = true; return true; } if (cur !== sid) return false; const lg = logEl(); if (!lg || lg === old) return false; const v = chatValue(); return !!v && v.messages.length > 0; }, 10000, 100);
+        if (away) { elog('info', '重新载入对话途中你打开了别的对话，不再切回'); return true; } // v1.11.86 中途点了别的对话：尊重你的选择，不拉回来
+        if (!back) { elog('warn', '重新载入对话 10 秒内没完成，改为整页打开这个对话'); location.assign('/agent/' + sid); return true; } // 切过去了没切回来：整页打开这个对话
+        return true;
+      } catch { return false; }
+      finally { softBusy = false; softHop = false; coverOff(); try { window.__AMP_SOFT_NAV__ = { sid, until: Date.now() + 800 }; } catch {} }
+    })();
+    return run.then(ok => {
+      if (ok && sidNow() === sid) {
+        elog('info', '对话已重新载入（' + (Math.round((Date.now() - t0) / 100) / 10) + ' 秒，不整页刷新）');
+        // 和整页刷新之后一样：记下“刚重新载入过”、回到最新消息、检查最新一轮有没有显示出来、放回输入框里的文字
+        write(JUST_KEY, { sid, at: Date.now(), auto: !o.manual, soft: true });
+        setTimeout(() => { try { afterLoad(); } catch {} }, 300);
+      }
+      return ok;
+    });
+  }
   function cancel() { stale = true; busy = false; hide(); }
+  // 最新一轮没显示出来、看到这一轮结束后：倒计时重新载入对话（先只重建对话区；前提见 reloadBlock）
   function autoReload(sid, label) {
     let n = WAIT; busy = true;
-    const paint = () => show(label.replace('{n}', n), [['立即刷新', () => reloadNow(sid, false)], ['取消', cancel]], false, 'count');
+    const paint = () => show(label.replace('{n}', n), [['立即载入', () => reloadNow(sid, false)], ['取消', cancel]], false, 'count');
     paint(); clearInterval(timer);
     timer = setInterval(() => {
       if (sidNow() !== sid) { busy = false; hide(); return; }
-      if (draft()) { clearInterval(timer); timer = 0; busy = false; show('输入框里有未发送的内容，没有自动刷新；需要时手动刷新', [['刷新', () => reloadNow(sid, false)]], true); errBar = true; return; }
-      if (--n <= 0) { clearInterval(timer); timer = 0; reloadNow(sid, false); return; }
-      paint();
+      if (--n > 0) { paint(); return; }
+      clearInterval(timer); timer = 0; busy = false;
+      const r = reloadNow(sid, true, false, { why: '最新一轮没显示', noBudget: true }); // 每条消息最多一次（PEND_KEY），不占出错刷新的额度
+      if (typeof r === 'string') { show('没有自动重新载入（' + r + '）；需要时手动重新载入', [['重新载入', () => reloadNow(sid, false)]], true); errBar = true; }
     }, 1000);
   }
-  function countdown(sid) {
-    let n = WAIT; busy = true;
-    const paint = () => show('检测到 “Something went wrong”，' + n + ' 秒后自动刷新当前对话', [['立即刷新', () => reloadNow(sid, false)], ['取消', cancel]]);
-    paint(); clearInterval(timer);
-    timer = setInterval(() => {
-      if (sidNow() !== sid || !findError()) { busy = false; hide(); return; } // 已恢复或已离开这个对话
-      if (draft()) { clearInterval(timer); timer = 0; busy = false; stale = true; show('输入框里有未发送的内容，已取消自动刷新；需要时手动刷新', [['刷新', () => reloadNow(sid, false)]], true); errBar = true; return; }
-      if (--n <= 0) { clearInterval(timer); timer = 0; reloadNow(sid, true); return; }
-      paint();
-    }, 1000);
+  // ---------- v1.11.86 流出错（Something went wrong）：不倒计时刷新，从不点 Retry ----------
+  // 流出错时服务器上这一轮可能还在跑。出现提示后：侧栏卡片变红 + 顶部提示（所有窗口），对话下方一张卡片「这一轮可能还在服务器上运行」：
+  //   「完成后重新载入」：每 ≥10 秒查一次 run-status（遵守服务器要求的间隔），服务器确认这一轮已完成 / 已失败才重新载入对话；
+  //     设置「出错后自动重新载入（仅在确认这一轮已结束后）」开着（默认）时自动进入这一步；查不到（没有消息 id、连续 3 次失败）→ 只留按钮。
+  //   「现在重新载入」：马上重新载入（手动，输入框里的文字会放回去）。「忽略」：收起，清掉提醒。
+  // 顶部提示的文字跟着阶段走：检测到出错 → 等待这一轮完成 → 已重新载入，请确认回复是否完整；点忽略 / 取消、或出错提示自己消失时清掉。
+  let ef = null;
+  const EF = { found: '检测到出错（Something went wrong），这一轮可能还在服务器上运行', wait: '检测到出错 · 等待这一轮在服务器上完成，完成后重新载入', manual: '检测到出错 · 无法确认这一轮是否已结束，需要时手动重新载入', done: '已重新载入，请确认回复是否完整' };
+  const efAttn = text => { try { if (ef) attn.raise(ef.sid, 'error', text); } catch {} };
+  function efStart(sid) {
+    ef = { sid, stage: 'found', mid: lastUserMsgId(), fails: 0, next: 0, q: false, why: '', last: null };
+    elog('info', '检测到 “Something went wrong”：这一轮可能还在服务器上运行，不自动刷新、不点 Retry');
+    efAttn(EF.found);
+    if (pOn('errAuto')) efWait(); else efPaint();
+  }
+  function efWait() {
+    const f = ef; if (!f) return;
+    if (!f.mid) { f.stage = 'manual'; f.why = '页面里找不到这一轮的消息 id'; efAttn(EF.manual); efPaint(); return; }
+    f.stage = 'wait'; f.next = 0; f.fails = 0; efAttn(EF.wait); efStep();
+  }
+  function efEnd(clearAttn) { const f = ef; ef = null; if (f && clearAttn) { try { attn.clear(f.sid); } catch {} } if (box && !box.hidden && box.dataset.kind === 'err') hide(); }
+  function efIgnore() { stale = true; elog('info', '已忽略这次出错提示'); efEnd(true); }
+  function efStep() {
+    const f = ef; if (!f) return;
+    if (f.stage === 'wait' && !f.q && Date.now() >= f.next) { f.q = true; fetchRunStatus(f.sid, f.mid).then(r => { f.q = false; if (ef === f && f.stage === 'wait') efResult(r); }); }
+    efPaint();
+  }
+  function efResult(r) {
+    const f = ef, now = Date.now(); f.last = r;
+    if (r.k === 'completed' || r.k === 'failed') { elog('info', '服务器确认这一轮' + (r.k === 'completed' ? '已完成' : '已失败' + (r.text ? '（' + r.text + '）' : '')) + ' → 重新载入对话'); efReload(false); return; }
+    if (r.k === 'active') { f.fails = 0; f.next = now + Math.min(60000, Math.max(10000, r.ra || 0)); }
+    else if (r.k === 'unknown' || ++f.fails >= 3) { f.stage = 'manual'; f.why = r.k === 'unknown' ? '没有可查询的消息 id' : '连续 3 次没查到结果'; efAttn(EF.manual); elog('info', '出错后无法确认这一轮是否已结束（' + f.why + '），只留按钮'); }
+    else f.next = now + (r.k === 'limited' ? Math.min(120000, Math.max(30000, r.ra || 0)) : 10000);
+    efPaint();
+  }
+  function efReload(manual) {
+    const f = ef; if (!f) return; const sid = f.sid;
+    if (sidNow() !== sid) { efEnd(false); return; }
+    if (!manual) { const b = budget(sid); if (!b.ok) { f.stage = 'blocked'; f.why = '近 10 分钟已自动刷新 ' + b.n + ' 次，先暂停自动'; efAttn('这一轮已在服务器上结束 · ' + f.why); efPaint(); return; } }
+    const onGo = () => { if (ef === f) { f.stage = 'done'; efAttn(EF.done); } }; // 真正开始重新载入时（含“有附件、确认后”那条路）
+    const r = reloadNow(sid, !manual, false, manual ? { why: '出错后手动', onGo } : { confirmed: true, why: '出错后确认这一轮已结束', onGo });
+    if (typeof r === 'string') { if (!manual) { f.stage = 'blocked'; f.why = r + '，没有自动重新载入'; efAttn('这一轮已在服务器上结束 · ' + f.why); efPaint(); } else if (box?.dataset.kind !== 'confirm') toast('没有重新载入：' + r, 2600); return; }
+    if (r && typeof r.then === 'function') r.then(ok => { if (ok) toast('已重新载入对话，请确认回复是否完整', 3200); });
+  }
+  function efPaint() {
+    const f = ef; if (!f || sidNow() !== f.sid) return;
+    if (box && !box.hidden && box.dataset.kind === 'confirm') return; // 正在问“有附件，仍然重新载入？”：等你回答，不盖掉
+    let text = '', acts = null;
+    if (f.stage === 'found') { text = '检测到 “Something went wrong” · 这一轮可能还在服务器上运行'; acts = [['完成后重新载入', efWait], ['现在重新载入', () => efReload(true)], ['忽略', efIgnore]]; }
+    else if (f.stage === 'wait') { const left = Math.max(0, Math.ceil((f.next - Date.now()) / 1000)), r = f.last; text = '这一轮可能还在服务器上运行 · 等它完成后重新载入' + (f.q ? ' · 正在查询' : !r ? '' : r.k === 'active' ? ' · 服务器仍在处理，' + left + ' 秒后再查' : ' · 没查到结果，' + left + ' 秒后重试'); acts = [['现在重新载入', () => efReload(true)], ['取消', efIgnore]]; }
+    else if (f.stage === 'manual') { text = '这一轮可能还在服务器上运行 · 无法确认是否已结束（' + f.why + '）'; acts = [['现在重新载入', () => efReload(true)], ['忽略', efIgnore]]; }
+    else if (f.stage === 'blocked') { text = '这一轮已在服务器上结束 · ' + f.why; acts = [['重新载入', () => efReload(true)], ['忽略', efIgnore]]; }
+    if (!acts) return;
+    if (box && !box.hidden && box.dataset.kind === 'err' && box.dataset.stage === f.stage) { const t = box.querySelector('.t'); if (t && t.textContent !== text) t.textContent = text; return; }
+    show(text, acts, false, 'err'); box.dataset.stage = f.stage; errBar = true;
   }
   function tick() {
     const sid = sidNow();
-    if (!sid) { if (busy) { busy = false; hide(); } baseSid = null; return; }
-    if (sid !== baseSid) { baseSid = sid; baseUntil = 0; stale = false; busy = false; hide(); }
+    if (!sid) { if (busy) { busy = false; hide(); } baseSid = null; if (ef) efEnd(false); return; }
+    if (sid !== baseSid) { baseSid = sid; baseUntil = 0; stale = false; busy = false; if (ef) efEnd(false); hide(); }
     if (!baseUntil) { if (!logEl()) return; baseUntil = Date.now() + BASELINE; } // 对话渲染出来后的前几秒算“加载时就有”
+    if (softBusy) return;
+    const hit = findError(true), el = hit && hit.kind === 'stream' ? hit.el : null;
+    if (ef) {
+      if (ef.stage === 'done') ef = null;
+      else if (!el) { elog('info', '出错提示已消失'); efEnd(true); return; }
+      else { efStep(); return; }
+    }
     if (busy) return;
-    const el = findError();
-    if (!el) { stale = false; if (errBar) hide(); return; }
+    if (!el) { stale = false; if (box && !box.hidden && box.dataset.kind === 'err') hide(); return; }
     if (Date.now() < baseUntil) { stale = true; return; }
     if (stale) return;
     const st = chatStatus(); if (st === 'submitted' || st === 'streaming') return;
     if (gachaBusy() || limited()) return;
     stale = true; // 这一次出错只处理一次；提示消失后再出现才会重新处理
-    // v1.11.85 所有窗口都看得到：侧栏里这张卡片变红 + 顶部提示，直到点「确认」或在这个对话里重新发送
-    try { const how = draft() ? '输入框里有未发送的内容，没有自动刷新' : budget(sid).ok ? '已自动刷新页面，请确认回复是否完整' : '近 10 分钟已多次自动刷新，暂停自动刷新'; attn.raise(sid, 'error', '出现 “Something went wrong”：' + how); } catch {}
-    if (draft()) { show('检测到 “Something went wrong”。输入框里有未发送的内容，没有自动刷新', [['刷新', () => reloadNow(sid, false)]], true); errBar = true; return; }
-    const b = budget(sid);
-    if (!b.ok) { show('近 10 分钟已自动刷新 ' + b.n + ' 次，暂停自动刷新；需要时手动刷新', [['刷新', () => reloadNow(sid, false)]], true); errBar = true; return; }
-    stale = false; countdown(sid);
+    efStart(sid);
   }
 
   // ---------- 刷新后滚到最新消息（一次，不锁定） ----------
@@ -4511,8 +4800,11 @@ const errReload = (() => {
     };
     // 浏览器改高度时可能先把滚动位置“夹”到底部并发出 scroll：高度已变就按变化前的位置补偿，而不是把被夹过的位置当成新的起点
     const onScroll = () => { if (sc && lastH && sc.clientHeight !== lastH) fit(); else note(); };
-    const bind = () => { let s = null; try { s = findScroller(); } catch {} if (s === sc) return; try { ro?.disconnect(); } catch {} sc?.removeEventListener('scroll', onScroll); sc = s; lastH = 0; if (!sc) return; ro = new ResizeObserver(fit); ro.observe(sc); sc.addEventListener('scroll', onScroll, { passive: true }); note(); };
-    setInterval(bind, 1200); try { window.visualViewport?.addEventListener('resize', () => requestAnimationFrame(fit)); } catch {}
+    const rebind = () => { let s = null; try { s = findScroller(); } catch {} if (s === sc) return; try { ro?.disconnect(); } catch {} sc?.removeEventListener('scroll', onScroll); sc = s; lastH = 0; if (!sc) return; ro = new ResizeObserver(fit); ro.observe(sc); sc.addEventListener('scroll', onScroll, { passive: true }); note(); };
+    let bindPend = false;
+    // v1.11.86 对话区没换就不重新找（以前每 1.2 秒强制排版一次）；要重新找时放到下一次排版之后再量（长对话刚载入时不强制整页排版）
+    const bind = () => { const lg = logEl(); if (sc && sc.isConnected && lg && (sc === lg || sc.contains(lg) || lg.contains(sc))) return; if (!lg) { rebind(); return; } if (bindPend) return; bindPend = true; try { afterLayout(lg, () => { bindPend = false; rebind(); }); } catch { bindPend = false; } };
+    sched.every(1200, bind, { idle: true }); try { window.visualViewport?.addEventListener('resize', () => requestAnimationFrame(fit)); } catch {}
   })();
   function bottomOnce(msg) {
     const t0 = Date.now(); let done = false, lastH = -1, stableAt = Date.now(), sc = null, said = false;
@@ -4554,13 +4846,15 @@ const errReload = (() => {
     // 最新内容的末尾（白点所在处）和可见区域的底边（吸底输入框的顶边）；认不出页面结构时返回 null，退回“滚到最底部”
     function edges(s) {
       if (s === document.scrollingElement || s === document.body) return null;
-      const sr = s.getBoundingClientRect(); let end = -Infinity, vis = sr.bottom;
-      for (const c of s.children) {
+      const sr = s.getBoundingClientRect(); let end = -Infinity, vis = sr.bottom, found = 0;
+      // v1.11.86 从最后一个子元素往前量：普通排版里越靠后的越靠下，量到 3 个有内容的就停（长对话里不再每帧量所有消息）
+      for (let i = s.children.length - 1; i >= 0 && found < 3; i--) {
+        const c = s.children[i];
         const cs = getComputedStyle(c); if (cs.display === 'none' || cs.position === 'absolute' || cs.position === 'fixed') continue;
         const r = c.getBoundingClientRect(); if (r.height <= 0) continue;
         if (cs.position === 'sticky') { if (r.top > sr.top + sr.height * 0.3 && r.top < vis) vis = r.top; continue; }
         if (!c.childElementCount && !norm(c.textContent)) continue; // 空白垫片不算内容
-        if (r.bottom > end) end = r.bottom;
+        found++; if (r.bottom > end) end = r.bottom;
       }
       return end === -Infinity ? null : { end, vis };
     }
@@ -4570,8 +4864,11 @@ const errReload = (() => {
     const paused = () => (holding && Date.now() - pressAt < 60000) || isTouching() || Date.now() < gestureUntil;
     const setTop = (s, v) => { s.scrollTop = v; selfTop = s.scrollTop; };
     const mine = s => Math.abs(s.scrollTop - selfTop) < 1.5; // 是跟随自己滚的
-    function loop() {
-      raf = 0; if (!on) return;
+    // v1.11.86 性能（P5）：不再每一帧都量一遍。对话区和它最后几个子元素的尺寸一变（ResizeObserver，在排版之后回调，读尺寸不触发额外排版）
+    // 就调整一次；另外 400 毫秒兜底一次（尺寸没变但需要补的少数情况）
+    let ro = null, roEls = [], fb = 0;
+    function adjust() {
+      if (!on) return;
       if (location.pathname !== path) { stop(); return; }
       const s = scroller();
       if (s && !paused()) {
@@ -4580,7 +4877,14 @@ const errReload = (() => {
         // 工具组收起 / 提问被顶到上方后下面空了一块：往上补，最新内容回到输入框上方（只在任务进行中，Arena 这时才留空白）
         else if (n < -PULL && s.scrollTop > 0.5 && running()) setTop(s, Math.max(0, s.scrollTop + n));
       }
-      raf = requestAnimationFrame(loop);
+      sizeWatch(s);
+    }
+    function loop() { raf = 0; adjust(); }
+    function sizeWatch(s) {
+      if (!s || !window.ResizeObserver) return;
+      const want = [s]; for (let c = s.lastElementChild; c && want.length < 4; c = c.previousElementSibling) want.push(c);
+      if (want.length === roEls.length && want.every((e, i) => e === roEls[i])) return;
+      try { if (!ro) ro = new ResizeObserver(() => { try { adjust(); } catch {} }); else ro.disconnect(); for (const e of want) ro.observe(e); roEls = want; } catch {}
     }
     function begin(quiet) {
       if (!sidNow()) return false;
@@ -4588,11 +4892,12 @@ const errReload = (() => {
       if (!sc || !sc.isConnected) { findAt = 0; scroller(); }
       if (pressed && sc) { holding = true; downTop = sc.scrollTop; } // 拖着滚动条到底时，松手前先不动
       if (!raf) raf = requestAnimationFrame(loop);
+      clearInterval(fb); fb = setInterval(() => { if (!on) { clearInterval(fb); return; } if (!raf) raf = requestAnimationFrame(loop); }, 400);
       // 倒计时 / 别的提示在用时不弹（toast 收起时会连带取消倒计时）；自动开始的只在本页第一次提示
       if (!was && !(quiet && told) && !timer && !errBar && (!box || box.hidden)) { told = true; toast(quiet ? '已自动跟随最新消息 · 往上滑动即可取消' : '已跟随最新消息 · 向上滚动取消', 1800); }
       return true;
     }
-    function stop(user) { on = false; holding = false; clearInterval(verify); if (raf) cancelAnimationFrame(raf); raf = 0; if (user) { userUp = true; upPath = location.pathname; } }
+    function stop(user) { on = false; holding = false; clearInterval(verify); clearInterval(fb); fb = 0; if (raf) cancelAnimationFrame(raf); raf = 0; try { ro?.disconnect(); } catch {} roEls = []; if (user) { userUp = true; upPath = location.pathname; } }
     // 发送消息 / 交互面板选择后：马上跟随；新对话要等地址变成 /agent/<id>，20 秒内等到就开始
     function arm() {
       userUp = false; armedUntil = Date.now() + 20000;
@@ -4601,11 +4906,14 @@ const errReload = (() => {
       armTimer = setInterval(() => { if (on || Date.now() > armedUntil) { clearInterval(armTimer); return; } if (sidNow() && logEl()) begin(true); }, 250);
     }
     // 每秒看一次：任务进行中、画面在最底部、这个对话里没往上翻过 → 自动跟随
+    // v1.11.86 性能：量“在不在最底部”放到下一帧画完之后（这时排版是新的，读尺寸不会强制重新排版；以前流式输出时每秒强制排版一次整页）
+    let watchPend = false;
     function watch() {
-      if (on) return;
+      if (on || watchPend) return;
       if (upPath && upPath !== location.pathname) { userUp = false; upPath = ''; }
-      if (userUp || !sidNow() || paused()) return;
-      const s = scroller(); if (s && running() && atEnd(s)) begin(true);
+      if (userUp || !sidNow() || paused() || !running()) return;
+      watchPend = true; const s0 = scroller();
+      afterLayout(s0, () => { watchPend = false; try { if (on || userUp || paused()) return; const s = scroller(); if (s && running() && atEnd(s)) begin(true); } catch {} });
     }
     function onClick(e) {
       const b = e.target?.closest?.('button,[role="button"]'); if (!b || !sidNow() || b.closest(NOT) || b.hasAttribute('aria-haspopup') || b.hasAttribute('aria-expanded')) return;
@@ -4673,15 +4981,57 @@ const errReload = (() => {
     return { init, begin, stop, arm, watch, get on() { return on; } };
   })();
 
-  // ---------- 收尾提示：回复写完了，页面还显示“进行中”（白点一直转、只有停止按钮）----------
-  // Arena 要等服务器发来“本轮结束”才退出进行中；回复写完后服务器还要收尾（保存这一轮；对话太长时压缩上下文），
-  // 可能要一两分钟。这时刷新，这一轮可能暂时看不见（并没有丢，收尾完成后会出现）——所以提示不用刷新、不用重发。
-  const wrap = (() => {
+  // ---------- v1.11.86 实时通道（/out）登记：心跳、finish、turn-complete，以及“重连开关” ----------
+  // 页面（Trigger.dev 客户端）用一条长连接读这一轮的输出。脚本在这个请求里并入一个自己的 AbortSignal：需要时断开这一条，
+  // 客户端会当成一次普通的网络抖动，马上带着 Last-Event-ID 重连、补收漏掉的记录——不重发消息、不点停止、不改 Arena 的数据。
+  const OUT_PATH = /\/realtime\/v1\/sessions\/([^/]+)\/out$/;
+  const conns = []; let connSeq = 0;
+  const conn = {
+    open(url, init, input) {
+      if (!pOn('stallFix')) return null;
+      let u; try { u = new URL(url, location.href); } catch { return null; }
+      if (u.origin !== location.origin && u.origin !== 'https://api.trigger.dev') return null;
+      const m = OUT_PATH.exec(u.pathname); if (!m) return null;
+      const kill = new AbortController(); let page = null; try { page = init?.signal || (input && typeof input === 'object' && input.signal) || null; } catch {}
+      let signal = kill.signal;
+      if (page) {
+        try {
+          if (typeof AbortSignal.any === 'function') signal = AbortSignal.any([page, kill.signal]);
+          else { const mix = new AbortController(), pass = x => () => { try { mix.abort(x.reason); } catch { mix.abort(); } }; if (page.aborted) pass(page)(); else page.addEventListener('abort', pass(page), { once: true }); kill.signal.addEventListener('abort', pass(kill.signal), { once: true }); signal = mix.signal; }
+        } catch { return null; }
+      }
+      let stream = m[1]; try { stream = decodeURIComponent(stream); } catch {}
+      const c = { id: ++connSeq, stream, page: sidNow(), openedAt: Date.now(), lastByteAt: 0, bytes: 0, pings: 0, finishAt: 0, tcAt: 0, closedAt: 0, status: 0, why: '', orphan: softHop, kill };
+      conns.push(c); if (conns.length > 16) conns.splice(0, conns.length - 16);
+      if (page) { const end = () => { if (!c.closedAt) { c.closedAt = Date.now(); c.why = c.why || 'page'; } }; if (page.aborted) end(); else page.addEventListener('abort', end, { once: true }); }
+      return { conn: c, signal };
+    },
+    response(c, res) { if (!c) return; c.status = res?.status || 0; if (c.status !== 200 && !c.closedAt) { c.closedAt = Date.now(); c.why = c.why || 'HTTP ' + c.status; } },
+    fail(c, e) { if (c && !c.closedAt) { c.closedAt = Date.now(); c.why = c.why || (e?.name || 'error'); } },
+    bytes(c, n) { if (!c) return; c.lastByteAt = Date.now(); c.bytes += n || 0; },
+    event(c, name) { if (c && name === 'ping') c.pings++; },
+    type(c, t) { if (!c || c.orphan) return; if (t === 'finish') { c.finishAt = Date.now(); stall.finish(c.page, c); } else if (t === 'turn-complete') { c.tcAt = Date.now(); stall.turnComplete(c.page, c); } },
+    close(c, why) { if (c && !c.closedAt) { c.closedAt = Date.now(); c.why = c.why || why || 'end'; } },
+    // 这个对话正在用的连接：优先“在这个对话里打开的”，其次新对话刚建时打开的 / 流 id 就是这个对话的
+    live(s) { let any = null; for (let i = conns.length - 1; i >= 0; i--) { const c = conns[i]; if (c.closedAt || c.orphan) continue; if (c.page === s) return c; if (!any && (!c.page || c.stream === s)) any = c; } return any; },
+    kill(c, why) { if (!c || c.closedAt) return false; c.why = 'kill:' + why; try { c.kill.abort(new DOMException('Arena Native: ' + why, 'AbortError')); } catch { try { c.kill.abort(); } catch {} } c.closedAt = Date.now(); return true; },
+    list: () => conns.map(c => { const o = { ...c }; delete o.kill; return o; })
+  };
+
+  // ---------- v1.11.86 收尾卡住自救（取代原来只提示“不用刷新、不用重发”的收尾提示）----------
+  // Arena 要等服务器发来“本轮结束”（turn-complete）才退出进行中。这个信号没送到（连接假死 / 代理没转发 / 服务器慢）时，
+  // Arena 自己 15 秒后才查一次、之后每 60 秒一次，所以常卡一两分钟，一刷新就好。这里按顺序自救，并在输入框上方显示进度：
+  //   ① 连接原来有心跳、现在 15 秒没有任何数据 → 马上重连；回复写完几秒还没收到结束信号 → 无感重连一次（补收结束信号）；
+  //   ② 再过一会儿查 Arena 自带的 run-status：已完成 → 再重连一次，还卡就重新载入对话；仍在处理（保存 / 压缩上下文）→ 显示“服务器确认还在收尾”，不自动重新载入；
+  //   ③ 兜底：回复写完很久仍没结束、服务器也没说还在处理 → 倒计时重新载入对话（先只重建对话区；重新载入后还卡才整页刷新）。
+  const stall = (() => {
     const BUSY_TOOL = /^(input-streaming|input-available|approval-requested|approval-responded)$/;
-    const TAIL = '不用刷新，也不用重发——这时刷新，这一轮可能暂时看不见（不是丢了，收尾完成后会出现）。';
-    let sid = null, sendAt = 0, finishAt = 0, sig = '', sigAt = 0, mode = '', modeAt = 0, shown = false, dismissed = '';
-    const ours = () => !!box && !box.hidden && box.dataset.kind === 'wrap';
-    function reset(s) { if (ours()) hide(); sid = s; sendAt = 0; finishAt = 0; sig = ''; sigAt = 0; mode = ''; modeAt = 0; shown = false; dismissed = ''; }
+    const SOFT_KEY = 'amp.native.softReload.v1';
+    let sid = null, turnAt = 0, sendAt = 0, mid = '', finishAt = 0, tcAt = 0, sig = '', sigAt = 0, busySeen = false;
+    let recon = 0, reconAt = 0, acted = false, st = null, stNext = 0, stBusy = false, plan = null, muted = false, softMark = null;
+    let phost = null, pbox = null, pkey = '', pdis = '';
+    function newTurn(at) { turnAt = at; finishAt = 0; tcAt = 0; recon = 0; reconAt = 0; acted = false; st = null; stNext = 0; plan = null; muted = false; pdis = ''; }
+    function reset(s) { sid = s; sendAt = 0; mid = ''; sig = ''; sigAt = Date.now(); busySeen = false; newTurn(0); pillHide(); }
     // 最后一条消息：写完的正文结尾、没有还在跑的工具 = 回复写完了；data-compaction（phase=start）= 正在压缩上下文
     function lastInfo() {
       const v = chatValue(), msgs = v?.messages; if (!Array.isArray(msgs) || !msgs.length) return null;
@@ -4690,38 +5040,146 @@ const errReload = (() => {
       const tool = parts.some(x => x && typeof x.type === 'string' && (x.type.startsWith('tool-') || x.type === 'dynamic-tool') && BUSY_TOOL.test(String(x.state || '')));
       const compact = parts.some(x => x && ((x.type === 'data-compaction' && x.data?.phase === 'start' && !x.data?.summary) || (x.type === 'tool-compact' && x.state && x.state !== 'output-available' && x.state !== 'output-error')));
       const done = m.role === 'assistant' && p.type === 'text' && !!String(p.text || '').trim() && p.state !== 'streaming' && !tool;
-      return { sig: msgs.length + ':' + parts.length + ':' + len + ':' + (p.type || '') + ':' + (p.state || ''), done, compact };
+      return { sig: msgs.length + ':' + parts.length + ':' + len + ':' + (p.type || '') + ':' + (p.state || ''), done, compact, tool };
     }
-    const mmss = ms => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? s + ' 秒' : Math.floor(s / 60) + ' 分 ' + String(s % 60).padStart(2, '0') + ' 秒'; };
-    function text(now) {
-      const t = mmss(now - modeAt);
-      if (mode === 'compact') return 'Arena 正在压缩对话上下文（对话太长时自动整理，已 ' + t + '）。完成前白点会一直转、只能停止；' + TAIL;
-      if (mode === 'wrap') return '回复已写完，Arena 还在收尾（已 ' + t + '）。收尾完成前白点会一直转、只能停止；' + TAIL;
-      return '已经 ' + t + '没有新内容，Arena 仍显示进行中（可能在想下一步，也可能在收尾）。' + TAIL;
+    const lastUserId = lastUserMsgId;
+    const secs = ms => Math.max(0, Math.round(ms / 1000)) + ' 秒';
+    const hb = (c, now) => !c ? '' : c.pings ? ' · 连接正常（心跳 ' + secs(now - Math.max(c.lastByteAt, c.openedAt)) + '前）' : c.bytes ? ' · 连接正常' : ' · 正在连接';
+    function softBudget(s) { const now = Date.now(), list = read(SOFT_KEY, []).filter(x => x && now - x.at < WINDOW); return { list, ok: !list.some(x => x.sid === s && now - x.at < 45e3) && list.length < 5, n: list.length }; }
+    const hardNext = s => !!softMark && softMark.sid === s && Date.now() - softMark.at < 5 * 60e3; // 5 分钟内重新载入过这个对话还卡：改整页刷新
+    function reconnect(c, why) {
+      if (!conn.kill(c, why)) return false;
+      recon++; reconAt = Date.now(); acted = true; traceHold(20000); elog('info', '重连实时通道：' + why);
+      return true;
+    }
+    // 和 Arena 页面自带的看门狗同一个接口：GET /api/chat/{id}/run-status?inputId={这一轮用户消息的 id}（见 fetchRunStatus）
+    async function queryStatus(s) {
+      const id = mid || lastUserId(); stBusy = true; const r = await fetchRunStatus(s, id);
+      stBusy = false; if (sid !== s) return;
+      const now = Date.now(); st = { ...r, at: now };
+      if (r.k === 'active') stNext = now + Math.max(20000, Math.min(r.retry || 60000, 60000));
+      else if (r.k === 'completed') { stNext = now + 30000; if (recon < 3) reconnect(conn.live(s), '服务器确认这一轮已完成，重连补收结束信号'); }
+      else if (r.k === 'limited') stNext = now + Math.max(60000, r.retry || 0);
+      else stNext = now + 20000;
+      elog(r.k === 'active' ? 'detail' : 'info', '查询这一轮的状态：' + ({ active: '服务器仍在处理' + (r.sub && r.sub !== 'active' ? '（' + r.sub + '）' : ''), completed: '服务器已完成', failed: '服务器记录失败' + (r.text ? '：' + r.text : ''), limited: '被限流（HTTP 429）', error: '查询失败' + (r.code ? '（HTTP ' + r.code + '）' : ''), unknown: '没有可查询的消息 id' }[r.k] || r.k));
     }
     function check() {
-      const s = sidNow(); if (s !== sid) reset(s); if (!s) return;
-      const now = Date.now();
-      if (!turnBusy()) {
-        if (shown && ours()) toast('Arena 已收尾，可以继续发送了', 2600);
-        shown = false; mode = ''; sig = ''; sigAt = 0; return;
+      const s = sidNow(); if (s !== sid) reset(s);
+      if (!s || !pOn('stallFix')) { pillHide(); return; }
+      const now = Date.now(), busy = turnBusy(true);
+      if (!busy) {
+        if (busySeen && acted && !softBusy) toast('已恢复，可以继续发送了', 2600);
+        busySeen = false; if (plan || acted || st || turnAt) newTurn(0); pillHide(); return;
       }
-      const info = lastInfo(), dom = !!document.querySelector('main [role="status"][aria-label="Compacting conversation"]');
-      const key = info ? info.sig : '-'; if (key !== sig) { sig = key; sigAt = now; }
-      let m = '';
-      if (dom || info?.compact) m = 'compact';
-      else if (info?.done && finishAt && finishAt >= sendAt && now - finishAt > 6000 && now - sigAt > 6000) m = 'wrap'; // 流里已经出现 finish
-      else if (info?.done && now - sigAt > 60000) m = 'idle';
-      if (m !== mode) { mode = m; modeAt = m === 'wrap' ? finishAt : m === 'idle' ? sigAt : now; }
-      if (!m || dismissed === m + ':' + sendAt) { if (ours()) hide(); shown = false; return; }
-      if (m === 'compact' && now - modeAt < 4000) return;
-      if (ours()) { const t = box.querySelector('.t'); if (t) t.textContent = text(now); return; } // 只改文字，不重建按钮（免得点不中）
-      if (timer || errBar || (box && !box.hidden)) return; // 倒计时 / 别的提示在用
-      show(text(now), [['知道了', () => { dismissed = mode + ':' + sendAt; shown = false; hide(); }]], false, 'wrap'); shown = true;
+      if (!busySeen) { busySeen = true; if (now - sendAt > 5000) newTurn(now - 5000); sigAt = now; } // 刚打开 / 重新载入时这一轮已在进行、或工作流续跑
+      const info = lastInfo(), key = info ? info.sig : '-'; if (key !== sig) { sig = key; sigAt = now; }
+      const c = conn.live(s), compact = [...domMark.get('compact')].some(n => !!n.closest('main')) || !!info?.compact; // v1.11.86 不再每秒整页查
+      let fin = finishAt && finishAt >= turnAt ? finishAt : 0; if (fin && sigAt > fin + 1500) fin = 0; // finish 之后又出了新内容：还在干活
+      const tc = tcAt && tcAt >= turnAt ? tcAt : 0, idle = now - sigAt;
+      const R = pNum('stallRecon', 8, 3, 60) * 1000, Q = pNum('stallStatus', 20, 8, 180) * 1000, CAP = pNum('stallCap', 60, 20, 900) * 1000;
+      if (!document.hidden && !softBusy) {
+        const quiet = c ? now - Math.max(c.lastByteAt, c.openedAt) : 0;
+        // ① 连接原来有心跳、现在 15 秒没有任何数据 → 重连（每 15 秒最多一次）；回复写完了还没收到结束信号 → 重连一次补收
+        if (c && c.pings > 0 && quiet > 15000 && now - reconAt > 15000) reconnect(c, '连接 ' + secs(quiet) + '没有任何数据（心跳中断）');
+        else if (c && fin && !tc && recon === 0 && now - fin > R) reconnect(c, '回复写完 ' + secs(now - fin) + '还没收到结束信号');
+        // ② 查询这一轮的状态
+        // 没看到 finish（旁路没开 / 刚重新载入过）：页面状态里回复已写完、一直没动静也查（刚重新载入过的对话 15 秒，平时 45 秒）
+        if (!stBusy && now >= stNext && ((fin && now - fin > Q) || (tc && now - tc > 8000) || (!fin && !tc && info?.done && !compact && idle > (hardNext(s) ? 15000 : 45000)))) void queryStatus(s);
+      }
+      // ③ 确认卡住 → 倒计时重新载入
+      if (!plan && !muted && !softBusy && !document.hidden) { // 页面在后台时不下结论：切回来先重连、查状态
+        // v1.11.86 只有服务器确认这一轮已结束（run-status 已完成 / 已失败）才自动重新载入；收到结束信号也要先向服务器确认。
+        // 确认不了（查询失败、服务器没回应）的只显示按钮，由你决定——服务器上可能还在跑，不自动刷新。
+        let why = '', auto = true;
+        const stWait = st?.k === 'completed' && now - st.at <= 6000; // 刚确认“已完成”并重连：先给 6 秒补收结束信号
+        if (stWait) why = '';
+        else if (st?.k === 'completed') why = tc ? '服务器已发出结束信号、也确认这一轮已完成，页面还显示进行中' : '服务器确认这一轮已完成，页面没收到结束信号';
+        else if (st?.k === 'failed') why = '服务器记录这一轮失败' + (st.text ? '（' + st.text + '）' : '');
+        else if (tc && fin && now - tc > 12000 && st && st.k !== 'active' && !stBusy) { why = '服务器已发出结束信号，页面还显示进行中（没能向服务器确认这一轮已结束）'; auto = false; }
+        else if (fin && now - fin > CAP && st?.k !== 'active' && !stBusy && !compact) { why = '回复写完已 ' + mmss(now - fin) + '，仍没有结束（服务器没有确认）'; auto = false; }
+        if (why) { plan = { why, at: now + 5000, auto, kind: hardNext(s) || !pOn('softReload') ? 'hard' : 'soft' }; elog('info', why + ' → ' + (!auto ? '只显示按钮，不自动' : plan.kind === 'hard' ? '准备整页刷新' : '准备重新载入对话')); }
+      }
+      if (plan) { runPlan(now); return; }
+      // 进度（不再只有一个白点在转）
+      if (compact && idle > 4000) pillShow('info', 'Arena 正在压缩对话上下文 · 已 ' + mmss(idle) + '（对话太长时自动整理，完成前白点会一直转）' + hb(c, now), [], 'compact');
+      else if (tc && fin && now - tc > 3000) pillShow('wait', '服务器已发出结束信号，等页面退出进行中 · ' + mmss(now - tc), [['重新载入', manualReload]], 'tc');
+      else if (fin && now - fin > 4000) {
+        let t = st?.k === 'active' ? '回复已写完，服务器确认还在收尾（保存 / 整理）· ' + mmss(now - fin) + (stBusy ? ' · 正在查询' : ' · ' + secs(stNext - now) + '后再查') : '回复已写完，等服务器确认结束 · ' + mmss(now - fin) + (stBusy ? ' · 正在查询' : '');
+        if (recon) t += ' · 已重连 ' + recon + ' 次'; t += hb(c, now);
+        pillShow('wait', t, [['立即重连', manualRecon], ['重新载入', manualReload]], 'wrap');
+      } else if (idle > 30000) pillShow('idle', '已 ' + mmss(idle) + '没有新内容 · ' + (info?.tool ? '工具还在运行' : 'Arena 仍显示进行中') + hb(c, now), [['立即重连', manualRecon], ['重新载入', manualReload]], 'idle');
+      else pillHide();
     }
-    function sent(s) { if (s !== sid) reset(s); sendAt = Date.now(); finishAt = 0; dismissed = ''; }
-    function finish(s) { const cur = sidNow(); if (!cur || (s && s !== cur && /^[0-9a-f-]{36}$/i.test(s))) return; if (cur !== sid) reset(cur); finishAt = Date.now(); }
-    return { check, sent, finish };
+    function blockReason(kind) {
+      if (!pOn('stallReload')) return '已关闭自动重新载入';
+      if (draft()) return '输入框里有未发送的内容，没有自动重新载入';
+      if (attached()) return '输入框里有待发送的附件，没有自动重新载入';
+      if (gachaBusy()) return '抽卡进行中，不自动重新载入';
+      if (limited()) return '页面显示限流提示，不自动重新载入';
+      if (st?.k === 'limited' && Date.now() - st.at < 120e3) return '查询被限流（HTTP 429），先不自动重新载入';
+      const b = kind === 'hard' ? budget(sid) : softBudget(sid); if (!b.ok) return '近 10 分钟已自动' + (kind === 'hard' ? '刷新 ' : '重新载入 ') + b.n + ' 次，先暂停自动';
+      return '';
+    }
+    function runPlan(now) {
+      const what = plan.kind === 'hard' ? '刷新页面' : '重新载入对话', block = plan.auto ? blockReason(plan.kind) : '无法确认这一轮已结束，不自动' + what;
+      if (block) { pillShow('manual', plan.why + ' · ' + block, [[plan.kind === 'hard' ? '刷新页面' : '重新载入', manualReload]], 'manual:' + block); return; }
+      if (document.hidden) { plan.at = now + 5000; return; } // 页面在后台：切回来再倒计时
+      const left = Math.ceil((plan.at - now) / 1000);
+      if (left <= 0) { fire(); return; }
+      pillShow('count', plan.why + ' · ' + left + ' 秒后' + what, [['立即' + (plan.kind === 'hard' ? '刷新' : '载入'), () => fire(true)], ['取消', () => { plan = null; muted = true; pillHide(); elog('info', '已取消这一轮的自动' + what); }]], 'count');
+    }
+    // 倒计时结束（自动，服务器已确认结束）或点「立即载入」（手动）。都从 reloadNow 进去，前提在那里统一检查
+    function fire(manual) {
+      const p = plan || { kind: hardNext(sid) || !pOn('softReload') ? 'hard' : 'soft', why: '手动' }, s = sid; plan = null; muted = true; acted = true;
+      const opt = manual ? { why: '收尾卡住（手动）' } : { confirmed: true, why: '收尾卡住' };
+      if (p.kind === 'soft') { const b = softBudget(s); b.list.push({ sid: s, at: Date.now() }); write(SOFT_KEY, b.list); softMark = { sid: s, at: Date.now() }; pillShow('loading', '正在重新载入对话…', [], 'loading'); }
+      const r = reloadNow(s, !manual, p.kind === 'hard', { ...opt, noBudget: p.kind === 'soft' }); // 重新载入对话用自己的额度（softBudget）
+      if (typeof r === 'string') { pillShow('manual', p.why + ' · 没有自动重新载入：' + r, [['重新载入', manualReload]], 'manual:' + r); return; }
+      if (r && typeof r.then === 'function') r.then(ok => { if (ok) { busySeen = false; newTurn(0); } pillHide(); });
+    }
+    function manualRecon() { if (reconnect(conn.live(sid), '手动重连')) toast('已重连实时通道，正在补收结束信号…', 2400); else toast('现在没有可重连的实时通道，可以点“重新载入”', 2600); }
+    function manualReload() { const s = sid; plan = null; muted = true; acted = true; const hard = hardNext(s) || !pOn('softReload'); if (!hard) { softMark = { sid: s, at: Date.now() }; pillShow('loading', '正在重新载入对话…', [], 'loading'); } const p = reloadNow(s, false, hard, { why: '手动' }); if (typeof p === 'string') { pillHide(); if (box?.dataset.kind !== 'confirm') toast('没有重新载入：' + p, 2600); return; } if (p && typeof p.then === 'function') p.then(ok => { if (ok) { busySeen = false; newTurn(0); } pillHide(); }); }
+    // ---------- 状态条（独立于共用提示条，不会被“已跟随最新”等提示挤掉）----------
+    function pui() {
+      if (pbox?.isConnected) return pbox;
+      phost = document.createElement('div'); phost.id = 'amp-stall'; phost.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;z-index:2147483001';
+      const root = phost.attachShadow({ mode: 'open' }), css = document.createElement('style');
+      css.textContent = '.p{position:fixed;display:flex;align-items:center;gap:8px;box-sizing:border-box;width:max-content;max-width:min(640px,calc(100vw - 24px));padding:7px 8px 7px 12px;border-radius:12px;background:rgba(38,37,34,.95);color:#f3f1ec;font:12.5px/1.45 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.28);transform:translateX(-50%);animation:in .18s ease-out}.p[hidden]{display:none}'
+        + '.d{flex:none;width:8px;height:8px;border-radius:50%;background:#8fbf7f}.p[data-k=wait] .d,.p[data-k=idle] .d,.p[data-k=info] .d{background:#e3b341;animation:pu 1.4s ease-in-out infinite}.p[data-k=count] .d,.p[data-k=manual] .d{background:#e38a1e}'
+        + '.p[data-k=loading] .d{width:10px;height:10px;box-sizing:border-box;background:transparent;border:2px solid rgba(243,241,236,.35);border-top-color:#f3f1ec;animation:sp .8s linear infinite}.t{flex:1;min-width:0}'
+        + '.p button{flex:none;height:24px;padding:0 9px;border:0;border-radius:7px;cursor:pointer;font:inherit;font-size:12px;background:rgba(255,255,255,.12);color:#f3f1ec}.p button:hover{background:rgba(255,255,255,.2)}.p button.m{background:#d8d3ca;color:#262522}.p button.m:hover{background:#fff}.p button.x{width:24px;padding:0;font-size:15px;background:transparent;color:rgba(243,241,236,.6)}'
+        + '@keyframes in{from{opacity:0;transform:translate(-50%,6px)}}@keyframes pu{50%{opacity:.35}}@keyframes sp{to{transform:rotate(360deg)}}@media (prefers-reduced-motion:reduce){.p,.d{animation:none!important}}';
+      pbox = document.createElement('div'); pbox.className = 'p'; pbox.hidden = true; pbox.setAttribute('role', 'status'); pbox.setAttribute('aria-live', 'polite');
+      root.append(css, pbox); (document.body || document.documentElement).append(phost); return pbox;
+    }
+    function pillShow(kind, text, actions, key) {
+      if (pdis && pdis === key) return; // 这一段已经点 × 收起
+      const b = pui(), k = kind + '|' + key + '|' + actions.map(x => x[0]).join(',');
+      if (pkey !== k || b.hidden) {
+        pkey = k; b.textContent = ''; b.dataset.k = kind;
+        const d = document.createElement('i'); d.className = 'd'; const t = document.createElement('span'); t.className = 't'; b.append(d, t);
+        actions.forEach(([label, fn], i) => { const x = document.createElement('button'); x.type = 'button'; x.textContent = label; if (!i) x.className = 'm'; x.onclick = e => { e.stopPropagation(); try { fn(); } catch {} }; b.append(x); });
+        if (kind !== 'loading') { const x = document.createElement('button'); x.type = 'button'; x.className = 'x'; x.textContent = '×'; x.title = kind === 'count' ? '取消自动' : '收起'; x.onclick = e => { e.stopPropagation(); pdis = key; if (kind === 'count') { plan = null; muted = true; } pillHide(); }; b.append(x); }
+        b.hidden = false;
+      }
+      const t = b.querySelector('.t'); if (t && t.textContent !== text) t.textContent = text;
+      pillPlace(); try { if (box && !box.hidden) place(); } catch {}
+    }
+    function pillHide() { if (!pbox || pbox.hidden) return; pbox.hidden = true; pkey = ''; try { if (box && !box.hidden) place(); } catch {} }
+    function pillPlace() {
+      if (!pbox || pbox.hidden) return;
+      const m = mainEl()?.getBoundingClientRect(), ed = [...document.querySelectorAll('main div[contenteditable="true"], main textarea')].find(visible), f = (ed?.closest('form') || ed)?.getBoundingClientRect();
+      pbox.style.left = Math.round(m && m.width ? m.left + m.width / 2 : innerWidth / 2) + 'px';
+      pbox.style.bottom = Math.round(f && f.height ? Math.max(12, innerHeight - f.top + 10) : 150) + 'px';
+    }
+    function sent(s, id) { if (s !== sid) reset(s); sendAt = Date.now(); if (id) mid = id; newTurn(sendAt); pillHide(); }
+    // 流的归属：流 id 就是这个对话、不是 UUID（triggerAddress 等）、或者就是这个对话正在用的那条连接
+    const accept = (s, c) => { const cur = sidNow(); if (!cur) return null; return !s || s === cur || !/^[0-9a-f-]{36}$/i.test(s) || (c && c === conn.live(cur)) ? cur : null; };
+    function finish(s, c) { const cur = accept(s, c); if (!cur) return; if (cur !== sid) reset(cur); finishAt = Date.now(); }
+    function turnComplete(s, c) { const cur = accept(s, c); if (!cur) return; if (cur !== sid) reset(cur); tcAt = Date.now(); elog('detail', '收到本轮结束信号（turn-complete）'); }
+    function finished(s) { return !!s && s === sid && finishAt > 0 && finishAt >= turnAt && !(sigAt > finishAt + 1500); }
+    addEventListener('resize', () => { try { pillPlace(); } catch {} });
+    return { check, sent, finish, turnComplete, finished, height: () => (pbox && !pbox.hidden ? pbox.offsetHeight : 0), state: () => ({ sid, turnAt, sendAt, mid, finishAt, tcAt, sigAt, recon, st, plan, muted, softMark, conns: conn.list() }) };
   })();
 
   // ---------- 刷新后最新一轮“不见了”：本机记下每个对话最近一次发送（消息 id、时间、开头几个字、服务器响应）----------
@@ -4731,7 +5189,7 @@ const errReload = (() => {
   const saveSends = all => { try { localStorage.setItem(SEND_KEY, JSON.stringify(all)); } catch {} };
   function noteSend(sid, info) {
     if (!sid || !/^[\w-]{8,128}$/.test(sid)) return;
-    try { wrap.sent(sid); } catch {}
+    try { stall.sent(sid, info && typeof info.mid === 'string' ? info.mid : ''); } catch {}
     if (!info || typeof info.mid !== 'string' || !/^[\w-]{4,128}$/.test(info.mid)) return;
     const all = sends(), now = Date.now(), la = lastAssistantInfo();
     // v1.11.80 另外记下全文（补齐显示用）和发送时上一轮回复的段数（补齐时据此找到“这一轮”从哪开始）
@@ -4741,8 +5199,9 @@ const errReload = (() => {
     saveSends(all);
   }
   function noteSendStatus(sid, status) { const all = sends(), e = all[sid]; if (!e || e.st || !(Date.now() - e.at < 120e3)) return; e.st = +status || 0; saveSends(all); }
+  let pendTok = 0; // v1.11.86 重新载入对话后会再检查一次：只留最新的那一个检查
   function pendingCheck() {
-    const sid = sidNow(); if (!sid) return;
+    const sid = sidNow(); if (!sid) return; const tok = ++pendTok;
     const e = sends()[sid]; if (!e || !e.mid || !(Date.now() - e.at < 45 * 60e3)) return;
     const t0 = Date.now(); let seenAt = 0, wasBusy = false, idleAt = 0, closed = false, shownAt = 0, asked = false;
     // v1.11.72 同一条消息只提示一次：显示过就记在本机（之后刷新、切回来、别的标签页都不再弹），8 秒后自己收起；
@@ -4753,6 +5212,7 @@ const errReload = (() => {
     const ago = () => { const m = Math.floor((Date.now() - e.at) / 60e3); return m < 1 ? '刚才' : ' ' + m + ' 分钟前'; };
     const iv = setInterval(() => {
       const ours = !!box && !box.hidden && box.dataset.kind === 'pending';
+      if (tok !== pendTok) { clearInterval(iv); return; }
       if (sidNow() !== sid || Date.now() - t0 > 20 * 60e3) { clearInterval(iv); if (ours) hide(); return; }
       const log = logEl(); if (!log) return;
       if (!seenAt) { if (log.querySelector('[data-chat-message-id]') || Date.now() - t0 > 12000) seenAt = Date.now(); return; }
@@ -4761,7 +5221,7 @@ const errReload = (() => {
       if (turnBusy()) { wasBusy = true; idleAt = 0; } else if (wasBusy && !idleAt) idleAt = Date.now();
       if (wasBusy && idleAt && Date.now() - idleAt > 5000) { // 看到这一轮结束了，页面还是没显示 → 刷新一次（每条消息最多一次）
         clearInterval(iv);
-        if (read(PEND_KEY, '') !== e.mid && !timer && !busy) { write(PEND_KEY, e.mid); autoReload(sid, '上一轮已收尾，{n} 秒后刷新显示最新内容'); }
+        if (read(PEND_KEY, '') !== e.mid && !timer && !busy) { write(PEND_KEY, e.mid); autoReload(sid, '上一轮已收尾，{n} 秒后重新载入对话，显示最新内容'); }
         else if (ours) hide();
         return;
       }
@@ -4858,15 +5318,23 @@ const errReload = (() => {
   // 已经显示过的不会再收回。刷新 / 打开长对话时最新内容立刻出来，不用等整段对话从上到下排完。设置里可关。
   const lazy = { io: null, root: null, seen: new WeakSet(), mo: null, pending: false };
   // 标记只改属性、不读布局（不会在页面排版前强制排版）；监听“往上翻到附近”的 IntersectionObserver 放到下一帧再建
-  function lazyMark() {
+  let lazySig = '', lazyLog = null, lazyOff = false;
+  function lazyMark(force) {
     lazy.pending = false;
     if (!CONV.test(location.pathname)) return;
-    if (!prefOn('lazyLog')) { for (const n of document.querySelectorAll('[data-amp-far]')) n.removeAttribute('data-amp-far'); return; }
+    if (!prefOn('lazyLog')) { if (!lazyOff) { lazyOff = true; for (const n of document.querySelectorAll('[data-amp-far]')) n.removeAttribute('data-amp-far'); } lazySig = ''; return; }
+    lazyOff = false;
     const log = document.querySelector('main [role="log"]'); if (!log) return;
+    // v1.11.86 性能：3 秒一次的兜底只在消息条数或对话区变了时才重新扫（以前每次都遍历整段对话）；新消息节点插进来时由观察器直接标记
+    if (force !== true) { // 兜底定时器：直接读这个对话区上的 React 状态拿消息条数（不经过会读布局的查找）
+      let cnt = -1; try { let f = log[Object.keys(log).find(k => k.startsWith('__reactFiber'))]; for (let n = 0; f && n < 100; n++, f = f.return) { const v = f.memoizedProps?.value; if (v && Array.isArray(v.messages) && typeof v.id === 'string') { cnt = v.messages.length; break; } } } catch {}
+      const sig = cnt + '|' + location.pathname; if (cnt >= 0 && sig === lazySig && log === lazyLog) return; lazySig = sig;
+    }
+    lazyLog = log;
     const nodes = log.querySelectorAll('[data-agent-transcript-message]'), keep = 6; if (nodes.length <= keep + 4) return;
     let added = 0;
     for (let i = 0; i < nodes.length - keep; i++) { const n = nodes[i]; if (lazy.seen.has(n) || n.hasAttribute('data-amp-far') || n.hasAttribute('data-amp-backfill')) continue; n.setAttribute('data-amp-far', ''); added++; }
-    if (added || !lazy.io) setTimeout(lazyWatch, 0);
+    if (added || !lazy.io) afterLayout(log, lazyWatch); // v1.11.86 等这次排版做完再建观察（不在标记之后马上强制排版）
   }
   function lazyWatch() {
     const root = findScroller() || null;
@@ -4877,29 +5345,34 @@ const errReload = (() => {
   function lazyBoot() {
     try {
       const put = () => { if (!document.getElementById('amp-lazy-css') && (document.head || document.documentElement)) { const st = document.createElement('style'); st.id = 'amp-lazy-css'; st.textContent = '[data-amp-far]{content-visibility:auto;contain-intrinsic-size:auto 240px}'; (document.head || document.documentElement).append(st); } };
-      put(); lazy.mo = new MutationObserver(recs => { if (lazy.pending) return; for (const r of recs) for (const n of r.addedNodes) if (n.nodeType === 1 && (n.matches('[data-agent-transcript-message]') || n.querySelector?.('[data-agent-transcript-message]'))) { lazy.pending = true; put(); lazyMark(); return; } });
-      lazy.mo.observe(document, { childList: true, subtree: true });
+      put(); lazy.fn = (recs => { if (lazy.pending) return; for (const r of recs) for (const n of r.addedNodes) if (n.nodeType === 1 && (n.matches('[data-agent-transcript-message]') || n.querySelector?.('[data-agent-transcript-message]'))) { lazy.pending = true; put(); lazyMark(true); return; } });
+      lazy.mo = { off: domHub.on(lazy.fn, { log: true }) }; // v1.11.86 共用观察器（要对话区里的变化：新消息节点）
     } catch {}
   }
   lazyBoot();
-  function lazyStart() { setInterval(() => { try { lazyMark(); } catch {} }, 3000); }
+  function lazyStart() { sched.every(3000, () => lazyMark(), { idle: true }); }
   function afterLoad() {
     const sid = sidNow(), j = read(JUST_KEY, null);
     try { sessionStorage.removeItem(JUST_KEY); } catch {}
     if (!sid) return;
     let nav = ''; try { nav = performance.getEntriesByType('navigation')[0]?.type || ''; } catch {}
     const ours = !!j && j.sid === sid && Date.now() - j.at < 60e3;
-    if (nav === 'reload' || ours) bottomOnce(ours && j.auto ? '已自动刷新，回到最新消息' : '');
+    if (nav === 'reload' || ours) bottomOnce(ours && j.soft ? (j.auto ? '已自动重新载入对话，回到最新消息' : '已重新载入对话') : ours && j.auto ? '已自动刷新，回到最新消息' : '');
     try { pendingCheck(); } catch {}
+    try { restoreDraft(sid); } catch {} // v1.11.86 手动重新载入前输入框里的文字放回去
+    // v1.11.86 脚本发起的整页刷新用了多久（点刷新 → 这个对话的消息显示出来），和日志里“对话已重新载入（x 秒）”对照
+    if (ours && !j.soft) until(() => { const v = chatValue(); return !!v && v.messages.length > 0; }, 30000, 200).then(ok => { if (ok) elog('info', '整页刷新完成：' + (Math.round((Date.now() - j.at) / 100) / 10) + ' 秒（点刷新 → 消息显示出来）'); });
   }
   function start() {
     afterLoad(); try { follow.init(); } catch {} try { lazyStart(); } catch {}
     setInterval(() => { try { tick(); } catch {} }, 2000);
-    setInterval(() => { try { follow.watch(); } catch {} try { wrap.check(); } catch {} }, 1000);
+    setInterval(() => { try { follow.watch(); } catch {} try { stall.check(); } catch {} }, 1000);
     addEventListener('resize', () => { if (box && !box.hidden) place(); });
+    // v1.11.86 切回这个标签页时马上复查（在后台时浏览器会把定时器放慢）
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) { try { stall.check(); } catch {} } });
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
-  return { tick, findError, bottomOnce, follow, reloadNow, draft, gachaBusy, toast, sidNow, turnBusy, noteSend, noteSendStatus, findScroller, noteFinish: s => wrap.finish(s), lazyMark: () => { try { lazyMark(); } catch {} } };
+  return { tick, findError, bottomOnce, follow, reloadNow, draft, gachaBusy, toast, sidNow, turnBusy, noteSend, noteSendStatus, findScroller, noteFinish: (s, c) => stall.finish(s, c), noteTurnComplete: (s, c) => stall.turnComplete(s, c), finished: s => stall.finished(s), conn, softReload, stall: () => stall.state(), lazyMark: () => { try { lazyMark(true); } catch {} } };
 })();
 
 // ====================================================================================
@@ -4923,7 +5396,7 @@ const vip = (() => {
 })();
 const progress = (() => {
   // The selected conversation's card fills from its left bar to the full row as the chat loads.
-  let path = '', fill = 0, done = false, startAt = 0, seenAt = 0, old = new WeakSet();
+  let path = '', fill = 0, done = false, startAt = 0, seenAt = 0, old = new WeakSet(), paintAt = 0, paintGen = -1, paintSid = '';
   const MSG = 'main [data-user-message-body-row],main [data-user-message-action],main [role="log"] p,main article';
   const sidNow = () => (location.pathname.match(/^\/agent\/([0-9a-f-]{36})/i) || [])[1] || '';
   function tick() {
@@ -4939,7 +5412,9 @@ const progress = (() => {
       if (el > 9000) fill = 100;
       if (fill >= 100) { fill = 100; done = true; }
     }
-    paint();
+    if (done && (Date.now() - paintAt < 1000 || (paintGen === domHub.gen && paintSid === sidNow() && Date.now() - paintAt < 10000))) return; // DOM 没变、没换对话：10 秒校对一次
+    paintGen = domHub.gen; paintSid = sidNow(); // v1.11.86 加载完以后每秒校对一次就够（侧栏重建时 mark() 会立刻重画）
+    paintAt = Date.now(); paint();
   }
   let links = [];
   function paint() {
@@ -5404,12 +5879,19 @@ const gachaUi = (() => {
       }
       return out;
     }
+    // v1.11.86（P9）打开页面后的前 8 秒不拉排行榜（和页面自己的加载错开），之后在空闲时拉
+    const bootAt = Date.now(); let failAt = 0;
     async function refresh(force = false) {
-      if (loading || (!force && Date.now() - at < TTL)) return; loading = true;
+      if (loading || (!force && Date.now() - at < TTL)) return;
+      if (!force && Date.now() - failAt < 5 * 60e3) return; // v1.11.86 上次没拉到（网络 / 限流 / 验证页）：5 分钟内不重试（以前侧栏每次同步都会再拉一次）
+      if (!force && Date.now() - bootAt < 8000) { if (!refresh.later) { refresh.later = true; setTimeout(() => { refresh.later = false; const go = () => void refresh(); if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(go, { timeout: 3000 }); else go(); }, 8000 - (Date.now() - bootAt)); } return; }
+      loading = true;
       try {
         const res = await fetch('/leaderboard/agent', { credentials: 'same-origin', cache: 'no-store' });
-        if (res.ok) { const names = parse(await res.text()); if (names.length > 5) { list = build(names); at = Date.now(); rev++; ampStore.set(KEY, JSON.stringify({ names, at })); } }
-      } catch {} finally { loading = false; }
+        let ok = false;
+        if (res.ok) { const names = parse(await res.text()); if (names.length > 5) { list = build(names); at = Date.now(); rev++; ampStore.set(KEY, JSON.stringify({ names, at })); ok = true; } }
+        if (!ok) failAt = Date.now();
+      } catch { failAt = Date.now(); } finally { loading = false; }
     }
     const find = (hay, needle) => { for (let i = 0; i + needle.length <= hay.length; i++) if (needle.every((x, j) => hay[i + j] === x)) return true; return false; };
     // Lower is stronger. Exact family match = rank (tier match preferred); unknown sibling (same first 2 tokens) = 100 + rank; unranked = 1000.
@@ -5464,6 +5946,7 @@ const gachaUi = (() => {
       + 'a[data-amp-ctime] :is(span,div).truncate:not([data-amp-local-title]){padding-right:62px!important}a[data-amp-ctime] [data-amp-local-title]::after{right:62px!important}';
     const ctCss = () => { if (document.head && !document.getElementById('amp-ctime-css')) { const st = document.createElement('style'); st.id = 'amp-ctime-css'; st.textContent = CT_CSS; document.head.append(st); } };
     const entryAt = (a, sid) => { try { const k = Object.keys(a).find(x => x.startsWith('__reactFiber')); let f = k ? a[k] : null; for (let n = 0; f && n < 30; n++, f = f.return) { const e = f.memoizedProps?.entry; if (e && typeof e === 'object' && e.id === sid) { const t = Date.parse(e.updatedAt || e.lastMessageAt || e.createdAt || ''); return Number.isFinite(t) ? t : null; } } } catch {} return null; };
+    const ntKey = t => { const x = noVertex(String(t || '').replace(/^#\d+\s*/, '').replace(/\s*·\s*\d+\s*$/, '')).trim(), m = x.match(/^(?:[\w.-]+\/)?(?:gpt|chatgpt|claude|gemini|grok|kimi|qwen|deepseek|mimo|glm|llama|mistral|doubao|minimax)(?:[-_ ]+|(?=\d))(.+)$/i); return (m ? m[1] : x).toLowerCase(); };
     const ctFmt = ms => { const d = new Date(ms), p = n => String(n).padStart(2, '0'); return (d.getFullYear() === new Date().getFullYear() ? '' : d.getFullYear() + '-') + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()); };
     const ctEl = a => a;
     let ctSet = new Set();
@@ -5497,12 +5980,17 @@ const gachaUi = (() => {
       }
       a.setAttribute('data-amp-logo', vid); a.setAttribute('data-amp-logo-seen', ''); { const s0 = ((a.getAttribute('href') || '').match(/[0-9a-f-]{36}/i) || [''])[0]; if (s0) logoSeen.add(s0); }
     }
+    let syncSig0 = '', syncAt0 = 0;
     function sync(keywords) {
       lastKw = keywords || [];
       const sortOn = gacha.settings().sortSidebar;
       if (sortOn) void ranking.refresh();
       const kw = (keywords || []).map(k => k.toLowerCase());
-      const links = [...document.querySelectorAll('a[href^="/agent/"]')].filter(a => a.closest('aside,nav,[data-sidebar]') && /^\/agent\/[0-9a-f-]{8,}/i.test(a.getAttribute('href')));
+      // v1.11.86 性能：侧栏链接缓存到对话区以外的 DOM 下次变化；DOM、排名、设置都没变时 6 秒内不重复整理（卡片时间另有 20 秒一次的校对）
+      const sig0 = domHub.gen + '|' + sortOn + '|' + kw.join(',') + '|' + ranking.rev + '|' + vip.rev + '|' + brand.hint.rev();
+      if (sig0 === syncSig0 && !pendSig && !tail.size && Date.now() - syncAt0 < 6000) return;
+      syncSig0 = sig0; syncAt0 = Date.now();
+      const links = domQ.all('gachaSideLinks', () => [...document.querySelectorAll('a[href^="/agent/"]')].filter(a => a.closest('aside,nav,[data-sidebar]') && /^\/agent\/[0-9a-f-]{8,}/i.test(a.getAttribute('href'))));
       progress.mark(links);
       const sidOfA = a => (a.getAttribute('href').match(/[0-9a-f-]{36}/i) || [''])[0], ats = new Map(links.map(a => [a, entryAt(a, sidOfA(a))]));
       const key = sortOn + '|' + kw.join(',') + '|' + ranking.rev + '|' + vip.rev + '|' + brand.hint.rev() + '|' + links.map(a => a.getAttribute('href') + '=' + titleOf(a, sidOfA(a)) + '@' + (ats.get(a) || '')).join(',');
@@ -5519,7 +6007,7 @@ const gachaUi = (() => {
         // v1.11.76 GPT 先比系列再比档位：Astra 最强 → Sol → Terra → Luna。金色只给 Astra（标题里没有这些系列词的旧型号照旧按档位）
         const vid = brand.forSid(sid, title) || brand.of(vip.get(sid)), gpt = sortOn && vid === 'openai', gf = gpt ? gptFam(title) : 0;
         const hitNow = sortOn && kw.length > 0 && kw.some(k => title.includes(k)), isVip = hitNow && /(^|[-\s·(])(max|xhigh|high)(?=$|[-\s·)])/i.test(title) && !(gpt && gf > 1 && gf < 9);
-        groups.get(list).push({ a, item, sid, nat: nat++, at: ats.get(a) || null, vip: isVip, hit: hitNow, sc: sortOn ? ranking.score(title) : 0, gf, fam: sortOn && !gpt ? ranking.family(title) : 0, tier: sortOn ? ranking.tier(title) : 0, ver: brand.version(title), vid, nt: sortOn ? title.replace(/\s*·\s*\d+\s*$/, '') : '' });
+        groups.get(list).push({ a, item, sid, nat: nat++, at: ats.get(a) || null, vip: isVip, hit: hitNow, sc: sortOn ? ranking.score(title) : 0, gf, fam: sortOn && !gpt ? ranking.family(title) : 0, tier: sortOn ? ranking.tier(title) : 0, ver: brand.version(title), vid, nt: sortOn ? ntKey(title) : '' });
       }
       // 金色只给同厂商里版本号最高的那一代（有 5.5 时 5 的 high/max 不再是金色；gpt 有 6 时 5.6 不是金色）
       { const topVer = new Map(); for (const rows of groups.values()) for (const r of rows) if (r.hit && r.ver != null) { const g = r.vid || ''; if (!(topVer.get(g) >= r.ver)) topVer.set(g, r.ver); }
@@ -5534,7 +6022,8 @@ const gachaUi = (() => {
       const tint = (arr, v) => { const n = arr.length, k = arr.indexOf(v); return k < 0 ? '' : (50 * (n - k) / n).toFixed(1) + '%'; };
       // 同厂商先比版本号（opus-5.5 > fable-5.1，未上榜的新版本也能排前），版本相同再按排行榜（fable/opus、档位）。
       // 比较器必须可传递，否则同一输入在不同轮次可能排出不同顺序 → 卡片来回交换（频闪）。
-      const cmpD = (x, y) => (y.vip - x.vip) || (y.hit - x.hit) || (sortOn ? (x.gs - y.gs) || (x.g < y.g ? -1 : x.g > y.g ? 1 : 0) || ((y.ver ?? -1) - (x.ver ?? -1)) || (x.gf - y.gf) || (x.fam - y.fam) || (y.tier - x.tier) || (x.sc - y.sc) || (x.nt < y.nt ? 1 : x.nt > y.nt ? -1 : 0) : 0) || (x.i - y.i);
+      // v1.11.86 同一个模型（名字相同）的卡片按时间排：最近有动静的在最上面（和卡片上的时间小字同一个时间）
+      const cmpD = (x, y) => (y.vip - x.vip) || (y.hit - x.hit) || (sortOn ? (x.gs - y.gs) || (x.g < y.g ? -1 : x.g > y.g ? 1 : 0) || ((y.ver ?? -1) - (x.ver ?? -1)) || (x.gf - y.gf) || (x.fam - y.fam) || (y.tier - x.tier) || (x.sc - y.sc) || (x.nt < y.nt ? 1 : x.nt > y.nt ? -1 : 0) || ((y.at || 0) - (x.at || 0)) : 0) || (x.i - y.i);
       const cmpH = (x, y) => (y.vip - x.vip) || (y.hit - x.hit) || (x.rk - y.rk) || (x.i - y.i);
       // 算出一种摆法（不动 DOM）：flat = 是否平铺，F(r) = 这张卡片按什么金色 / 命中来摆，cmp = 卡片之间怎么比
       const plan = (flat, F, cmp) => {
@@ -5679,14 +6168,19 @@ const gachaUi = (() => {
     // 每页加载完先取消，隔一会儿再贴，逐页慢慢拉，不滚动、不抢焦点，不影响其他操作。
     const older = { at: 0, n: 0, pages: 0, el: null };
     // v1.11.85 分页加载进行中（贴着转圈 / 刚放开不久）：这期间新出现在最后的旧对话先不归位
-    const olderBusy = () => !!older.el || (older.pages > 0 && older.pages < 60 && Date.now() - older.at < 2600);
+    // v1.11.86（P8）后台最多自动加载 3 页旧对话（以前 60 页：侧栏越来越长、DOM 越来越大）；再往下自己滚侧栏就会照常加载
+    const OLDER_MAX = 3;
+    const olderBusy = () => !!older.el || (older.pages > 0 && older.pages < OLDER_MAX && Date.now() - older.at < 2600);
     function olderStep() {
       if (!document.getElementById('amp-older-css') && document.head) { const st = document.createElement('style'); st.id = 'amp-older-css'; st.textContent = '[data-amp-older]{position:sticky!important;bottom:0!important;z-index:2;opacity:.5;pointer-events:none}[data-amp-flat]{display:contents!important}[data-amp-flatp]{display:flex!important;flex-direction:column!important;row-gap:0!important;gap:0!important}'; document.head.append(st); }
       const sortOn = (() => { try { return gacha.settings().sortSidebar; } catch { return false; } })();
-      const sp = [...document.querySelectorAll('aside svg.animate-spin,nav svg.animate-spin,[data-sidebar] svg.animate-spin')].map(v => v.parentElement).find(d => d && d.classList.contains('justify-center') && d.classList.contains('pb-4'));
+      // v1.11.86 性能：不需要时先返回，不再每 0.7 秒整页找转圈；只在侧栏里找
+      if (!older.el && (!sortOn || document.hidden || older.pages >= OLDER_MAX)) return;
+      const roots = domQ.all('olderRoots', () => document.querySelectorAll('aside,nav,[data-sidebar="sidebar"]'));
+      let sp = null; for (const r of roots) { for (const v of r.querySelectorAll('svg.animate-spin')) { const d = v.parentElement; if (d && d.classList.contains('justify-center') && d.classList.contains('pb-4')) { sp = d; break; } } if (sp) break; }
       if (older.el && older.el !== sp) { older.el.removeAttribute('data-amp-older'); older.el = null; }
-      if (!sp || !sortOn || document.hidden || older.pages >= 60) return;
-      const n = document.querySelectorAll('aside a[href^="/agent/"],nav a[href^="/agent/"],[data-sidebar] a[href^="/agent/"]').length;
+      if (!sp || !sortOn || document.hidden || older.pages >= OLDER_MAX) return;
+      let n = 0; for (const r of roots) n += r.querySelectorAll('a[href^="/agent/"]').length;
       if (sp.hasAttribute('data-amp-older')) {
         // 新的一页到了（或等太久）就先放开，下一轮再贴
         if (n > older.n || Date.now() - older.at > 8000) { sp.removeAttribute('data-amp-older'); older.el = null; if (n > older.n) older.pages++; older.at = Date.now(); }
@@ -5695,7 +6189,7 @@ const gachaUi = (() => {
       if (Date.now() - older.at < 1200) return;
       sp.setAttribute('data-amp-older', ''); older.el = sp; older.n = n; older.at = Date.now();
     }
-    setInterval(() => { try { olderStep(); } catch {} }, 700);
+    sched.every(700, olderStep);
     return { sync, reset: () => { unflat(); for (const el of touched) if (el.isConnected) clear(el); touched = new Set(); for (const el of ctSet) ctOff(el); ctSet = new Set(); stamp = ''; lastRows = []; lastLinks = []; appliedSig = ''; pendSig = ''; tail.clear(); } };
   })();
   const ICON_PATH = {"openai": "M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z", "anthropic": "M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z", "google": "M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81", "xai": "M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"};
@@ -5740,7 +6234,7 @@ const gachaUi = (() => {
     panel.innerHTML = '<div class="gpHeader"><button type="button" class="gpIcon" data-ui="models" title="归档设置" aria-label="归档设置">' + gear + '</button><button type="button" class="gpChosen" data-ui="choose" aria-label="选择目标模型" aria-haspopup="menu"><span class="gpCount" data-s="count">20张</span><span class="gpName"><span data-s="vicon"></span><span data-s="chosen">不限</span></span></button><button type="button" class="gpIcon gpTextIcon" data-ui="text" title="提示词与选项" aria-label="提示词与选项">T</button></div>'
       + '<div class="gpMenu choices" role="menu" aria-label="选择目标模型" hidden></div>'
       + '<div class="gpSettings modelEditor" hidden><label class="gpCheck gpHead"><input type="checkbox" data-k="archiveOn">归档黑名单</label><div class="gpChips" data-s="chips"></div><div class="gpConfirm" data-s="confirm" hidden><span data-s="confirmText"></span><div><button type="button" class="gpSecondary" data-ui="confirmNo">取消</button><button type="button" class="gpSecondary gpDanger" data-ui="confirmYes">删除</button></div></div><div class="gpAddRow"><textarea class="gpModelsInput gpAddInput" data-ui="archiveLines" rows="1" placeholder="输入关键词，换行可一次添加多个"></textarea><button type="button" class="gpSecondary" data-ui="saveModels">添加</button></div></div>'
-      + '<div class="gpSettings advanced" hidden><div class="gpRow2"><label>提示词<input data-k="prompt" maxlength="4000"></label><label>间隔 秒<input data-k="intervalSec" type="number" min="0" max="60" step=".1"></label></div><label class="gpCheck"><input data-k="stopOnThinking" type="checkbox">路由到 Thinking 时停止</label><label class="gpCheck"><input data-k="sortSidebar" type="checkbox">左侧按实时排名排序</label><div class="gpSaveRow"><button type="button" class="gpSecondary" data-ui="saveText">保存</button></div><div class="gpLog" data-s="log" hidden></div></div>'
+      + '<div class="gpSettings advanced" hidden><div class="gpRow2"><label>提示词<input data-k="prompt" maxlength="4000"></label><label>间隔 秒<input data-k="intervalSec" type="number" min="0" max="60" step=".1"></label></div><label class="gpCheck" title="只影响抽卡：抽卡进行中、或抽卡开出的对话里由抽卡发出的那一轮，回复中途出现思考链就停止生成。普通对话不会被停止（只由实时监控提示）。"><input data-k="stopOnThinking" type="checkbox">抽卡时：回复中途路由到 Thinking 就停止</label><label class="gpCheck"><input data-k="sortSidebar" type="checkbox">左侧按实时排名排序</label><div class="gpSaveRow"><button type="button" class="gpSecondary" data-ui="saveText">保存</button></div><div class="gpLog" data-s="log" hidden></div></div>'
       + '<div class="gpQuantity"><div class="gpRange"><div class="gpDots" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div><input type="range" min="0" max="4" step="1" aria-label="抽卡张数" data-ui="quantity"></div><button type="button" class="gpPrimary gpGo" data-a="start">START</button><button type="button" class="gpPrimary gpGo" data-a="stop" hidden>STOP</button></div>'
       + '<div class="gpStatus" role="status" hidden><span data-s="status"></span><span data-s="model"></span><button type="button" class="gpReset" data-a="reset" hidden>清除</button></div><p class="gpMessage" data-s="reason" role="status" hidden></p><button type="button" class="gpIp" data-a="ipok" hidden>我已更换 IP</button>';
     document.body.append(host);
@@ -5761,12 +6255,18 @@ const gachaUi = (() => {
       launcher.style.background = bg; launcher.style.color = dark ? '#ecebe7' : '#242936';
     };
     // Colour of the native prompt box (walk up from the editor to the first opaque background).
+    // v1.11.86 性能：结果按（深浅色、输入框节点）缓存 5 秒（以前每次主题检查都沿输入框往上逐层 getComputedStyle）
+    let bgMemo = null;
     function composerBg(dark) {
-      const ed = document.querySelector('form [contenteditable="true"],form textarea,[contenteditable="true"]');
+      const ed = domQ.one('composerEd', () => document.querySelector('main form [contenteditable="true"],main form textarea') || document.querySelector('form [contenteditable="true"],form textarea,[contenteditable="true"]'));
+      if (bgMemo && bgMemo.dark === dark && bgMemo.ed === ed && Date.now() - bgMemo.at < 5000) return bgMemo.v;
+      const v = composerBgRaw(dark, ed); bgMemo = { dark, ed, v, at: Date.now() }; return v;
+    }
+    function composerBgRaw(dark, ed) {
       for (let n = ed; n && n !== document.body; n = n.parentElement) { const c = getComputedStyle(n).backgroundColor; const m = c.match(/rgba?\(([^)]+)\)/); if (m) { const p = m[1].split(/[ ,\/]+/).filter(Boolean).map(Number); if (p.length < 4 || p[3] > 0.5) return c; } }
       return dark ? '#2c2b28' : '#fff';
     }
-    applyTheme(); setInterval(applyTheme, 3000); window.addEventListener('amp-native-gacha', applyTheme); new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] }); media.addEventListener?.('change', applyTheme);
+    applyTheme(); sched.every(3000, applyTheme, { idle: true }); window.addEventListener('amp-native-gacha', applyTheme); new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] }); media.addEventListener?.('change', applyTheme);
     const position = () => {
       if (!panel.classList.contains('open')) return;
       const vv = window.visualViewport, width = vv?.width || innerWidth, height = vv?.height || innerHeight;
@@ -6160,10 +6660,11 @@ const gachaUi = (() => {
     let needComp = false, needSide = false, sideHit = false;
     const syncSide = () => { try { const st = gacha.state(), cfg = gacha.running() && st ? st.settings : gacha.settings(); sidebar.sync(cfg.targetKeywords); } catch {} };
     // v1.11.78 卡片时间：Arena 更新了某个对话的时间但卡片位置没变（DOM 不变、不触发观察器）时，每 20 秒对一次
-    setInterval(() => { if (!document.hidden && document.querySelector('[data-amp-ctime]')) syncSide(); }, 20000);
-    new MutationObserver(recs => {
+    sched.every(20000, () => { if (document.querySelector('[data-amp-ctime]')) syncSide(); }, { idle: true });
+    domHub.on(recs => { // v1.11.86 共用观察器（对话区里的变化已经滤掉）；和以前一样只看 body 里面
+      const bd = document.body; if (!bd) return;
       for (const rec of recs) {
-        const t = rec.target, e = t.nodeType === 1 ? t : t.parentElement; if (!e) continue;
+        const t = rec.target, e = t.nodeType === 1 ? t : t.parentElement; if (!e || !bd.contains(e)) continue;
         if (e.closest('[role="log"]') || e.closest(OWN)) continue;
         if (rec.addedNodes.length + rec.removedNodes.length && [...rec.addedNodes, ...rec.removedNodes].every(ownNode)) continue;
         if (e.closest('aside,nav,[data-sidebar]')) { needSide = true; sideHit = true; } else needComp = true;
@@ -6173,8 +6674,8 @@ const gachaUi = (() => {
       if (sideHit) { sideHit = false; try { sideNow(); } catch {} }
       if (scheduled || !(needComp || needSide)) return; scheduled = true;
       requestAnimationFrame(() => { scheduled = false; const c = needComp, sd = needSide; needComp = needSide = false; if (c) install(); else if (sd) syncSide(); });
-    }).observe(document.body, { childList: true, subtree: true });
-    setInterval(() => { if (!document.hidden) syncSide(); }, 1500); // 排行榜/厂商识别等异步结果到达后补一次
+    });
+    sched.every(1500, syncSide, { idle: true }); // 排行榜/厂商识别等异步结果到达后补一次（后台暂停，空闲时做）
     for (const name of Object.keys(sections)) $('[data-ui="' + name + '"]').onclick = () => { if (name === 'choose') choices(); show(name); };
 
     $('[data-ui="quantity"]').oninput = e => { gacha.saveSettings({ maxAttempts: Q[Number(e.target.value)] }); render(); };
@@ -6227,7 +6728,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.85', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.86', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -6453,7 +6954,8 @@ const gachaUi = (() => {
     if(!Number.isFinite(ms))return null;const d=new Date(ms),n=new Date(now),date=pad2(d.getMonth()+1)+'-'+pad2(d.getDate()),time=pad2(d.getHours())+':'+pad2(d.getMinutes());
     return (d.getFullYear()===n.getFullYear()?date:d.getFullYear()+'-'+date)+' '+time;
   }
-  const fullStamp=ms=>Number.isFinite(ms)?new Date(ms).toLocaleString('zh-CN',{hour12:false}):null;
+  // v1.11.86 性能：自己拼（和 toLocaleString('zh-CN',{hour12:false}) 输出一样，如 2026/9/26 14:31:05）；Intl 格式化每次零点几毫秒，长对话里几百条消息就是一个长任务
+  const fullStamp=ms=>{if(!Number.isFinite(ms))return null;const d=new Date(ms);return d.getFullYear()+'/'+(d.getMonth()+1)+'/'+d.getDate()+' '+pad2(d.getHours())+':'+pad2(d.getMinutes())+':'+pad2(d.getSeconds());};
   // create-chat 响应头里的应用层限流：ratelimit-limit / remaining / reset（Unix 秒）/ retry-after（秒）
   // 429 正文的分类沿用页面自己的规则：每日 Agent 消息上限（100 条 / 24 小时）、每日花费上限、按模型限流、其余为通用限流
   const AGENT_DAILY_TEXT="You've reached the daily limit of 100 agent messages. Please try again later.";
@@ -6566,17 +7068,21 @@ const gachaUi = (() => {
 
   // 2. 逐行解析；一条坏消息不应终止整个读流循环。
   class Lines {
-    constructor(onJSON,onIssue=()=>{}){this.onJSON=onJSON;this.onIssue=onIssue;this.decoder=new TextDecoder();this.buffer='';this.pending='';this.discard=false;}
+    constructor(onJSON,onIssue=()=>{},onEvent=null){this.onJSON=onJSON;this.onIssue=onIssue;this.onEvent=onEvent;this.ev='';this.decoder=new TextDecoder();this.buffer='';this.pending='';this.discard=false;}
     feed(bytes){
       const text=typeof bytes==='string'?bytes:this.decoder.decode(bytes,{stream:true});this.buffer+=text;
       let i;while((i=this.buffer.indexOf('\n'))>=0){const line=this.buffer.slice(0,i).replace(/\r$/,'');this.buffer=this.buffer.slice(i+1);if(this.discard){this.discard=false;continue;}this.line(line);}
       if(this.buffer.length>2*1024*1024){this.buffer='';this.pending='';this.discard=true;this.onIssue('单行过大，已跳过；后续流仍继续解析');}
     }
     line(line){
-      let s=line.trim();if(!s){this.pending='';return;}if(/^(event:|id:|retry:|:)/.test(s))return;
+      let s=line.trim();if(!s){this.pending='';this.ev='';return;}
+      // v1.11.86 事件名：ping（心跳，也包括 “:” 开头的保活注释）/ batch；数据帧连同事件名一起交给回调
+      if(s.startsWith('event:')){this.ev=s.slice(6).trim();if(this.onEvent){try{this.onEvent(this.ev);}catch{}}return;}
+      if(s.startsWith(':')){if(this.onEvent){try{this.onEvent('ping');}catch{}}return;}
+      if(/^(id:|retry:)/.test(s))return;
       if(s.startsWith('data:'))s=s.slice(5).trim();if(!s||s==='[DONE]')return;
       let value;try{value=JSON.parse(this.pending?this.pending+'\n'+s:s);this.pending='';}catch{if((this.pending||/^[\[{]/.test(s))&&this.pending.length+s.length<2*1024*1024)this.pending=this.pending?this.pending+'\n'+s:s;return;}
-      try{this.onJSON(value);}catch(e){this.onIssue('帧处理异常',e);}
+      try{this.onJSON(value,this.ev);}catch(e){this.onIssue('帧处理异常',e);}
     }
     end(){if(!this.discard&&this.buffer.trim())this.line(this.buffer);this.buffer='';this.pending='';}
   }
@@ -6584,7 +7090,8 @@ const gachaUi = (() => {
     if(!node||typeof node!=='object'||depth>6)return;
     if(Array.isArray(node)){for(const v of node.slice(0,3000))inspect(v,onToken,onType,depth+1);return;}
     const headers=Array.isArray(node.headers)?node.headers:node.headers&&typeof node.headers==='object'?Object.entries(node.headers):[];
-    for(const h of headers)if(Array.isArray(h)&&String(h[0]).toLowerCase()==='public-access-token'&&typeof h[1]==='string')onToken(h[1]);
+    for(const h of headers)if(Array.isArray(h)){const hk=String(h[0]).toLowerCase();if(hk==='public-access-token'&&typeof h[1]==='string')onToken(h[1]);else if(hk==='trigger-control'&&h[1]==='turn-complete')onType('turn-complete',node);}
+    if(node.type==='trigger:turn-complete')onType('turn-complete',node);
     if(typeof node.type==='string'&&/^(start|start-step|finish|finish-step|text-start|text-delta|text-end|reasoning-start|reasoning-delta|reasoning-end|message-metadata|error|abort)$/.test(node.type))onType(node.type,node);
     if(Array.isArray(node.records))inspect(node.records,onToken,onType,depth+1);
     for(const key of ['body','data','message','response','payload','event']) {
@@ -6671,10 +7178,13 @@ const gachaUi = (() => {
   const load=(key,fallback)=>{try{return JSON.parse(localStorage.getItem(key))??fallback;}catch{return fallback;}};
   const store=(key,value)=>{try{return ampStore.set(key,JSON.stringify(value));}catch{return false;}};
   const clamp=(v,min,max,fallback)=>Number.isFinite(v)?Math.min(max,Math.max(min,Math.round(v))):fallback;
-  const stored=load(KEY+'.prefs',{}), prefs={width:clamp(stored.width,280,720,340),sidebarWidth:clamp(stored.sidebarWidth,200,560,null),cloudSync:stored.cloudSync===true,cloudFormat:stored.cloudFormat==='name'?'name':'prefix',rawBudget:BUDGET_OPTIONS.includes(stored.rawBudget)?stored.rawBudget:64,showSent:stored.showSent!==false,showQuota:stored.showQuota!==false,showCredits:stored.showCredits!==false,showBar:stored.showBar!==false,barCollapsed:stored.barCollapsed===true,barOffset:stored.barOffset!==false,showSeq:stored.showSeq===true,hideDocIcon:stored.hideDocIcon!==false,stopOnResample:stored.stopOnResample!==false,showQuotaReset:stored.showQuotaReset===true,spendUnit:stored.spendUnit==='token'?'token':'usd',liveEst:stored.liveEst!==false,deskGem:stored.deskGem!==false,lazyLog:stored.lazyLog!==false,backfill:stored.backfill!==false,sheetH:typeof stored.sheetH==='number'&&stored.sheetH>=0.05&&stored.sheetH<=1?stored.sheetH:0.5,sheetFull:stored.sheetFull===true,pullRefresh:stored.pullRefresh!==false,glassDrawer:stored.glassDrawer!==false,gemLayout:stored.gemLayout!==false,monOn:stored.monOn!==false,monAlert:stored.monAlert!==false,monStop:stored.monStop===true,wsRight:stored.wsRight!==false,wsSwipe:stored.wsSwipe!==false,wsEdge:stored.wsEdge!==false,wsEdgeY:typeof stored.wsEdgeY==='number'&&stored.wsEdgeY>=0.12&&stored.wsEdgeY<=0.88?stored.wsEdgeY:0.6,kbResize:stored.kbResize!==false,pulseLive:stored.pulseLive!==false,pulseCal:stored.pulseCal!==false,modeSide:stored.modeSide!==false,noteTitle:stored.noteTitle!==false};
+  const stored=load(KEY+'.prefs',{}), prefs={width:clamp(stored.width,280,720,340),sidebarWidth:clamp(stored.sidebarWidth,200,560,null),cloudSync:stored.cloudSync===true,cloudFormat:stored.cloudFormat==='name'?'name':'prefix',rawBudget:BUDGET_OPTIONS.includes(stored.rawBudget)?stored.rawBudget:64,showSent:stored.showSent!==false,showQuota:stored.showQuota!==false,showCredits:stored.showCredits!==false,showBar:stored.showBar!==false,barCollapsed:stored.barCollapsed===true,barOffset:stored.barOffset!==false,showSeq:stored.showSeq===true,hideDocIcon:stored.hideDocIcon!==false,stopOnResample:stored.mig86===1&&stored.stopOnResample===true,mig86:1,showQuotaReset:stored.showQuotaReset===true,spendUnit:stored.spendUnit==='token'?'token':'usd',liveEst:stored.liveEst!==false,deskGem:stored.deskGem!==false,lazyLog:stored.lazyLog!==false,backfill:stored.backfill!==false,sheetH:typeof stored.sheetH==='number'&&stored.sheetH>=0.05&&stored.sheetH<=1?stored.sheetH:0.5,sheetFull:stored.sheetFull===true,pullRefresh:stored.pullRefresh!==false,glassDrawer:stored.glassDrawer!==false,gemLayout:stored.gemLayout!==false,monOn:stored.monOn!==false,monAlert:stored.monAlert!==false,monStop:stored.monStop===true,wsRight:stored.wsRight!==false,wsSwipe:stored.wsSwipe!==false,wsEdge:stored.wsEdge!==false,wsEdgeY:typeof stored.wsEdgeY==='number'&&stored.wsEdgeY>=0.12&&stored.wsEdgeY<=0.88?stored.wsEdgeY:0.6,kbResize:stored.kbResize!==false,pulseLive:stored.pulseLive!==false,pulseCal:stored.pulseCal!==false,modeSide:stored.modeSide!==false,noteTitle:stored.noteTitle!==false,stallFix:stored.stallFix!==false,stallReload:stored.stallReload!==false,stallRecon:clamp(stored.stallRecon,3,60,8),stallStatus:clamp(stored.stallStatus,8,180,20),stallCap:clamp(stored.stallCap,20,900,60),softReload:stored.softReload!==false,lbLogo:stored.lbLogo!==false,errAuto:stored.errAuto!==false,tabNote:stored.tabNote!==false};
   // 手机/窄屏：底部只留一条余额栏，点击余额栏才展开模型信息
   const miniBar=()=>innerWidth<768||!!document.getElementById('amp-lite-dock')?.hasAttribute('data-compact');
   const savePrefs=()=>store(KEY+'.prefs',prefs);
+  // v1.11.86 「模型被改派时自动停止生成」改为默认关闭：设置是整份保存的，老用户存着 true，只改默认值到不了他们那里，这里一次性迁移成关闭（mig86 记号，之后尊重用户自己的选择）
+  const mig86Old=stored.mig86!==1&&stored.stopOnResample!==false&&Object.keys(stored).length>0;
+  if(stored.stallFix===undefined||stored.lbLogo===undefined||stored.softReload===undefined||stored.mig86!==1||stored.errAuto===undefined||stored.tabNote===undefined)try{savePrefs();}catch{} // v1.11.86 新设置写回一次
   let history=load(KEY+'.history',[]);if(!Array.isArray(history))history=[];history=history.map(x=>{const s=localSnapshot(x);return s?{...s,raw:{events:[],spans:{}}}:null;}).filter(Boolean).slice(0,20);
   let stopped=false,enabled=true,cooldown=0,pendingNew=null,lastRoute=location.pathname,frames=0,queries=0,ui=null,paintTimer=0,revision=0,onLog=null,onSnapshot=null,onSent=null;
   // 限流 / 额度状态：服务端按窗口计数、与标签页无关，所以放在 localStorage 并监听 storage 事件同步；窗口过后保留最后一次观测值（见 quotaView）
@@ -6891,7 +7401,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     const offsetCss=`html[data-amp-bar-offset] body .h-dvh,html[data-amp-bar-offset] body .h-screen,html[data-amp-bar-offset] body .h-svh{height:calc(100dvh - ${BAR_H}px)!important}html[data-amp-bar-offset] body .max-h-dvh,html[data-amp-bar-offset] body .max-h-screen{max-height:calc(100dvh - ${BAR_H}px)!important}html[data-amp-bar-overlap] main{padding-bottom:${BAR_H}px!important;box-sizing:border-box!important}html[data-amp-bar-offset]:not([data-amp-kbhide]) main:is(.min-h-svh,.min-h-dvh,.min-h-screen){padding-bottom:${BAR_H}px!important;box-sizing:border-box!important}`;
     let offsetSheet=null,offsetStyle=null;try{offsetSheet=new CSSStyleSheet();offsetSheet.replaceSync(offsetCss);document.adoptedStyleSheets=[...document.adoptedStyleSheets,offsetSheet];}catch{offsetStyle=el('style','',offsetCss,document.head||document.body);}
     const fmtUsd=v=>(v<0?'-$':'$')+Math.abs(v).toFixed(2),exactUsd=v=>'$'+String(v);
-    const clock=t=>Number.isFinite(t)?new Date(t).toLocaleTimeString('zh-CN',{hour12:false}):'--:--:--';
+    const clock=t=>{if(!Number.isFinite(t))return '--:--:--';const d=new Date(t);return pad2(d.getHours())+':'+pad2(d.getMinutes())+':'+pad2(d.getSeconds());}; // v1.11.86 不用 Intl（信息栏每次重画都要调很多次）
     const ago=t=>{if(!Number.isFinite(t))return '';const d=Date.now()-t;return d<60000?'刚刚':d<3600000?Math.floor(d/60000)+' 分钟前':d<86400000?Math.floor(d/3600000)+' 小时前':Math.floor(d/86400000)+' 天前';};
     let stamp='';
     function item(key,state,parts,title,onclick){return {key,state,parts,title,onclick};}
@@ -6974,10 +7484,10 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     function sync(){
       // v1.11.71 打字时不再藏起底部信息栏（设置里关掉“输入法弹出时一起上移”才恢复旧行为）
       const kbHide=kbOpen()&&prefs.kbResize===false;document.documentElement.toggleAttribute('data-amp-kbhide',kbHide);
-      const eligible=prefs.showBar&&location.origin==='https://arena.ai'&&!kbHide;host.hidden=!eligible;document.documentElement.style.setProperty('--amp-bar-h',eligible&&!prefs.barCollapsed?BAR_H+'px':'0px');host.toggleAttribute('data-collapsed',!!prefs.barCollapsed);
+      const eligible=prefs.showBar&&location.origin==='https://arena.ai'&&!kbHide;host.hidden=!eligible;{const v=eligible&&!prefs.barCollapsed?BAR_H+'px':'0px',st=document.documentElement.style;if(st.getPropertyValue('--amp-bar-h')!==v)st.setProperty('--amp-bar-h',v);}host.toggleAttribute('data-collapsed',!!prefs.barCollapsed);
       const offset=eligible&&!prefs.barCollapsed&&prefs.barOffset;document.documentElement.toggleAttribute('data-amp-bar-offset',offset);
       if(!offset)document.documentElement.removeAttribute('data-amp-bar-overlap');
-      else{const m=document.querySelector('main');if(m){const b=m.getBoundingClientRect().bottom;if(b>innerHeight-BAR_H+1&&!document.documentElement.hasAttribute('data-amp-bar-overlap'))document.documentElement.setAttribute('data-amp-bar-overlap','');}}
+      else if(!document.documentElement.hasAttribute('data-amp-bar-overlap')){const m=document.querySelector('main');if(m){const b=m.getBoundingClientRect().bottom;if(b>innerHeight-BAR_H+1)document.documentElement.setAttribute('data-amp-bar-overlap','');}} // v1.11.86 标记已设就不再每次量
       if(!eligible)return;
       const mini=miniBar();host.toggleAttribute('data-mini',mini);if(mini&&prefs.barCollapsed){prefs.barCollapsed=false;savePrefs();host.removeAttribute('data-collapsed');}
       const list=build(),key=mini+JSON.stringify(list.map(x=>[x.key,x.state,x.parts,x.title]));
@@ -7172,7 +7682,8 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     frames++;const sid=ctx.sid||sidOf(location.href);inspect(frame,t=>accept(t,ctx.sid),(type,node)=>{
       // 助手消息的 id / nodeId 出现在 start 与 message-metadata 帧里；费用接口按 nodeId（缺省为消息 id）计
       if(node&&typeof node==='object'){noteTurnId(sid,node.messageId);const meta=node.messageMetadata;if(meta&&typeof meta==='object'){noteTurnId(sid,meta.nodeId);noteTurnId(sid,meta.messageId);}}
-      if(type==='finish'){try{errReload.noteFinish(sid);}catch{}try{pulseTurnEnd(sid,true);}catch{}for(const r of runs.values())if(r.sid===sid)r.huntFinishedAt=Date.now();log('detail','读流','检测到流结束（finish）',null,ctx);for(const r of runs.values())if(r.sid===sid&&r.finalReads<2)later(r,gFast()?400:1200,true);clearTimeout(balanceTimer);balanceTimer=setTimeout(()=>{if(Date.now()-(balance?.at||0)>8000)void refreshBalance(true);},6000);scheduleCost(sid,COST_DELAYS[0],true);try{usdChase(sid);}catch{}}
+      if(type==='turn-complete'){try{if(ctx.conn)errReload.conn.type(ctx.conn,'turn-complete');else errReload.noteTurnComplete(sid);}catch{}log('detail','读流','收到本轮结束信号（turn-complete）',null,ctx);return;}
+      if(type==='finish'){try{if(ctx.conn)errReload.conn.type(ctx.conn,'finish');else errReload.noteFinish(sid);}catch{}try{pulseTurnEnd(sid,true);}catch{}for(const r of runs.values())if(r.sid===sid)r.huntFinishedAt=Date.now();log('detail','读流','检测到流结束（finish）',null,ctx);for(const r of runs.values())if(r.sid===sid&&r.finalReads<2)later(r,gFast()?400:1200,true);clearTimeout(balanceTimer);balanceTimer=setTimeout(()=>{if(Date.now()-(balance?.at||0)>8000)void refreshBalance(true);},6000);scheduleCost(sid,COST_DELAYS[0],true);try{usdChase(sid);}catch{}}
       else if(type==='error'||type==='abort'){log('detail','读流','检测到流事件 '+type,null,ctx);scheduleCost(sid,COST_DELAYS[1],true);}
     });paint();
   }
@@ -7221,15 +7732,17 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     log('warn','路由',turnLabel(r.data)+' · '+(sw.from||'原模型')+' '+cause+'，Arena 自动改派 '+(sw.to||'其他模型')+(sw.committed?'（已写入本对话，后续轮次也会用新模型）':'')+(reason?' · '+reason:''),null,r);
     if(r.sid===sidOf(location.href)&&!gacha.quietTurn(r.sid))try{routeAlert.show('模型被 Arena 改派',sw.from||'原模型',sw.to||'其他模型','原模型'+cause+'，服务端自动故障转移'+(sw.committed?' · 本对话之后也会用新模型，想要原模型请新开对话':''),'drop');}catch{}
     // v1.11.78 抽卡的这一轮不自动停：让改派后的模型答完，它的用量记录才会给出带档位的内部名（这一抽才识别得准）
-    if(prefs.stopOnResample&&sidOf(location.href)===r.sid&&pageGenerating()&&!gacha.quietTurn(r.sid)){
+    if(prefs.stopOnResample&&sidOf(location.href)===r.sid&&pageGenerating()&&!gacha.quietTurn(r.sid)&&!errReload.finished(r.sid)){ // v1.11.86 回复已写完（收尾中）不点停止
       const b=document.querySelector('button[aria-label="Stop generating"],button[aria-label="Stop response"],button[aria-label="停止生成"]');
-      if(b){b.click();log('info','路由','已自动停止生成：改派后的模型不是原来那个，继续等待只会消耗额度（设置里可关闭）',null,r);}
+      if(b){b.click();log('info','路由','已自动停止生成：改派后的模型不是原来那个，继续等待只会消耗额度（设置里可关闭）',null,r);
+        // v1.11.86 自动停止必须让人知道：侧栏卡片变色 + 顶部提示（所有窗口可见），直到确认或重新发送
+        try{attn.raise(r.sid,'route','模型被改派，已自动停止生成；如果发送没反应，请先重新载入对话');}catch{}}
     }
     save(r.data);paint();
   }
   // 长回复期间常规轮询早已用完：页面仍在生成时每 20 秒只读一次事件列表，尽快发现改派。
   async function watchRoute(){
-    if(stopped||!enabled||Date.now()<cooldown||document.hidden||!pageGenerating())return;
+    if(stopped||!enabled||Date.now()<cooldown||Date.now()<(+window.__AMP_TRACE_HOLD__||0)||document.hidden||!pageGenerating())return;
     const sid=sidOf(location.href),r=[...runs.values()].find(x=>x.sid===sid&&x.token);if(!r||r.busy||r.watching)return;
     const age=Date.now()-(r.submittedAt||0);if(age<45000||age>1800000)return;
     r.watching=true;const ctrl=new AbortController();
@@ -7240,6 +7753,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
   const routeWatch=setInterval(()=>{void watchRoute();},20000);
   async function poll(r,final=false,kick=null){
     if(stopped||!enabled||r.busy||Date.now()<cooldown||!r.token||r.tries>=8&&!final&&!kick||final&&r.finalReads>=2)return;
+    {const hold=(+window.__AMP_TRACE_HOLD__||0)-Date.now();if(hold>0){later(r,Math.max(800,hold+400),final);return;}} // v1.11.86 页面正在重连 / 重新载入：先不抢额度
     if(final)r.finalReads++;if(!kick)r.tries++;r.lastRead=Date.now();r.busy=true;r.phase=kick?'实时核对':'读取 Trace';
     const epoch=r.revision,ctrl=new AbortController();r.abort=ctrl;
     const live=()=>!stopped&&enabled&&r.revision===epoch&&!ctrl.signal.aborted&&runs.get(r.runId)===r;
@@ -7435,7 +7949,8 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     try{const u=new URL(url,location.href);return [location.origin,'https://api.trigger.dev'].includes(u.origin)&&!/^\/ai-proxy\/api\/v1\/runs\//.test(u.pathname)&&(/event-stream|ndjson|stream\+json/i.test(ct||'')||!!streamSid(url));}catch{return false;}
   }
   async function readBranch(reader,ctx,signal){
-    const parser=new Lines(f=>frameSeen(f,ctx),(text,e)=>log('warn','解析',text,e,ctx));readers.add(reader);
+    const lb=ctx.fwd&&typeof window.__AMP_LEGACY_BATCH__==='function'?window.__AMP_LEGACY_BATCH__:null,cn=ctx.conn||null;
+    const parser=new Lines((f,ev)=>{frameSeen(f,ctx);if(lb&&ev==='batch'){try{lb(f);}catch{}}},(text,e)=>log('warn','解析',text,e,ctx),cn?ev=>{try{errReload.conn.event(cn,ev);}catch{}}:null);readers.add(reader);
     let lastData=Date.now(),bytes=0;
     try{
       while(!stopped){
@@ -7443,7 +7958,8 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
         try{chunk=await reader.read();}
         catch(e){
           if(enabled&&!stopped){
-            if(e.name==='AbortError'||signal?.aborted)log('debug','读流','页面取消了这条流',null,ctx);
+            if(cn&&String(cn.why||'').startsWith('kill:'))log('info','读流','已断开这条实时通道，页面会自动带断点重连（'+cn.why.slice(5)+'）',null,ctx);
+            else if(e.name==='AbortError'||signal?.aborted)log('debug','读流','页面取消了这条流',null,ctx);
             // 空闲的长连接（会话实时通道）约每 30 秒被服务器/代理重置一次，Arena 会自动重连，不影响对话：降为调试日志
             else if(Date.now()-lastData>8000||bytes<2048)log('debug','读流','空闲连接被服务器重置（Arena 会自动重连，不影响对话）',e,ctx);
             else log('warn','读流','网络流断开（回复传输中）',e,ctx);
@@ -7451,11 +7967,11 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
           break;
         }
         if(chunk.done)break;
-        lastData=Date.now();bytes+=chunk.value?.byteLength||0;
+        lastData=Date.now();bytes+=chunk.value?.byteLength||0;if(cn){try{errReload.conn.bytes(cn,chunk.value?.byteLength||0);}catch{}}
         if(enabled){try{parser.feed(chunk.value);}catch(e){parser.buffer='';parser.pending='';log('warn','解码','当前分块解码失败，跳过该块',e,ctx);}}
       }
       if(enabled){try{parser.end();}catch(e){log('warn','解析','尾帧处理失败',e,ctx);}}
-    }finally{log('debug','读流','旁路流读取结束',null,ctx);readers.delete(reader);try{reader.releaseLock();}catch{}}
+    }finally{log('debug','读流','旁路流读取结束',null,ctx);readers.delete(reader);try{reader.releaseLock();}catch{}if(cn){try{errReload.conn.close(cn,'end');}catch{}}}
   }
   const wrapped=function(input,init){
     const url=typeof input==='string'?input:input?.url||String(input),method=String(init?.method||input?.method||'GET').toUpperCase();
@@ -7471,8 +7987,16 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     return wrapped.after.call(this,arguments,url,method,init);
   };
   wrapped.after=function(args,url,method,init){
-    const input=args[0];
-    return native.apply(this,args).then(res=>{
+    const input=args[0];let conn=null,fwd=false,pageSignal=null;
+    // v1.11.86 会话实时通道（/out）：并入脚本自己的 AbortSignal（收尾卡住时断开这一条，页面会带断点自动重连）；旧检测器改由这里转发 batch
+    if(method==='GET'&&/\/realtime\/v1\/sessions\/[^/]+\/out(?:[?#]|$)/.test(String(url))){
+      try{pageSignal=init?.signal||(input&&typeof input==='object'?input.signal:null)||null;}catch{}
+      try{const o=errReload.conn.open(url,init,input);if(o){conn=o.conn;const a=Array.prototype.slice.call(args);init=Object.assign({},init||{},{signal:o.signal});a[1]=init;args=a;}}catch{}
+      if(enabled&&!stopped&&typeof window.__AMP_LEGACY_BATCH__==='function'){fwd=true;window.__AMP_SSE_FWD__=1;}
+    }
+    let pr;try{pr=native.apply(this,args);}finally{if(fwd)window.__AMP_SSE_FWD__=0;}
+    return pr.then(res=>{
+      if(conn){try{errReload.conn.response(conn,res);}catch{}}
       if(!enabled||stopped)return res;
       let path='';try{path=new URL(res.url||url,location.href).pathname;}catch{}
       if(method==='POST'&&/(\/stream\/create-chat|\/in\/append)$/.test(path))gacha.notePost(path,res.status);
@@ -7486,15 +8010,15 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       if(res.status!==200)return res;
       const actual=res.url||url,ct=res.headers.get('content-type')||'';
       if(!captureAllowed(actual,ct))return res;
-      const ctx={sid:streamSid(actual)||sidOf(location.href)};
+      const ctx={sid:streamSid(actual)||sidOf(location.href),conn,page:conn?conn.page:null,fwd};
       const t=res.headers.get('public-access-token');if(t)accept(t,ctx.sid);
       try{
         if(!res.body?.tee)return res;
         const [site,probe]=res.body.tee(),replacement=new Response(site,{status:res.status,statusText:res.statusText,headers:res.headers});
         const decorate=response=>{for(const key of ['url','redirected','type']){try{Object.defineProperty(response,key,{value:res[key],configurable:true});}catch{}}const clone=response.clone.bind(response);try{response.clone=()=>decorate(clone());}catch{}return response;};
-        log('debug','分流','原生 tee 旁路已建立',null,ctx);void readBranch(probe.getReader(),ctx,init?.signal||input?.signal);return decorate(replacement);
+        log('debug','分流','原生 tee 旁路已建立',null,ctx);void readBranch(probe.getReader(),ctx,pageSignal||init?.signal||input?.signal);return decorate(replacement);
       }catch(e){log('warn','分流','无法建立旁路读取器',e,ctx);return res;}
-    });
+    },e=>{if(conn){try{errReload.conn.fail(conn,e);}catch{}}throw e;});
   };
   wrapped.__orig=native;wrapped.__ampLite=true;window.fetch=wrapped;
   const XO=window.XMLHttpRequest?.prototype,oldOpen=XO&&(XO.open.__orig||XO.open),oldSend=XO&&(XO.send.__orig||XO.send),xhrInfo=new WeakMap();
@@ -7624,7 +8148,8 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
   void Promise.resolve(catalog.ready).then(()=>{noteReady=true;},()=>{noteReady=true;});
   // 另一个标签页改了备注 / 写过云端：合并过来（同一个对象原地更新，正在进行的同步不受影响）
   function noteReload(){const o=load(NOTE_KEY,{});if(!o||typeof o!=='object'||Array.isArray(o))return;for(const k of [...notes.keys()])if(!(k in o))notes.delete(k);for(const [k,v] of Object.entries(o)){if(!v||typeof v!=='object'||!/^[\w-]{8,128}$/.test(k))continue;const cur=notes.get(k);if(cur)Object.assign(cur,v);else notes.set(k,v);}try{window.dispatchEvent(new Event('amp-title-sync'));}catch{}}
-  function noteSave(){while(notes.size>400)notes.delete(notes.keys().next().value);store(NOTE_KEY,Object.fromEntries(notes));}
+  let ltRev=0; // v1.11.86 本地标题的数据变了（目录 / 备注）：侧栏标题要重画
+  function noteSave(){ltRev++;while(notes.size>400)notes.delete(notes.keys().next().value);store(NOTE_KEY,Object.fromEntries(notes));}
   function noteFmt(ms){const d=new Date(ms),p=n=>String(n).padStart(2,'0');return (d.getMonth()+1)+'-'+d.getDate()+'-'+p(d.getHours())+':'+p(d.getMinutes());}
   function noteOwns(sid){return !!prefs.noteTitle&&!!sid&&notes.has(sid);}
   function noteLink(sid){return [...document.querySelectorAll('a[href="/agent/'+sid+'"]')].find(e=>e.closest('aside,nav,[data-sidebar]'))||null;}
@@ -7677,7 +8202,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
   // 新对话第一轮结束后 Arena 会自己起个标题，可能盖掉刚写的名字：过一会儿看左侧，被换成了别的（不是我们的格式）就等空闲再写一次
   function noteVerify(sid,want,pre,round){if(round>=2)return;setTimeout(()=>{const n=notes.get(sid);if(!n||n.c!==want||stopped)return;const cur=noteSideTitle(sid);if(cur&&cur!==want&&cur!==pre&&!splitNote(cur).composite){n.c='';noteSave();log('info','备注命名','Arena 换成了自动标题“'+cur.slice(0,30)+'”，空闲时重写',null,{sid});noteKick();return;}noteVerify(sid,want,pre,round+1);},round?45000:15000);}
   const noteTimer=setInterval(()=>{void noteTick();},5000);
-  catalog.onentry=(entry,before,snap,quiet)=>{try{if(snap?.calls?.length&&(!entry.at||!snap.at||snap.at>=entry.at)){const calls=servingCalls(snap).filter(c=>c.model!=='未提供'),reqs=[...new Set(calls.map(c=>c.request).filter(Boolean))],last=calls.at(-1)||{},resp=last.response||last.internal||last.request||null,label='#'+entry.seq+' · '+(entry.title||'').replace(/^#\d+\s*/,'');const v=vip.note(entry.sid,reqs);void v;if(resp)routeAlert.note(entry.sid,resp,label,quiet);}}catch{}const o=before?.name?.name,n=entry?.name?.name;if(o&&n&&o!==n&&entry.name.source==='internal'){log('info','模型变化',o+' → '+n,null,{sid:entry.sid});try{if(noteOwns(entry.sid))noteKick();else gacha.followModel(entry.sid,o,n);}catch{}if(entry.cloud?.title&&!gacha.ownsTitle(entry.sid))void syncTitle(entry,true);paint();}else void syncTitle(entry);try{window.dispatchEvent(new Event('amp-title-sync'));}catch{}};
+  catalog.onentry=(entry,before,snap,quiet)=>{ltRev++;try{if(snap?.calls?.length&&(!entry.at||!snap.at||snap.at>=entry.at)){const calls=servingCalls(snap).filter(c=>c.model!=='未提供'),reqs=[...new Set(calls.map(c=>c.request).filter(Boolean))],last=calls.at(-1)||{},resp=last.response||last.internal||last.request||null,label='#'+entry.seq+' · '+(entry.title||'').replace(/^#\d+\s*/,'');const v=vip.note(entry.sid,reqs);void v;if(resp)routeAlert.note(entry.sid,resp,label,quiet);}}catch{}const o=before?.name?.name,n=entry?.name?.name;if(o&&n&&o!==n&&entry.name.source==='internal'){log('info','模型变化',o+' → '+n,null,{sid:entry.sid});try{if(noteOwns(entry.sid))noteKick();else gacha.followModel(entry.sid,o,n);}catch{}if(entry.cloud?.title&&!gacha.ownsTitle(entry.sid))void syncTitle(entry,true);paint();}else void syncTitle(entry);try{window.dispatchEvent(new Event('amp-title-sync'));}catch{}};
   void catalog.ready.then(async()=>{for(const s of history.slice().reverse())await catalog.record(s,true,true);});
   const css=`
 :host{all:initial;position:relative;color-scheme:inherit;font:400 13px/1.55 var(--font-basel-grotesk,var(--font-inter,system-ui)),'PingFang SC','Microsoft YaHei',sans-serif;color:var(--fg);--bg:hsl(var(--surface-primary,36 45% 98%));--raised:hsl(var(--surface-tertiary,33 31% 94%));--line:hsl(var(--border-faint,30 5% 93%));--edge:hsl(var(--border-medium,30 9% 87%));--fg:hsl(var(--text-primary,24 6% 17%));--secondary:hsl(var(--text-tertiary,35 6% 38%));--heading:hsl(var(--header-primary,60 3% 14%));--green:hsl(var(--interactive-positive,125 49% 43%));--warn:hsl(var(--syntax-yellow,48 92% 38%));--mono:var(--font-basel-grotesk-mono,var(--font-dm-mono,ui-monospace)),Consolas,monospace}
@@ -7994,7 +8519,7 @@ details.mc-card .section.credits{margin-top:12px}
   // 与抽卡的 completion() 相同：从 [role=log] 的 React fiber 往上找 useChat 的 {id, messages, status}
   function monChat(){
     const sid=sidOf(location.href);if(!sid)return null;
-    const logs=[...document.querySelectorAll('main [role="log"]')],logEl=logs.find(e=>e.getClientRects().length)||logs[0];if(!logEl)return null;
+    const logEl=domHub.log();if(!logEl)return null; // v1.11.86 性能：用缓存的对话区（以前每 0.65 秒整页查一遍）
     try{const k=Object.keys(logEl).find(x=>x.startsWith('__reactFiber'));let f=k?logEl[k]:null;for(let n=0;f&&n<100;n++,f=f.return){const v=f.memoizedProps?.value;if(v&&v.id===sid&&Array.isArray(v.messages))return {sid,status:String(v.status||''),messages:v.messages};}}catch{}
     return null;
   }
@@ -8008,9 +8533,11 @@ details.mc-card .section.credits{margin-top:12px}
     // v1.11.80 锁定当前对话：刚切换对话的几秒里，页面状态里可能还是上一个对话的消息（消息 id 已记在别的对话名下）→ 这一帧不认，
     // 免得把上一个对话的模型 / 步骤 / 思考链算到新对话头上（抽卡连续换对话时误报“上一个对话的模型路由到了这个对话”）
     {const own=mon.own||(mon.own=new Map()),now_=Date.now();if(mon.lastSid!==c.sid){mon.lastSid=c.sid;mon.sidAt=now_;}
-      let stale=false;for(const x of c.messages){const o=x?.id&&own.get(x.id);if(o&&o!==c.sid){stale=true;break;}}
+      // v1.11.86 性能：只看最后 40 条（长对话以前每次都把上千条过两遍）
+      const from_=Math.max(0,c.messages.length-40);
+      let stale=false;for(let i=from_;i<c.messages.length;i++){const x=c.messages[i],o=x?.id&&own.get(x.id);if(o&&o!==c.sid){stale=true;break;}}
       if(stale&&now_-(mon.sidAt||0)<4000){mon.sig='';return;}
-      for(const x of c.messages)if(x?.id&&own.get(x.id)!==c.sid){own.delete(x.id);own.set(x.id,c.sid);if(own.size>4000)own.delete(own.keys().next().value);}}
+      for(let i=from_;i<c.messages.length;i++){const x=c.messages[i];if(x?.id&&own.get(x.id)!==c.sid){own.delete(x.id);own.set(x.id,c.sid);if(own.size>4000)own.delete(own.keys().next().value);}}}
     const m=monOf(c.sid),now=Date.now(),busy=c.status==='submitted'||c.status==='streaming';
     let ui_=-1;for(let i=msgs.length-1;i>=0;i--)if(msgs[i]?.role==='user'){ui_=i;break;}
     m.userAt=ui_>=0?uuidTime(String(msgs[ui_]?.id||''))||m.userAt||null:null; // 这一轮的用户消息时间（估算只认这之后开始的调用）
@@ -8029,8 +8556,9 @@ details.mc-card .section.credits{margin-top:12px}
     const stamp=[c.sid,cur?.id,cur?.n,cur?.think,cur?.tools,busy,m.flags.map(f=>f.key+f.status).join(','),m.autoKey].join('|');
     if(stamp!==mon.stamp){mon.stamp=stamp;mon.serial++;paint();}
   }
-  // 抽卡模块原有的“路由到 Thinking 时停止”（默认开）已处理“正文之后出现思考链”，自动停止不重复点击
-  function monGuardOn(){try{return (JSON.parse(localStorage.getItem('amp.native.gacha.settings.v1')||'{}')||{}).stopOnThinking!==false;}catch{return true;}}
+  // v1.11.86 抽卡设置「抽卡时：回复中途路由到 Thinking 就停止」只管抽卡轮次：抽卡轮次里“正文之后出现思考链”由它停，这里不重复点；
+  // 普通对话它不管，用户自己打开了「疑似换模型时自动停止」就由这里停
+  function monGuardOn(sid){try{if(!gacha.quietTurn(sid))return false;return (JSON.parse(localStorage.getItem('amp.native.gacha.settings.v1')||'{}')||{}).stopOnThinking!==false;}catch{return false;}}
   function monCurrentName(sid){const m=mon.bySid.get(sid);return m?.auto?.current?.name||catalog.entries.get(sid)?.name?.name||null;}
   const attnKeys=new Set();
   function monFlag(sid,f,busy){
@@ -8040,11 +8568,11 @@ details.mc-card .section.credits{margin-top:12px}
     if(f.certain&&!attnKeys.has(f.key)&&!gacha.quietTurn(sid)){attnKeys.add(f.key);if(attnKeys.size>300)attnKeys.clear();try{attn.raise(sid,'route','确认换了模型（路由切换）'+(f.from?'：原来是 '+short_(f.from):'')+(f.detail?' · '+f.detail:''));}catch{}}
     if(f.certain&&prefs.monAlert&&!mon.alerts.has(f.key)&&(mon.alerts.add(f.key),!gacha.quietTurn(sid))){try{routeAlert.show('换模型 · 路由切换',f.from||null,'出现思考链的新模型',f.detail,'drop');}catch{}}
     if(f.level==='strong'&&prefs.monAlert&&!mon.alerts.has(f.key)&&(mon.alerts.add(f.key),!gacha.quietTurn(sid))){const cur=monCurrentName(sid);try{routeAlert.show('疑似换模型 · 正在核对',null,f.text,(cur?'当前识别 '+short_(cur)+' · ':'')+f.detail,'drop');}catch{}}
-    if(f.level==='strong'&&prefs.monStop&&busy&&pageGenerating()&&!(f.kind==='think-mid'&&mon.bySid.get(sid)?.cur?.midText&&monGuardOn())){const b=document.querySelector('button[aria-label="Stop generating"],button[aria-label="Stop response"],button[aria-label="停止生成"]');if(b&&!b.disabled){b.click();log('warn','实时监控','已按设置自动停止生成',null,{sid});try{if(!gacha.quietTurn(sid))attn.raise(sid,'route','疑似换模型，已按设置自动停止生成：'+f.text);}catch{}}}
+    if(f.level==='strong'&&prefs.monStop&&busy&&pageGenerating()&&!errReload.finished(sid)&&!(f.kind==='think-mid'&&mon.bySid.get(sid)?.cur?.midText&&monGuardOn(sid))){const b=document.querySelector('button[aria-label="Stop generating"],button[aria-label="Stop response"],button[aria-label="停止生成"]');if(b&&!b.disabled){b.click();log('warn','实时监控','已按设置自动停止生成',null,{sid});try{if(!gacha.quietTurn(sid))attn.raise(sid,'route','疑似换模型，已按设置自动停止生成：'+f.text);}catch{}}}
   }
   // 事件驱动读取：首步 / 疑点最短 2.5 秒，普通新步骤 5 秒起、长回复逐步放慢到 16 秒；每轮最多 90 次，遵守限流冷却
   function monKick(sid,why){
-    if(stopped||!enabled||!prefs.monOn||Date.now()<cooldown)return;
+    if(stopped||!enabled||!prefs.monOn||Date.now()<cooldown||Date.now()<(+window.__AMP_TRACE_HOLD__||0))return;
     const r=forceRun(sid);if(!r)return;const n=r.liveReads||0;if(n>=90)return;
     const urgent=why==='anomaly'||why==='first'||why==='done',gap=urgent?2500:n<10?5000:n<30?9000:16000;
     const due=Math.max(Date.now()+(why==='step'?1500:400),(r.lastRead||0)+gap);
@@ -8128,7 +8656,8 @@ details.mc-card .section.credits{margin-top:12px}
   function forwardTap(handle,e){const host=handle.getRootNode().host||handle;const prev=host.style.pointerEvents;host.style.pointerEvents='none';try{const target=document.elementFromPoint(e.clientX,e.clientY);if(target&&target!==host)target.click();}finally{host.style.pointerEvents=prev;}}
   // Arena 左侧会话栏：shadcn 侧栏用 --sidebar-width 变量控制宽度，覆盖该变量即可调宽
   const sidebarOriginal=new WeakMap();
-  function findSidebar(){const wrapper=[...document.querySelectorAll('[style*="--sidebar-width"]')].find(e=>e.style.getPropertyValue('--sidebar-width'));if(!wrapper)return null;const peer=wrapper.querySelector('[data-side][data-state]'),panel=wrapper.querySelector('[data-sidebar="sidebar"]')||peer;return {wrapper,peer,panel};}
+  let sbWrapC=null;
+  function findSidebar(){const wrapper=sbWrapC&&sbWrapC.isConnected&&sbWrapC.style.getPropertyValue('--sidebar-width')?sbWrapC:(sbWrapC=[...document.querySelectorAll('[style*="--sidebar-width"]')].find(e=>e.style.getPropertyValue('--sidebar-width'))||null); /* v1.11.86 缓存侧栏外层 */if(!wrapper)return null;const peer=wrapper.querySelector('[data-side][data-state]'),panel=wrapper.querySelector('[data-sidebar="sidebar"]')||peer;return {wrapper,peer,panel};}
   function sidebarWidth(sb){const v=sb.wrapper.style.getPropertyValue('--sidebar-width').trim();let n=NaN;if(/px$/.test(v))n=parseFloat(v);else if(/rem$/.test(v))n=parseFloat(v)*(parseFloat(getComputedStyle(document.documentElement).fontSize)||16);return Number.isFinite(n)&&n>0?n:sb.panel?.getBoundingClientRect().width||240;}
   function applySidebar(w){const sb=findSidebar();if(!sb)return null;if(!sidebarOriginal.has(sb.wrapper))sidebarOriginal.set(sb.wrapper,sb.wrapper.style.getPropertyValue('--sidebar-width'));const target=w?w+'px':sidebarOriginal.get(sb.wrapper)||'';if(sb.wrapper.style.getPropertyValue('--sidebar-width')!==target)sb.wrapper.style.setProperty('--sidebar-width',target);return sb;}
   function mount(){
@@ -8148,7 +8677,7 @@ details.mc-card .section.credits{margin-top:12px}
       const mr=document.querySelector('main')?.getBoundingClientRect();if(!mr)return;const w=22,h=fold.offsetHeight||44,vw=document.documentElement.clientWidth||innerWidth;let x=vw-w;if(open){const r=host.getBoundingClientRect();if(r.width>0)x=r.left-w;}
       fold.style.left=Math.round(x)+'px';fold.style.top=Math.round(mr.top+Math.max(8,(mr.height-h)/2))+'px';}
     try{new ResizeObserver(()=>placeFold()).observe(host);}catch{}
-    const marks=new Map(),aliasCSS='[data-amp-local-title]{position:relative!important;color:transparent!important;display:block!important;flex:1 1 0%!important;min-width:0!important}[data-amp-local-title]>*{visibility:hidden!important}[data-amp-local-title]::after{content:attr(data-amp-short) / "";position:absolute;inset:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:hsl(var(--text-primary,24 6% 17%));pointer-events:none}[data-user-message-action][data-amp-sent]{display:flex!important;align-items:center;justify-content:flex-end;width:auto!important}[data-user-message-action][data-amp-sent]::before,[data-user-message-body-row][data-amp-sent]::after{content:attr(data-amp-sent);font-size:11px;line-height:1;font-family:inherit;font-variant-numeric:tabular-nums;color:hsl(var(--text-secondary,35 6% 45%));white-space:nowrap;pointer-events:none;opacity:.8}[data-user-message-action][data-amp-sent]::before{margin-right:6px}[data-user-message-body-row][data-amp-sent]::after{margin-top:2px}';
+    const marks=new Map(),aliasCSS='[data-amp-local-title]{position:relative!important;color:transparent!important;display:block!important;flex:1 1 0%!important;min-width:0!important}[data-amp-local-title]>*{visibility:hidden!important}[data-amp-local-title]::after{content:attr(data-amp-short) / "";position:absolute;inset:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:hsl(var(--text-primary,24 6% 17%));pointer-events:none}[data-user-message-action][data-amp-sent]{display:flex!important;align-items:center;justify-content:flex-end;width:auto!important}[data-user-message-action][data-amp-sent]::before,[data-user-message-body-row][data-amp-sent]::after{content:attr(data-amp-sent);font-size:11px;line-height:1;font-family:inherit;font-variant-numeric:tabular-nums;color:hsl(var(--text-secondary,35 6% 45%));white-space:nowrap;pointer-events:none;opacity:.8}[data-user-message-action][data-amp-sent]::before{margin-right:6px}[data-user-message-body-row][data-amp-sent]::after{margin-top:2px}/* v1.11.86 有备注的卡片：备注在前（卡片原字号），模型名在后（10.5px，比时间小字大一点，不加粗，灰色）；两段各自省略 */[data-amp-local-title][data-amp-sub]{display:flex!important;align-items:baseline;font-size:0!important;line-height:0!important;overflow:hidden}[data-amp-local-title][data-amp-sub]>*{display:none!important}[data-amp-local-title][data-amp-sub]::before{content:attr(data-amp-short) / \"\";flex:0 0 auto;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--amp-card-fs,14px);line-height:20px;color:hsl(var(--text-primary,24 6% 17%));pointer-events:none}[data-amp-local-title][data-amp-sub][data-amp-sub][data-amp-sub]::after{content:attr(data-amp-sub) / \"\";position:static!important;inset:auto!important;flex:0 1 auto;min-width:0;margin-left:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10.5px;line-height:20px;font-weight:400!important;letter-spacing:.01em;color:hsl(var(--text-tertiary,35 6% 38%))}a[data-amp-ctime] [data-amp-local-title][data-amp-sub]{padding-right:62px!important;box-sizing:border-box!important}a[data-amp-target-hit] [data-amp-local-title][data-amp-sub]::before{font-weight:650}a[data-amp-vip] [data-amp-local-title][data-amp-sub]::before,a[data-amp-current][data-amp-done] [data-amp-local-title][data-amp-sub]::before{font-weight:700}a[data-amp-current][data-amp-ink] [data-amp-local-title][data-amp-sub]::before{color:var(--amp-cur-fg,var(--amp-acc-fg,#fff))!important}a[data-amp-current][data-amp-ink] [data-amp-local-title][data-amp-sub][data-amp-sub]::after{color:var(--amp-cur-fg,var(--amp-acc-fg,#fff))!important;opacity:.78}';
     let aliasSheet,aliasStyle;try{aliasSheet=new CSSStyleSheet();aliasSheet.replaceSync(aliasCSS);document.adoptedStyleSheets=[...document.adoptedStyleSheets,aliasSheet];}catch{aliasStyle=el('style','',aliasCSS,document.head||document.body);}
     let tab='overview',historyView=null,turnKey=null,selected=null,moreOpen=false,boundPath=location.pathname,compact=false,expanded=false,bodyStamp=[],pickerStamp='',turnStamp='',toastTimer=0,logItems=[],logKey='',logSerial=0,cacheLimit=50,openSid=null,confirmLogClear=false,lastLayout='',lastCooling=false,seenRevision=0,rawFilter='all',rawSpan=null,rawSerial=0,usageInfo=null,usageAt=0,confirmRawClear=false,settingsSerial=0,sentMarks=new Map(),sentPending=new Set(),sentStamp='';
     // 深色 / 浅色切换按钮（模型信息改由底部余额栏 / 信息栏打开）。v1.11.81 电脑端放在 Arena“收起 / 展开工作区侧边栏”按钮左边（见 placeEntry）。
@@ -8163,7 +8692,7 @@ details.mc-card .section.credits{margin-top:12px}
     // 手机：长按输入框（约 0.3 秒，轻震一下）再往下拉 = 刷新页面（取代原来左上角的刷新按钮）。
     // 整页跟着手指往下，顶部圆环随下拉距离画满；画满后松开就刷新，没松手推回去就取消。
     // 输入框有未发送内容 / 待发附件 / 抽卡进行中 / 本轮还在进行时圆环变橙色，并提示松开后的后果。
-    function reloadRisk(){let risky=false,turn=false;try{risky=errReload.draft()||errReload.gachaBusy()||[...document.querySelectorAll('main button[aria-label^="Remove "]')].some(b=>!b.closest('[role="log"]')&&b.getClientRects().length>0);turn=!risky&&!!errReload.sidNow()&&errReload.turnBusy(true);}catch{}return {risky,turn};}
+    function reloadRisk(){let risky=false,turn=false;try{risky=errReload.draft()||errReload.gachaBusy()||[...document.querySelectorAll('main button[aria-label^="Remove "]')].some(b=>!b.closest('[role="log"]')&&b.getClientRects().length>0);turn=!!errReload.sidNow()&&errReload.turnBusy(true);}catch{}return {risky,turn};}
     const pull=(()=>{
       const HOLD=320,SLOP=10,FULL=90,R=10,C=+(2*Math.PI*R).toFixed(2),bound=new WeakSet();
       const ph=document.createElement('div');ph.id='amp-pull';ph.hidden=true;const pr=ph.attachShadow({mode:'open'});
@@ -8184,19 +8713,20 @@ details.mc-card .section.credits{margin-top:12px}
       function paint(){raf=0;if(!st||!st.pulling)return;const d=st.dy,p=Math.min(1,d/FULL),y=Math.min(140,damp(d)),b=document.body;if(b){b.style.transition='none';b.style.transform='translateY('+y.toFixed(1)+'px)';}
         w.style.transition='none';w.style.opacity=String(Math.min(1,0.25+p*1.2));w.style.transform='translate(-50%,'+(y/2-18).toFixed(1)+'px)';arc.setAttribute('stroke-dashoffset',(C*(1-p)).toFixed(2));
         const armed=p>=1;if(armed!==st.armed){st.armed=armed;w.toggleAttribute('data-armed',armed);if(armed){try{navigator.vibrate?.(12);}catch{}}}
-        const r=st.risk||{};w.toggleAttribute('data-risky',!!(r.risky||r.turn));const t=!armed?'下拉刷新':r.risky?'松开刷新 · 未发送内容会丢失':r.turn?'松开刷新 · 本轮还在进行':'松开刷新';if(lbl.textContent!==t)lbl.textContent=t;}
+        const r=st.risk||{};w.toggleAttribute('data-risky',!!(r.risky||r.turn));const t=!armed?'下拉刷新':r.turn?'这一轮还在进行，完成后再刷新':r.risky?'松开刷新 · 未发送内容会丢失':'松开刷新';if(lbl.textContent!==t)lbl.textContent=t;}
       function frame(){if(!raf)raf=requestAnimationFrame(paint);}
       function clear(){const b=document.body;if(b){b.style.removeProperty('transform');b.style.removeProperty('transition');}w.removeAttribute('data-armed');w.removeAttribute('data-risky');w.removeAttribute('data-spin');ph.hidden=true;}
       function settle(){const b=document.body;clearTimeout(resetTimer);document.documentElement.removeAttribute('data-amp-pulling');if(b){b.style.transition='transform .3s cubic-bezier(.22,.9,.3,1)';b.style.transform='translateY(0px)';}w.style.transition='opacity .2s ease,transform .3s cubic-bezier(.22,.9,.3,1)';w.style.opacity='0';w.style.transform='translate(-50%,-60px)';resetTimer=setTimeout(clear,320);}
       function cancel(){if(!st)return;const s=st;st=null;clearTimeout(s.timer);if(s.pulling)settle();}
-      function fire(){document.documentElement.removeAttribute('data-amp-pulling');w.setAttribute('data-spin','');lbl.textContent='正在刷新…';const b=document.body;if(b){b.style.transition='transform .2s ease';b.style.transform='translateY('+(FULL*0.7).toFixed(1)+'px)';}w.style.transition='transform .2s ease';w.style.transform='translate(-50%,'+(FULL*0.35-18).toFixed(1)+'px)';setTimeout(()=>{try{errReload.reloadNow(errReload.sidNow(),false);}catch{location.reload();}},160);}
+      function fire(){document.documentElement.removeAttribute('data-amp-pulling');w.setAttribute('data-spin','');lbl.textContent='正在刷新…';const b=document.body;if(b){b.style.transition='transform .2s ease';b.style.transform='translateY('+(FULL*0.7).toFixed(1)+'px)';}w.style.transition='transform .2s ease';w.style.transform='translate(-50%,'+(FULL*0.35-18).toFixed(1)+'px)';setTimeout(()=>{let p=null;try{p=errReload.reloadNow(errReload.sidNow(),false,false,{why:'下拉刷新'});}catch{location.reload();return;}if(typeof p==='string'){try{errReload.toast('没有刷新：'+p,2600);}catch{}settle();return;}if(p&&typeof p.then==='function')p.then(()=>settle(),()=>settle());},160);} // v1.11.86 只重新载入对话时不整页刷新：载入完把下拉的界面收回
       function onStart(e){if(st&&Date.now()-st.t0>8000)cancel();if(st||!prefs.pullRefresh||innerWidth>=768||e.touches.length!==1)return;if(e.target?.closest?.('button,a,select,input,label,[role="button"],[role="menu"],[role="menuitem"],[role="listbox"],[role="option"],[role="combobox"]'))return;const p=e.touches[0];
         st={t0:Date.now(),x:p.clientX,y:p.clientY,active:false,pulling:false,armed:false,dy:0,risk:null,timer:setTimeout(()=>{if(!st)return;st.active=true;st.risk=reloadRisk();try{navigator.vibrate?.(8);}catch{}},HOLD)};}
       function onMove(e){if(!st)return;const p=e.touches[0];if(!p)return;const dx=p.clientX-st.x,dy=p.clientY-st.y;
         if(!st.active){if(Math.hypot(dx,dy)>SLOP)cancel();return;}
         if(!st.pulling){if(dy>6&&dy>Math.abs(dx)){st.pulling=true;st.y0=p.clientY;clearTimeout(resetTimer);if(!ph.isConnected)document.documentElement.append(ph);ph.hidden=false;document.documentElement.setAttribute('data-amp-pulling','');try{getSelection()?.removeAllRanges();}catch{}}else{if(Math.hypot(dx,dy)>SLOP*2)cancel();return;}}
         if(e.cancelable)e.preventDefault();st.dy=Math.max(0,p.clientY-st.y0);frame();}
-      function onEnd(e){if(!st)return;const s=st;st=null;clearTimeout(s.timer);if(!s.pulling)return;if(e.cancelable)e.preventDefault();if(s.armed)fire();else settle();}
+      // v1.11.86 这一轮还在进行时不刷新（服务器上还在跑，刷新可能丢掉正在显示的内容）：松开只提示、收回
+      function onEnd(e){if(!st)return;const s=st;st=null;clearTimeout(s.timer);if(!s.pulling)return;if(e.cancelable)e.preventDefault();if(s.armed){const r=reloadRisk();if(r.turn){try{errReload.toast('这一轮还在进行，完成后再刷新',2600);}catch{}settle();return;}fire();}else settle();}
       function onCtx(e){if(!st)return;if(st.pulling){e.preventDefault();return;}cancel();}
       function card(){const m=document.querySelector('main');if(!m)return null;const ed=[...m.querySelectorAll('div[contenteditable="true"],textarea')].filter(x=>!x.closest('[role="log"]')&&x.getClientRects().length).pop();if(!ed)return null;let c=ed;for(let i=0;i<7&&c.parentElement&&c.parentElement!==m;i++){const cs=getComputedStyle(c);if(parseFloat(cs.borderTopWidth)>=1&&parseFloat(cs.borderTopLeftRadius)>=8)return c;c=c.parentElement;}return ed;}
       function bind(){if(!prefs.pullRefresh||innerWidth>=768)return;const c=card();if(!c||bound.has(c))return;bound.add(c);c.addEventListener('touchstart',onStart,{passive:true});c.addEventListener('touchmove',onMove,{passive:false});c.addEventListener('touchend',onEnd,{passive:false});c.addEventListener('touchcancel',()=>cancel(),{passive:true});c.addEventListener('contextmenu',onCtx);}
@@ -8259,6 +8789,7 @@ details.mc-card .section.credits{margin-top:12px}
       return '@media (min-width:768px){'+out+'}';
     }catch{return '';}})();
     const deskGemStyle=el('style','',deskGemCss,document.head||document.body);
+    el('style','','/* v1.11.86 左侧栏底部账号头像：额度圆环（conic-gradient，和右上角头像同一套颜色），中间留 1px 缝 */[data-amp-qring]{box-sizing:border-box!important;width:30px!important;height:30px!important;min-width:30px!important;padding:3px!important;border-radius:50%!important;background:conic-gradient(var(--amp-qc,#2fa55a) calc(var(--amp-q,0) * 360deg),hsl(var(--border-medium,30 9% 87%)) 0)!important;-webkit-mask:radial-gradient(closest-side,#000 calc(100% - 3.05px),transparent calc(100% - 3px) calc(100% - 2.05px),#000 calc(100% - 2px));mask:radial-gradient(closest-side,#000 calc(100% - 3.05px),transparent calc(100% - 3px) calc(100% - 2.05px),#000 calc(100% - 2px))}[data-amp-qring]>*{border-radius:50%!important}/* v1.11.86 Leaderboard 收进左上角 Arena logo 的下拉菜单：侧栏里原来那一项藏起来，给对话卡片腾地方 */html[data-amp-lblogo] [data-sidebar="menu-item"]:has(> a[data-sidebar="menu-button"][href^="/leaderboard"]){display:none!important}[data-amp-lb]{cursor:pointer}[data-amp-lb]:hover,[data-amp-lb][data-highlighted]{background:hsl(var(--surface-tertiary,33 31% 94%))!important}',document.head||document.body);document.documentElement.toggleAttribute('data-amp-lblogo',prefs.lbLogo!==false);
     // v1.11.82 输入框里的模式按钮（Battle / Agent / Side by Side / Direct）一律不显示：页面一出来就按选择器藏好（以前要等挪进左侧栏成功才藏，
     // 侧栏收成图标栏、刚打开页面、换页面时都会冒出来），所有页面都一样。模式切换在左侧栏：展开时在 logo 右边；收成图标栏时在图标栏里（只显示图标）；
     // 侧栏整个藏起来时放在打开侧栏的按钮旁边。选择器：紧跟在 + 后面的下拉框、+ 后面带“sm:inline 模式名”结构的下拉框，以及脚本按文字认出来打过标记的。
@@ -8301,17 +8832,17 @@ details.mc-card .section.credits{margin-top:12px}
     // v1.11.82 侧栏收成图标栏时放进图标栏（只显示图标），侧栏整个藏起来时放在打开侧栏的按钮旁边；输入框里的原按钮始终藏着（见 MODE_SEL）
     const deskGemOn=()=>!!prefs.deskGem&&innerWidth>=768&&/^\/agent(?:\/|$)/.test(location.pathname);
     const MODE_TXT=/^(?:(?:Battle|Agent|Side by Side|Direct)\b|对战|并排|直接|智能体)/i;
-    const modeTrigger=()=>{let t=document.querySelector('main button[aria-label="Add files and connections"] ~ button[role="combobox"]');
-      if(!t)t=[...document.querySelectorAll('main button[role="combobox"]')].find(b=>!b.closest('[role="log"]')&&MODE_TXT.test((b.textContent||'').trim()))||null;
+    const modeTrigger=()=>{let t=domQ.one('modeTrig',()=>document.querySelector('main button[aria-label="Add files and connections"] ~ button[role="combobox"]'));
+      if(!t)t=domQ.all('mainCombos',()=>document.querySelectorAll('main button[role="combobox"]')).find(b=>!b.closest('[role="log"]')&&MODE_TXT.test((b.textContent||'').trim()))||null;
       if(t&&!t.hasAttribute('data-amp-mode-src'))t.setAttribute('data-amp-mode-src','');return t;};
-    function syncMode(){let row=null,desk=false,box=null,inline=null;const mob=gemOn()?document.querySelector('[role="dialog"][data-mobile="true"] [data-sidebar="header"] > div'):null,want=modeSideOn();
+    function syncMode(){let row=null,desk=false,box=null,inline=null;const mob=gemOn()?domQ.one('mobSideHdr',()=>document.querySelector('[role="dialog"][data-mobile="true"] [data-sidebar="header"] > div')):null,want=modeSideOn();
       if(want||gemOn())modeTrigger(); // 先给输入框里的原按钮打上标记，让它从这一帧起就藏好
       if(mob)row=mob;else if(want){
-        const side=[...document.querySelectorAll('[data-sidebar="sidebar"]:not([data-mobile="true"])')].find(x=>{const b=x.getBoundingClientRect();return b.width>=24&&b.height>=160&&b.right>8&&b.left<innerWidth/2;})||null;
+        const side=domQ.all('deskSides',()=>document.querySelectorAll('[data-sidebar="sidebar"]:not([data-mobile="true"])')).find(x=>{const b=x.getBoundingClientRect();return b.width>=24&&b.height>=160&&b.right>8&&b.left<innerWidth/2;})||null;
         if(side){const st=side.closest('[data-state]')?.getAttribute('data-state');
           if(st!=='collapsed'&&side.getBoundingClientRect().width>=150)row=[...side.querySelectorAll('[data-sidebar="header"] > div')].find(r=>{const b=r.getBoundingClientRect();return b.width>=150&&b.height>0;})||null;
           if(!row)box=side;}
-        else inline=[...document.querySelectorAll('main button[aria-label="Open sidebar"],main button[aria-label="Toggle Sidebar"],main button[data-sidebar="trigger"]')].find(b=>b.getBoundingClientRect().width>0)||null;
+        else inline=domQ.all('sideTriggers',()=>document.querySelectorAll('main button[aria-label="Open sidebar"],main button[aria-label="Toggle Sidebar"],main button[data-sidebar="trigger"]')).find(b=>b.getBoundingClientRect().width>0)||null;
         desk=!!(row||box||inline);}
       const spot=row||box||inline,trig=spot?modeTrigger():null;document.documentElement.toggleAttribute('data-amp-mode-moved',!!(desk&&trig));
       if(!spot||!trig){if(modeHost.isConnected)modeHost.remove();return;}
@@ -8330,6 +8861,41 @@ details.mc-card .section.credits{margin-top:12px}
           setTimeout(()=>{if(t.getAttribute('aria-expanded')!=='true')t.click();},80);let n=0;const iv=setInterval(()=>{n++;if(t.getAttribute('aria-expanded')!=='true'&&n>3||n>300||!t.isConnected){clearInterval(iv);d.removeAttribute('data-amp-mode-open');}},200);});return;}
       const hb=document.querySelector('[role="dialog"][data-mobile="true"] [data-sidebar="header"] > div > button');if(hb)hb.click();else document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true}));
       setTimeout(()=>{const t=modeTrigger();if(!t)return;const d=document.documentElement;d.setAttribute('data-amp-mode-open','');requestAnimationFrame(()=>{t.click();let n=0;const iv=setInterval(()=>{n++;if(t.getAttribute('aria-expanded')!=='true'&&n>2||n>300||!t.isConnected){clearInterval(iv);d.removeAttribute('data-amp-mode-open');}},200);});},420);}
+    // v1.11.86 左侧栏底部的账号头像也加额度圆环（和右上角头像同一套：美金剩余 / 总额度，≥20% 绿色，<20% 橙色，<5% 或超限红色）
+    function paintSideRing(){
+      const un=usdNow(),ratio=un&&un.allowanceUsd>0&&finiteNum(un.balanceRemainingUsd)?Math.max(0,Math.min(1,un.balanceRemainingUsd/un.allowanceUsd)):null;
+      const list=domQ.all('ringSpans',()=>document.querySelectorAll('[data-sidebar="footer"] button span.rounded-full.overflow-hidden,[data-sidebar="sidebar"] button[aria-label="User profile"] span.rounded-full.overflow-hidden'));if(!list.length)return;
+      const level=ratio===null?'':un.overLimit||ratio<0.05?'crit':ratio<0.2?'low':'ok',col=level==='crit'?'#d9453b':level==='low'?'#e38a1e':'#2fa55a',q=ratio===null?'':ratio.toFixed(3);
+      const tip=ratio===null?'':'美金余额 '+(un.src==='pulse'?'≈':'')+'$'+un.balanceRemainingUsd.toFixed(2)+' / $'+un.allowanceUsd.toFixed(2)+'（'+Math.round(ratio*100)+'%）';
+      for(const sp of list){
+        if(sp.closest('[data-amp-qring]')&&!sp.hasAttribute('data-amp-qring'))continue; // 圆环里面的头像图层
+        if(!level){if(sp.hasAttribute('data-amp-qring')){sp.removeAttribute('data-amp-qring');sp.style.removeProperty('--amp-q');sp.style.removeProperty('--amp-qc');sp.removeAttribute('title');}continue;}
+        if(sp.getAttribute('data-amp-qring')!==level)sp.setAttribute('data-amp-qring',level);
+        if(sp.style.getPropertyValue('--amp-q')!==q)sp.style.setProperty('--amp-q',q);
+        if(sp.style.getPropertyValue('--amp-qc')!==col)sp.style.setProperty('--amp-qc',col);
+        if(sp.getAttribute('title')!==tip)sp.setAttribute('title',tip);
+      }
+    }
+    // v1.11.86 Leaderboard 收进左上角 Arena logo 的下拉菜单（About Us / How it Works 那个菜单）最上面；侧栏里原来那一项藏起来（见样式）
+    const lbNative=()=>document.querySelector('[data-sidebar="menu-item"] > a[data-sidebar="menu-button"][href^="/leaderboard"]');
+    function lbGo(href,menu){
+      try{(menu||document).dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true,cancelable:true}));}catch{}
+      setTimeout(()=>{const nat=lbNative();try{if(nat&&nat.isConnected){nat.click();return;}}catch{}try{const r=window.next?.router;if(typeof r?.push==='function'){r.push(href);return;}}catch{}location.assign(href);},0);
+    }
+    function lbInject(menu){
+      if(prefs.lbLogo===false||!menu||menu.querySelector('[data-amp-lb]'))return;
+      const about=menu.querySelector('a[href="/company/about"]');if(!about)return; // 只认 Arena logo 的菜单
+      const nat=lbNative(),href=nat?.getAttribute('href')||'/leaderboard',item=about.cloneNode(true);
+      item.setAttribute('data-amp-lb','');item.removeAttribute('data-highlighted');item.removeAttribute('data-radix-collection-item');item.removeAttribute('id');item.setAttribute('href',href);item.removeAttribute('target');item.removeAttribute('rel');item.setAttribute('tabindex','-1');
+      const oldIc=item.querySelector('svg'),newIc=nat?.querySelector('svg')?.cloneNode(true);if(oldIc&&newIc){newIc.setAttribute('class',oldIc.getAttribute('class')||'h-4 w-4');newIc.removeAttribute('width');newIc.removeAttribute('height');oldIc.replaceWith(newIc);}
+      for(const n of [...item.childNodes])if(n.nodeType===3)n.remove();
+      item.append('Leaderboard');
+      item.addEventListener('click',e=>{if(e.button||e.metaKey||e.ctrlKey||e.shiftKey)return;e.preventDefault();e.stopPropagation();lbGo(href,menu);});
+      item.addEventListener('pointerenter',()=>item.setAttribute('data-highlighted',''));item.addEventListener('pointerleave',()=>item.removeAttribute('data-highlighted'));
+      const grp=about.closest('[role="group"]')||about.parentElement;grp.insertBefore(item,grp.firstChild);
+    }
+    const lbMo=new MutationObserver(recs=>{if(prefs.lbLogo===false)return;for(const r of recs)for(const n of r.addedNodes){if(n.nodeType!==1)continue;const m=n.matches?.('[role="menu"]')?n:n.querySelector?.('[role="menu"]');if(m)lbInject(m);}});let lbMoOn=false;
+    function lbSync(){document.documentElement.toggleAttribute('data-amp-lblogo',prefs.lbLogo!==false);if(!lbMoOn&&document.body){lbMoOn=true;lbMo.observe(document.body,{childList:true});}}
     // v1.11.70 手机端工作区：顶栏不再单独放工作区按钮，收进右侧屏幕边缘的小把手——向左拖出来（或轻点）打开，上下拖动换位置（会记住）。
     // 原生按钮只是视觉隐藏（保留 1px 给顶栏定位），打开时照样点它；工作区打开 / 有弹窗 / 正在输入时把手自动让开；新对话还没有工作区时把手变灰。
     const WS_SEL=['Open workspace','Toggle workspace sidebar','Close workspace','打开工作区','切换工作区侧边栏','关闭工作区'].map(x=>'main button[aria-label="'+x+'"]').join(','),WS_OPEN=64;
@@ -8406,8 +8972,8 @@ details.mc-card .section.credits{margin-top:12px}
     // v1.11.75 抽屉 / Sheet 插在页面任何位置都能在首帧前接管（MutationObserver 回调在绘制前执行）：观察 body 整个子树，
     // 插入的节点本身是对话框 / vaul 抽屉 / 遮罩就立即扫描；只有门户层（body、body 的直接子节点、#root-portal-target）才往里 querySelector
     const wsHit=n=>n.getAttribute('role')==='dialog'||n.hasAttribute('data-vaul-drawer')||n.hasAttribute('data-vaul-overlay');
-    const wsMo=new MutationObserver(recs=>{const bd=document.body;for(const r of recs){const t=r.target,top=t===bd||t.parentNode===bd||t.id==='root-portal-target';for(const n of r.addedNodes)if(n.nodeType===1&&(wsHit(n)||top&&n.querySelector?.('[role="dialog"],[data-vaul-drawer]'))){wsScan();return;}}if(wsPend)wsScan();});
-    function wsWatch(){if(wsMoT||!document.body)return;wsMoT=1;try{wsMo.observe(document.body,{childList:true,subtree:true});const t=document.getElementById('root-portal-target');if(t&&!document.body.contains(t))wsMo.observe(t,{childList:true,subtree:true});}catch{}}
+    const wsMoFn=(recs=>{const bd=document.body;for(const r of recs){const t=r.target,top=t===bd||t.parentNode===bd||t.id==='root-portal-target';for(const n of r.addedNodes)if(n.nodeType===1&&(wsHit(n)||top&&n.querySelector?.('[role="dialog"],[data-vaul-drawer]'))){wsScan();return;}}if(wsPend)wsScan();});
+    function wsWatch(){if(wsMoT||!document.body)return;wsMoT=1;domHub.on(recs=>{try{wsMoFn(recs);}catch{}});} // v1.11.86 共用观察器（整页，含 #root-portal-target；对话区里的变化已经滤掉）
     function wsPlace(c){const h=innerHeight;c=Math.min(h*0.88,Math.max(h*0.12,c));wsHost.style.setProperty('--y',Math.round(c)+'px');return c;}
     function wsPull(dx,settle){const W=wsW(),w=Math.round(Math.max(0,dx<=W?dx:W+Math.min(24,(dx-W)*0.2)));wsHost.style.setProperty('--w',w+'px');wsHost.style.setProperty('--k',String(Math.min(1,w/W).toFixed(3)));
       const ready=w>=WS_OPEN&&!wsOff(wsBtn);if(ready!==wsHost.hasAttribute('data-ready')){wsHost.toggleAttribute('data-ready',ready);if(ready&&wsDrag)try{navigator.vibrate?.(8);}catch{}}
@@ -8552,6 +9118,7 @@ details.mc-card .section.credits{margin-top:12px}
     const logBar=el('div','logbar',null,panel),controls=el('div','log-controls',null,logBar);el('h3','','日志详细程度',controls);const level=el('select','selector',null,controls);level.setAttribute('aria-label','日志详细程度');for(const [id,text]of [['info','普通'],['detail','详细'],['debug','调试']]){const o=el('option','',text,level);o.value=id;}level.value=pref.level;level.onchange=()=>{pref.level=level.value;persist();bodyStamp=[];render();};
     const actions=el('div','log-actions',null,logBar),read=button(actions,'重读记录','重新读取当前运行记录',refresh);const clearLogs=button(actions,'清理日志','清理全部本地日志（不影响编号与缓存）',async()=>{if(!confirmLogClear){confirmLogClear=true;render();return;}await catalog.clearLogs();confirmLogClear=false;logKey='';bodyStamp=[];render();}),cancelClear=button(actions,'取消','取消清理日志',()=>{confirmLogClear=false;render();});
     const body=el('div','body',null,panel);
+    let bodyScroll=0;body.addEventListener('scroll',()=>{bodyScroll=body.scrollTop;},{passive:true}); // v1.11.86 性能：重画时不再现读 scrollTop（流式输出时会强制整页排版）
     // 左右滑动切换页面（触屏）：横向位移 > 56px 且明显大于纵向；从可横向滚动的元素、输入框里开始的手势不处理
     {let sw=null;const skip=t=>{for(let n=t;n&&n!==body;n=n.parentElement){if(n.matches?.('input,textarea,select,[contenteditable],[data-noswipe],pre'))return true;if(n.scrollWidth>n.clientWidth+4&&/(auto|scroll)/.test(getComputedStyle(n).overflowX))return true;}return false;};
       const reset=()=>{body.style.transition='transform .2s ease,opacity .2s ease';body.style.transform='';body.style.opacity='';setTimeout(()=>{body.style.transition='';},220);};
@@ -8565,7 +9132,7 @@ details.mc-card .section.credits{margin-top:12px}
     // 版本 / 更新 / 正式版·测试版入口：原来挤在底部，现在放“关于”页（节点常驻，切到“关于”时挂进页面）
     const aboutBox=el('div','upds about-upds');let aboutChannel='';
     async function exportView(){if(tab==='logs'||tab==='cache'){const all=await catalog.readAllLogs();download({tool:'Arena Native Suite',version:VERSION,at:new Date().toISOString(),kind:'logs',logs:all},'amp-lite-logs-'+Date.now()+'.json');return;}const data=exported();data.logs=await catalog.readLogs(data.sid);if(tab==='overview'){const sid=sidOf(location.href);data.monitor={verdict:monState(sid),flags:mon.bySid.get(sid)?.flags||[],oneClick:force.bySid.get(sid)||null,legacy:legacyDisplay.snapshot()};}download(data,'amp-lite-'+(data.sid||'export').slice(0,8)+'-'+Date.now()+'.json');}
-    ;(()=>{const cmp=(x,y)=>{const p=String(x).split('.').map(Number),q=String(y).split('.').map(Number);for(let i=0;i<Math.max(p.length,q.length);i++){const d=(p[i]||0)-(q[i]||0);if(d)return d>0?1:-1;}return 0;};const box=aboutBox;const BASE='https://raw.githubusercontent.com/755287249/-/main/test/';const mk=(label,file,getCur)=>{const RAW=BASE+file,CK='amp.native.upd.'+file;let latest=null,busy=false,fresh=null;const ub=el('button','footer-note upd','',box);ub.type='button';ub.dataset.self='1';const paint=(msg)=>{const cur=getCur();ub.dataset.new=cur&&latest&&cmp(latest,cur)>0?'1':'';ub.dataset.miss=cur?'':'1';ub.title=(cur?label+' 当前 v'+cur:label+' 未检测到（未安装或未启用）')+(latest?'，GitHub 最新 v'+latest+(ub.dataset.src?'（'+ub.dataset.src+'）':''):'')+'。点击'+(ub.dataset.new||!cur?'打开安装页':'重新检查');const old=!cur&&file.includes('Switch')&&!!document.querySelector('[data-amp-switch],[data-amp-login],[data-amp-switcher],#amp-switcher-css');const ahead=cur&&latest&&cmp(cur,latest)>0;ub.textContent=label+' '+(msg||(!cur?(old?'旧版（≤1.0.17）· 安装 v'+(latest||'新版'):latest?'未检测到 · 安装 v'+latest:'未检测到 · 安装'):ub.dataset.new?'v'+cur+' → v'+latest+' · 更新':ahead?'v'+cur+' · GitHub 仍是 v'+latest:latest?'v'+cur+' · 已是最新':'v'+cur+' · 检查更新'));if(!cur&&!msg)ub.title=label+' 未检测到版本号：可能是 v1.0.17 及更早的版本（不会上报版本），或未安装/未启用。安装最新版后即可显示。'+(latest?'GitHub 最新 v'+latest+'。':'');if(ahead&&!msg)ub.title=label+' 本地 v'+cur+' 比 GitHub 上的 v'+latest+' 新，请把新版上传到 GitHub。';};const check=async(force)=>{if(busy)return;try{const c=JSON.parse(localStorage.getItem(CK)||'null');if(!force&&c&&Date.now()-c.at<5*60e3&&!(getCur()&&cmp(getCur(),c.v)>0)){latest=c.v;paint();return;}}catch{}busy=true;paint('检查中…');try{const F=window.__ampNativeFetch||fetch,vOf=t=>(String(t).match(/\/\/\s*@version\s+([\d.]+)/)||[])[1]||null,errs=[];let best=null,src='';const take=(v,from)=>{if(v&&(!best||cmp(v,best)>0)){best=v;src=from;}};
+    ;(()=>{const cmp=(x,y)=>{const p=String(x).split('.').map(Number),q=String(y).split('.').map(Number);for(let i=0;i<Math.max(p.length,q.length);i++){const d=(p[i]||0)-(q[i]||0);if(d)return d>0?1:-1;}return 0;};const box=aboutBox;const BASE='https://raw.githubusercontent.com/755287249/-/main/';const mk=(label,file,getCur)=>{const RAW=BASE+file,CK='amp.native.upd.'+file;let latest=null,busy=false,fresh=null;const ub=el('button','footer-note upd','',box);ub.type='button';ub.dataset.self='1';const paint=(msg)=>{const cur=getCur();ub.dataset.new=cur&&latest&&cmp(latest,cur)>0?'1':'';ub.dataset.miss=cur?'':'1';ub.title=(cur?label+' 当前 v'+cur:label+' 未检测到（未安装或未启用）')+(latest?'，GitHub 最新 v'+latest+(ub.dataset.src?'（'+ub.dataset.src+'）':''):'')+'。点击'+(ub.dataset.new||!cur?'打开安装页':'重新检查');const old=!cur&&file.includes('Switch')&&!!document.querySelector('[data-amp-switch],[data-amp-login],[data-amp-switcher],#amp-switcher-css');const ahead=cur&&latest&&cmp(cur,latest)>0;ub.textContent=label+' '+(msg||(!cur?(old?'旧版（≤1.0.17）· 安装 v'+(latest||'新版'):latest?'未检测到 · 安装 v'+latest:'未检测到 · 安装'):ub.dataset.new?'v'+cur+' → v'+latest+' · 更新':ahead?'v'+cur+' · GitHub 仍是 v'+latest:latest?'v'+cur+' · 已是最新':'v'+cur+' · 检查更新'));if(!cur&&!msg)ub.title=label+' 未检测到版本号：可能是 v1.0.17 及更早的版本（不会上报版本），或未安装/未启用。安装最新版后即可显示。'+(latest?'GitHub 最新 v'+latest+'。':'');if(ahead&&!msg)ub.title=label+' 本地 v'+cur+' 比 GitHub 上的 v'+latest+' 新，请把新版上传到 GitHub。';};const check=async(force)=>{if(busy)return;try{const c=JSON.parse(localStorage.getItem(CK)||'null');if(!force&&c&&Date.now()-c.at<3600e3&&!(getCur()&&cmp(getCur(),c.v)>0)){latest=c.v;paint();return;}}catch{}busy=true;paint('检查中…');try{const F=window.__ampNativeFetch||fetch,vOf=t=>(String(t).match(/\/\/\s*@version\s+([\d.]+)/)||[])[1]||null,errs=[];let best=null,src='';const take=(v,from)=>{if(v&&(!best||cmp(v,best)>0)){best=v;src=from;}};
           // 1) GitHub API 查这个文件最新提交的 sha，再按 sha 取原文（路径唯一，不会被 CDN/镜像缓存）；2) 兜底直接取 main
           try{const c=await F.call(window,'https://api.github.com/repos/755287249/-/commits?sha=main&per_page=1&path='+encodeURIComponent((/\/test\/$/.test(BASE)?'test/':'')+file),{cache:'no-store',credentials:'omit'});if(!c.ok)throw new Error('API HTTP '+c.status);const sha=(await c.json())?.[0]?.sha;if(!sha)throw new Error('API 无提交');const r=await F.call(window,BASE.replace('/main/','/'+sha+'/')+file,{cache:'no-store',credentials:'omit',headers:{Range:'bytes=0-4095'}});if(!r.ok)throw new Error('sha HTTP '+r.status);take(vOf(await r.text()),'commit '+sha.slice(0,7));fresh=BASE.replace('/main/','/'+sha+'/')+file;}catch(e){errs.push(e.message||String(e));}
           try{const r=await F.call(window,RAW+'?t='+Date.now(),{cache:'no-store',credentials:'omit',headers:{Range:'bytes=0-4095'}});if(!r.ok)throw new Error('raw HTTP '+r.status);take(vOf(await r.text()),'raw');}catch(e){errs.push(e.message||String(e));}
@@ -8610,7 +9177,7 @@ details.mc-card .section.credits{margin-top:12px}
     const openInfo=new Set();
     function info(anchor,key,text,after){if(!text||!anchor)return null;const on=openInfo.has(key),b=el('button','info-btn',null,anchor);b.type='button';b.title='说明';b.setAttribute('aria-label','说明');b.setAttribute('aria-expanded',String(on));b.dataset.focus='i:'+key;icon('info',b);const p=el('div','info-text',String(text));p.hidden=!on;let ref=after||anchor;while(ref.nextElementSibling&&ref.nextElementSibling.classList.contains('info-text'))ref=ref.nextElementSibling;ref.after(p);b.onclick=e=>{e.preventDefault();e.stopPropagation();const next=!openInfo.has(key);if(next)openInfo.add(key);else openInfo.delete(key);p.hidden=!next;b.setAttribute('aria-expanded',String(next));};return b;}
     async function copy(text,what='型号'){try{await navigator.clipboard.writeText(String(text));say('已复制'+what);}catch{say('复制不可用，请手动选中复制');}}
-    function restoreMark(a,m){m.span.removeAttribute('data-amp-local-title');m.span.removeAttribute('data-amp-short');if(m.tip!==undefined){if(m.tip===null)a.removeAttribute('title');else a.setAttribute('title',m.tip);}if(m.description===null)a.removeAttribute('aria-description');else a.setAttribute('aria-description',m.description);}
+    function restoreMark(a,m){m.span.removeAttribute('data-amp-local-title');m.span.removeAttribute('data-amp-short');m.span.removeAttribute('data-amp-sub');if(m.tip!==undefined){if(m.tip===null)a.removeAttribute('title');else a.setAttribute('title',m.tip);}if(m.description===null)a.removeAttribute('aria-description');else a.setAttribute('aria-description',m.description);}
     // 自定义/代号型号（如 dxzui）本身看不出厂商：若响应型号/内部名已识别出厂商，就显示成 dxzui-Claude。
     // 显示完整识别型号：dxzui + claude-opus-5-5 → dxzui-claude-opus-5-5（内部名优先，其次响应型号）。
     function modelOf(sid,record){if(record?.vmodel)return record.vmodel;const snap=catalog.snapshots.get(sid)||(sid===sidOf(location.href)?liveView(sid):null);if(!snap)return '';const c=[...servingCalls(snap)].reverse().find(c=>brand.of(c.internal)||brand.of(c.response));return c?(brand.of(c.internal)?c.internal:c.response):((snap.internalNames||[]).find(n=>brand.of(n))||'');}
@@ -8622,13 +9189,16 @@ details.mc-card .section.credits{margin-top:12px}
     function shortModel(n){n=String(n||'');if(!brand.of(n))return dedupeName(n,true);const m=n.match(/^(?:[\w.-]+\/)?(?:gpt|chatgpt|claude|gemini|grok|kimi|qwen|deepseek|mimo|glm|llama|mistral|doubao|minimax)(?:[-_ ]+|(?=\d))(.+)$/i);let r=m?m[1]:(n.match(/^[\w.-]+\/(.+)$/)||[])[1];if(!r||!/[\w]/.test(r))return dedupeName(n);if(/^k\d/.test(r))r='K'+r.slice(1);return dedupeName(r);}
     // v1.11.83 备注命名里的“模型”段：和左侧卡片显示的名字同一来源（识别到的内部名 + 厂商），抽卡刚定名的用抽卡的名字
     noteHub.model=sid=>{const rec=catalog.entries.get(sid);if(rec?.name?.name&&!rec.temporary)return withVendor(sid,rec,rec.name.name);try{if(gacha.ownsTitle(sid))return gacha.pendingTitle(sid)||'';}catch{}return '';};
-    let titleSyncRaf=0;window.addEventListener('amp-title-sync',()=>{if(titleSyncRaf)return;titleSyncRaf=requestAnimationFrame(()=>{titleSyncRaf=0;try{localTitles();}catch{}try{headerTitle();}catch{}try{window.dispatchEvent(new CustomEvent('amp-native-gacha'));}catch{}try{if(gacha.running())paint();}catch{}});});
-    const ltMemo=new WeakMap();
-    function localTitles(){
+    let titleSyncRaf=0;window.addEventListener('amp-title-sync',()=>{if(titleSyncRaf)return;titleSyncRaf=requestAnimationFrame(()=>{titleSyncRaf=0;try{localTitles(true);}catch{}try{headerTitle();}catch{}try{window.dispatchEvent(new CustomEvent('amp-native-gacha'));}catch{}try{if(gacha.running())paint();}catch{}});});
+    const ltMemo=new WeakMap();let cardFs='';
+    // v1.11.86 性能：摆放兜底调用时，侧栏 DOM、本地目录、厂商 / VIP、抽卡状态、相关设置都没变就最多 5 秒做一次
+    let ltSig='',ltAt=0;
+    function localTitles(force){
       if(!catalog.persistent||document.readyState!=='complete')return;
+      {const sig=domHub.gen+'|'+ltRev+'|'+vip.rev+'|'+brand.hint.rev()+'|'+gacha.revision+'|'+prefs.showSeq+'|'+prefs.noteTitle+'|'+location.pathname;if(force!==true&&sig===ltSig&&Date.now()-ltAt<5000)return;ltSig=sig;ltAt=Date.now();}
       for(const [a,m]of marks){if(!a.isConnected||!m.span.isConnected||a.querySelector('input,textarea,[contenteditable="true"]')){restoreMark(a,m);marks.delete(a);ltMemo.delete(a);}}
       let count=0;
-      for(const a of document.querySelectorAll('a[href*="/agent/"]')){
+      for(const a of domQ.all('sideLinks',()=>[...document.querySelectorAll('a[href*="/agent/"]')].filter(x=>x.closest('aside,nav,[data-sidebar]')),2000)){
         if(!a.closest('aside,nav,[data-sidebar]')||a.querySelector('input,textarea,[contenteditable="true"]'))continue;
         const hm=/^(?:https:\/\/arena\.ai)?\/agent\/([\w-]{1,128})\/?(?:[?#].*)?$/.exec(a.getAttribute('href')||'');if(!hm)continue;
         const sid=hm[1],own=gacha.ownsTitle(sid),record=own?null:catalog.entries.get(sid);if(record?.temporary){const old=marks.get(a);if(old){restoreMark(a,old);marks.delete(a);}continue;}
@@ -8643,17 +9213,19 @@ details.mc-card .section.credits{margin-top:12px}
         // v1.11.83 云端名称是“模型/时间/备注”：排序、档位、显示都只用模型那段；备注接在卡片名字后面，悬停显示完整名称
         const nsp=splitNote(shownTitle);if(nsp.composite&&nsp.base)shownTitle=nsp.base;
         const noteShow=noteOwns(sid)?(notes.get(sid)?.n||''):(nsp.note||''),noteTip=noteOwns(sid)?noteTitle(sid):nsp.composite?span.textContent.trim():shownTitle;
-        const short=shortModel(noVertex(shownTitle))+(noteShow?' · '+noteShow:'');
+        // v1.11.86 有备注：备注是卡片名字（大字在前），模型名跟在后面（小字）；没备注：模型名就是卡片名字
+        const shortM=shortModel(noVertex(shownTitle)),short=noteShow||shortM,sub=noteShow?shortM:'';
+        if(!cardFs){try{const fs=getComputedStyle(a).fontSize;if(fs&&parseFloat(fs)>=10){cardFs=fs;document.documentElement.style.setProperty('--amp-card-fs',fs);}}catch{}}
         if(!record?.title&&short===shownTitle&&shownTitle===span.textContent.trim()){const old=marks.get(a);if(old){restoreMark(a,old);marks.delete(a);}continue;}
         const old=marks.get(a);if(old&&old.span!==span){restoreMark(a,old);marks.delete(a);}if(!marks.has(a))marks.set(a,{span,description:a.getAttribute('aria-description'),tip:a.getAttribute('title')});
-        if(span.getAttribute('data-amp-local-title')===shownTitle&&span.getAttribute('data-amp-short')===short&&(short===shownTitle||a.getAttribute('title')===noteTip))continue;
-        span.setAttribute('data-amp-local-title',shownTitle);span.setAttribute('data-amp-short',short);a.setAttribute('aria-description','本地显示 '+noteTip);
+        if(span.getAttribute('data-amp-local-title')===shownTitle&&span.getAttribute('data-amp-short')===short&&(span.getAttribute('data-amp-sub')||'')===sub&&(short===shownTitle||a.getAttribute('title')===noteTip))continue;
+        span.setAttribute('data-amp-local-title',shownTitle);span.setAttribute('data-amp-short',short);if(sub)span.setAttribute('data-amp-sub',sub);else span.removeAttribute('data-amp-sub');a.setAttribute('aria-description','本地显示 '+noteTip);
         if(short!==shownTitle)a.setAttribute('title',noteTip);else{const m=marks.get(a);if(m.tip===null)a.removeAttribute('title');else a.setAttribute('title',m.tip);}count++;
       }
       if(count)log('debug','本地标题','更新 '+count+' 个会话标题的本地显示');
     }
     // v1.11.85 侧栏卡片被 React 重建时，在画出来之前就把本地标题挂回去（以前要等下一轮 attach，最多 0.5 秒里先露出 Arena 原标题）
-    sideNow.set('lt',()=>{if(!stopped)localTitles();});
+    sideNow.set('lt',()=>{if(!stopped)localTitles(true);});
     // v1.11.85 侧栏排序直接问本地标题（和 localTitles 同一套规则）：卡片刚被 React 重建、本地标题还没挂上时也按同一个名字排，不先乱再跳回
     brand.hint.title=sid=>{try{if(!catalog.persistent)return '';if(gacha.ownsTitle(sid)){const p=gacha.pendingTitle(sid);if(!p)return '';try{if(gachaSlot.view(sid))return '';}catch{}return noteBase(p);}const record=catalog.entries.get(sid);if(!record?.title||record.temporary)return '';return noteBase(withVendor(sid,record,prefs.showSeq?record.title:(record.name?.name||String(record.title).replace(/^#\d+\s*/,''))||record.title)||'');}catch{return '';}};
     // ---------------- v1.11.83 卡片按钮：Rename → 备注（Arena 自带的重命名停用），Archive → 归档 ----------------
@@ -8678,7 +9250,7 @@ details.mc-card .section.credits{margin-top:12px}
       // 图标按钮的悬停提示（Radix Tooltip，也挂在 body 下）：刚悬停 / 聚焦过卡片上的这两个按钮时才换
       if(Date.now()-noteHover<3000){const tips=root.matches?.('[role="tooltip"],[data-radix-popper-content-wrapper]')?[root]:[...root.querySelectorAll('[role="tooltip"],[data-radix-popper-content-wrapper]')];for(const tip of tips)if(!tip.querySelector('[role="menu"],[role="menuitem"]')&&(tip.textContent||'').length<60)noteSwap(tip);}
     }
-    function noteScan(){if(stopped||!prefs.noteTitle)return;for(const el of noteTouched)if(!el.isConnected)noteTouched.delete(el);for(const r of document.querySelectorAll('aside,nav,[data-sidebar="sidebar"]'))if(r.querySelector('a[href*="/agent/"]'))noteRelabel(r);for(const m of document.querySelectorAll('[role="menu"]'))noteRelabel(m);}
+    function noteScan(){if(stopped||!prefs.noteTitle)return;for(const el of noteTouched)if(!el.isConnected)noteTouched.delete(el);for(const r of domQ.all('sideRoots',()=>document.querySelectorAll('aside,nav,[data-sidebar="sidebar"]')))if(r.querySelector('a[href*="/agent/"]'))noteRelabel(r);for(const m of domQ.all('menus',()=>document.querySelectorAll('[role="menu"]')))noteRelabel(m);}
     function noteUnlabel(){for(const el of noteTouched){const o=el.__ampNoteOrig;if(o&&el.isConnected){for(const [n,v] of o.t)if(n.isConnected)n.nodeValue=v;for(const [k,v] of o.a)el.setAttribute(k,v);}try{delete el.__ampNoteOrig;}catch{}el.removeAttribute('data-amp-note-btn');}noteTouched.clear();}
     // 最外层捕获阶段拦截：Arena 的点击处理（React 在根节点上）收不到这次点击，重命名输入框就不会出现；键盘 Enter / 触屏也都走 click
     function noteClick(e){
@@ -8702,8 +9274,8 @@ details.mc-card .section.credits{margin-top:12px}
     const NOTE_TXT='input:not([type]),input[type="text"],textarea,[contenteditable="true"]';
     function noteKill(n){if(!n?.querySelectorAll)return;const list=n.matches?.(NOTE_TXT)?[n]:[...n.querySelectorAll(NOTE_TXT)];for(const inp of list){if(inp.__ampNoteKilled||inp.closest('[data-amp-note-ed]'))continue;const c=noteCard(inp);if(!c)continue;inp.__ampNoteKilled=1;log('debug','备注命名','Arena 的重命名输入框出现了，已换成备注');
       setTimeout(()=>{if(inp.isConnected&&!inp.closest('[role="dialog"]')){try{inp.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:true,cancelable:true}));}catch{}}setTimeout(()=>{try{if(inp.isConnected)inp.blur();}catch{}setTimeout(()=>noteEdit(c.sid),60);},60);},0);}}
-    const noteMo=new MutationObserver(ms=>{if(stopped||!prefs.noteTitle)return;for(const m of ms){if(!m.addedNodes.length)continue;const tg=m.target,side=!!tg.closest?.('aside,nav,[data-sidebar]');if(!(side||tg===document.body||tg.parentElement===document.body||tg.closest?.('[role="menu"],[data-radix-popper-content-wrapper],[role="tooltip"]')))continue;for(const n of m.addedNodes)if(n.nodeType===1){noteRelabel(n);if(side)noteKill(n);}}});
-    try{noteMo.observe(document.body,{childList:true,subtree:true});}catch{}
+    const noteMo=(ms=>{if(stopped||!prefs.noteTitle)return;for(const m of ms){if(!m.addedNodes.length)continue;const tg=m.target,side=!!tg.closest?.('aside,nav,[data-sidebar]');if(!(side||tg===document.body||tg.parentElement===document.body||tg.closest?.('[role="menu"],[data-radix-popper-content-wrapper],[role="tooltip"]')))continue;for(const n of m.addedNodes)if(n.nodeType===1){noteRelabel(n);if(side)noteKill(n);}}});
+    domHub.on(noteMo); // v1.11.86 共用观察器（对话区里的变化已经滤掉）
     // 原地编辑：盖在卡片上的一行输入框（跟着卡片走，侧栏滚动 / 窗口变化时重新对齐）；回车 / 点别处保存，Esc 取消，清空 = 删除备注
     const NOTE_CSS='[data-amp-note-ed]{position:fixed;z-index:2147483600;display:flex;align-items:center;gap:6px;box-sizing:border-box;margin:0;padding:0 8px;border-radius:8px;background:hsl(var(--surface-primary,36 45% 98%));color:hsl(var(--text-primary,24 6% 17%));box-shadow:0 0 0 1.5px hsl(var(--text-secondary,35 6% 45%) / .6),0 6px 18px rgb(0 0 0 / .18);pointer-events:auto!important;font:500 13px/1.2 var(--font-basel-grotesk,var(--font-inter,system-ui)),"PingFang SC","Microsoft YaHei",sans-serif}'
       +'[data-amp-note-ed]>b{flex:none;font-size:10.5px;font-weight:600;line-height:16px;padding:0 6px;border-radius:999px;background:hsl(var(--text-primary,24 6% 17%) / .08);color:hsl(var(--text-secondary,35 6% 45%))}'
@@ -8753,9 +9325,12 @@ details.mc-card .section.credits{margin-top:12px}
       // 消息列表在可滚动容器里；顶部栏不在。任何位于滚动容器内的元素都不是标题（以前会误选到顶部的用户气泡“回复我1”）。
       const inScroller=n=>{for(let p=n.parentElement;p&&p!==main;p=p.parentElement){const cs=getComputedStyle(p);if(/(auto|scroll)/.test(cs.overflowY)&&p.scrollHeight>p.clientHeight+4)return true;}return false;};
       const top=b=>{if(b.closest('form,[role="log"],[data-amp-native-gacha],article,[data-message-id],[data-testid*="message"]'))return false;const r=b.getBoundingClientRect();return r.width>0&&r.height>0&&r.top<mr.top+64&&r.bottom>mr.top-4&&(b.textContent||'').trim().length>0&&!/workspace|工作区|sidebar|侧边栏/i.test(b.getAttribute('aria-label')||'');};
-      const hp=[...main.querySelectorAll('button[aria-haspopup]')].filter(b=>top(b)&&b.getBoundingClientRect().left<mr.left+mr.width*.6);
+      // v1.11.86 性能：顶部栏不在对话区里，只在对话区以外找（以前把整段对话里的几千个按钮都过一遍）
+      const lg_=main.querySelector('[role="log"]'),roots=[];if(lg_){for(let n=lg_;n&&n!==main;n=n.parentElement){const p=n.parentElement;if(p)for(const sib of p.children)if(sib!==n)roots.push(sib);}}else roots.push(main);
+      const q_=sel=>{const out=[];for(const r of roots){if(r.matches?.(sel))out.push(r);for(const x of r.querySelectorAll(sel))out.push(x);}return out;};
+      const hp=q_('button[aria-haspopup]').filter(b=>top(b)&&b.getBoundingClientRect().left<mr.left+mr.width*.6);
       let cands=hp.filter(b=>!inScroller(b));if(!cands.length)cands=hp;
-      if(!cands.length)cands=[...main.querySelectorAll('h1,h2')].filter(b=>top(b)&&!inScroller(b));
+      if(!cands.length)cands=q_('h1,h2').filter(b=>top(b)&&!inScroller(b));
       if(!cands.length)return null;
       const best=cands.sort((a,b)=>a.getBoundingClientRect().left-b.getBoundingClientRect().left)[0];
       const leaves=[best,...best.querySelectorAll('*')].filter(n=>!n.closest('[data-amp-hlogo],[data-amp-hname]')&&!(n instanceof SVGElement)&&[...n.childNodes].some(c=>c.nodeType===3&&c.textContent.trim()));
@@ -8763,7 +9338,12 @@ details.mc-card .section.credits{margin-top:12px}
     }
     function headerTitle(){
       const sid=sidOf(location.href);if(!sid){clearHeader();return;}
-      let t=hdr.t;const tb=t&&t.isConnected&&t.closest('button,h1,h2'),mr_=tb&&t.closest('main')?.getBoundingClientRect();if(!t||!t.isConnected||!t.closest('main')||!tb||!mr_||tb.getBoundingClientRect().top>mr_.top+64||tb.closest('[role="log"],article,[data-message-id]')){clearHeader();t=findHeaderTitle(sid);if(!t)return;hdr.t=t;}
+      let t=hdr.t;const tb=t&&t.isConnected&&t.closest('button,h1,h2'),mr_=tb&&t.closest('main')?.getBoundingClientRect();if(!t||!t.isConnected||!t.closest('main')||!tb||!mr_||tb.getBoundingClientRect().top>mr_.top+64||tb.closest('[role="log"],article,[data-message-id]')){clearHeader();
+        // v1.11.86 性能：没找到顶部标题时，同一页里 DOM 没变就 120 秒内不再整页找（换页立即重找）
+        const miss=hdr.miss;if(miss&&miss.path===location.pathname&&Date.now()-miss.at<(miss.gen===domHub.gen?120000:2000))return; // DOM 一直在变（加载中）时最多 2 秒找一次
+        // v1.11.86 找顶部标题要量位置：放到下一次排版之后（排版是新的，不会在页面加载 / 流式输出时强制整页排版），找到后再画
+        if(!hdr.pend){hdr.pend=true;afterLayout(document.querySelector('main'),()=>{hdr.pend=false;if(sidOf(location.href)!==sid)return;const x=findHeaderTitle(sid);if(!x){hdr.miss={gen:domHub.gen,path:location.pathname,at:Date.now()};return;}hdr.miss=null;hdr.t=x;try{headerTitle();}catch{}});}
+        return;}
       const r=selectedRun(),live=liveView(sid),c=servingCalls(live).at(-1),meta=catalog.entries.get(sid);
       let p=0,done=false;
       if(r){const k=r.runId+'|'+r.revision;if(!hdrStart.has(k)){hdrStart.set(k,Date.now());if(hdrStart.size>20)hdrStart.delete(hdrStart.keys().next().value);}const el_=(Date.now()-hdrStart.get(k))/1000;
@@ -8833,20 +9413,24 @@ details.mc-card .section.credits{margin-top:12px}
     }
     // 输入框里目标按钮左边那个纸张/文档图标按钮：默认隐藏（只隐藏图标按钮，不删节点；设置里可恢复）。
     const DOC_KEY=KEY+'.docIconLabel';
+    // v1.11.86 性能：隐藏过的图标记在集合里，不再每次整页查 [data-amp-doc-hidden]；抽卡按钮的位置缓存起来
+    const docHidden=new Set();let docSeed=false;
     function docIcon(){
-      const shown=[...document.querySelectorAll('[data-amp-doc-hidden]')];
-      if(!prefs.hideDocIcon){for(const n of shown)n.removeAttribute('data-amp-doc-hidden');return;}
+      if(!docSeed){docSeed=true;for(const n of document.querySelectorAll('[data-amp-doc-hidden]'))docHidden.add(n);}
+      for(const n of docHidden)if(!n.isConnected||!n.hasAttribute('data-amp-doc-hidden'))docHidden.delete(n);
+      if(!prefs.hideDocIcon){for(const n of docHidden)n.removeAttribute('data-amp-doc-hidden');docHidden.clear();return;}
       const remembered=load(DOC_KEY,'');
-      for(const g of document.querySelectorAll('[data-amp-native-gacha="1"]')){
+      for(const g of domQ.all('gachaHosts',()=>document.querySelectorAll('[data-amp-native-gacha="1"]'))){
         const prev=g.previousElementSibling;
         const cand=prev&&prev.matches('button')?prev:prev?.querySelector?.(':scope>button:only-child')?prev:null;
         if(!cand||cand.hasAttribute('data-amp-doc-hidden'))continue;
         const btn=cand.matches('button')?cand:cand.querySelector('button');
         const label=(btn.getAttribute('aria-label')||btn.title||'').trim();
-        const iconOnly=!(btn.innerText||'').trim()&&!!btn.querySelector('svg');
+        // v1.11.86 性能：先看 textContent（不排版）；只有里面有字时才用 innerText 区分字是不是隐藏的（innerText 会强制整页排版）
+        const iconOnly=!!btn.querySelector('svg')&&(!(btn.textContent||'').trim()||!(btn.innerText||'').trim());
         if(!iconOnly||/send|stop|发送|停止|model|模型|attach|附件|upload|上传|mic|voice|语音/i.test(label))continue;
         if(remembered&&label&&remembered!==label)continue;
-        cand.setAttribute('data-amp-doc-hidden','');if(label&&!remembered){store(DOC_KEY,label);log('debug','界面','已隐藏输入框文档图标：'+label);}
+        cand.setAttribute('data-amp-doc-hidden','');docHidden.add(cand);if(label&&!remembered){store(DOC_KEY,label);log('debug','界面','已隐藏输入框文档图标：'+label);}
       }
     }
     // v1.11.73 第一帧就隐藏：输入框里发送键（或抽卡按钮）左边那个无标签的文档图标；抽卡兜底开侧栏时侧栏与遮罩透明
@@ -8860,7 +9444,7 @@ details.mc-card .section.credits{margin-top:12px}
     const WS_LBL=/^(?:(?:toggle|open|close|collapse|expand|show|hide)\s+(?:the\s+)?workspace(?:\s+(?:sidebar|panel))?|(?:打开|关闭|收起|展开|切换|显示|隐藏)工作区(?:侧边栏|侧栏|面板)?)$/i,entryLoose=new WeakSet();
     function themeAnchor(gem){
       const narrow=innerWidth<768;let best=null,bp=9;
-      for(const b of document.querySelectorAll('button[aria-label*="workspace" i],button[aria-label*="工作区"]')){
+      for(const b of domQ.all('wsButtons',()=>document.querySelectorAll('button[aria-label*="workspace" i],button[aria-label*="工作区"]'))){
         const l=(b.getAttribute('aria-label')||'').trim();if(!WS_LBL.test(l))continue;
         const m=b.closest('main');if(gem&&!m)continue;if(narrow&&b.closest('[role="dialog"],[data-vaul-drawer]'))continue;
         const r=b.getBoundingClientRect();if(gem?!(r.width>0&&r.height>0):!(r.width>=8&&r.height>=8))continue;
@@ -8890,12 +9474,19 @@ details.mc-card .section.credits{margin-top:12px}
       const m=document.querySelector('main')?.getBoundingClientRect(),ok=!!m&&m.width>0,vw=document.documentElement.clientWidth||innerWidth;
       float((ok?m.right:vw)-56-(entry.offsetWidth||32),(ok?Math.max(0,m.top):0)+12);
     }
-    function attach(){
+    // v1.11.86 性能（P3）：摆放 / 标注只在有变化时做——对话区以外的 DOM 变了（domHub.gen）、换了页面、窗口或对话区尺寸变了、加载状态变了；
+    // 都没变就最多 2.5 秒兜底一次（以前每 0.5 秒一次、每次十几次整页查询；界面每次重画也会调一次）
+    let atGen=-1,atPath='',atW=0,atH=0,atReady='',atAt=0,atDirty=true,atRo=null,atMain=null;
+    const attachDirty=()=>{atDirty=true;};
+    function attach(force){
       // v1.11.85 拖侧栏宽度时先不摆放（松手后马上补一次）
-      if(stopped||!document.body||sbDragging())return;const cooling=Date.now()<cooldown;if(cooling!==lastCooling){lastCooling=cooling;paint();}const main=document.querySelector('main'),ready=document.readyState==='complete'||!!document.querySelector('next-route-announcer'); // v1.11.73 React 水合完成即可（Next.js 在提交后插入 next-route-announcer），不再等 load（手机上常晚好几秒）
+      if(stopped||!document.body||sbDragging())return;const cooling=Date.now()<cooldown;if(cooling!==lastCooling){lastCooling=cooling;paint();}
+      {const t_=Date.now();if(force!==true&&!atDirty&&atGen===domHub.gen&&atPath===location.pathname&&atW===innerWidth&&atH===innerHeight&&atReady===document.readyState&&t_-atAt<2500)return;
+        atPath=location.pathname;atW=innerWidth;atH=innerHeight;atReady=document.readyState;atAt=t_;atDirty=false;atGen=domHub.gen;
+        const mm=document.querySelector('main');if(mm!==atMain){atMain=mm;try{atRo?.disconnect();if(mm&&window.ResizeObserver){atRo=atRo||new ResizeObserver(attachDirty);atRo.observe(mm);}}catch{}}}const main=document.querySelector('main'),ready=document.readyState==='complete'||!!document.querySelector('next-route-announcer'); // v1.11.73 React 水合完成即可（Next.js 在提交后插入 next-route-announcer），不再等 load（手机上常晚好几秒）
       entry.hidden=!/^\/agent(?:\/|$)/.test(location.pathname);
       const gem0=gemOn(),anchor=ready?themeAnchor(gem0):null;placeEntry(anchor,gem0);
-      {const g=gemOn();document.documentElement.toggleAttribute('data-amp-gem',g);document.documentElement.toggleAttribute('data-amp-dgem',deskGemOn());document.documentElement.toggleAttribute('data-amp-modehide',modeSideOn());document.documentElement.toggleAttribute('data-amp-wsr',prefs.wsRight!==false);document.documentElement.toggleAttribute('data-amp-wspre',g&&prefs.wsEdge!==false);document.documentElement.toggleAttribute('data-amp-docpre',!!prefs.hideDocIcon);if(g&&anchor){if(anchor.nextSibling!==avatarHost)anchor.after(avatarHost);avatarHost.hidden=false;paintAvatar();loadMe();}else if(avatarHost.isConnected)avatarHost.remove();syncMode();wsSync();if(!drawerMoOn&&document.body){drawerMoOn=true;drawerMo.observe(document.body,{childList:true});}}
+      {const g=gemOn();document.documentElement.toggleAttribute('data-amp-gem',g);document.documentElement.toggleAttribute('data-amp-dgem',deskGemOn());document.documentElement.toggleAttribute('data-amp-modehide',modeSideOn());document.documentElement.toggleAttribute('data-amp-wsr',prefs.wsRight!==false);document.documentElement.toggleAttribute('data-amp-wspre',g&&prefs.wsEdge!==false);document.documentElement.toggleAttribute('data-amp-docpre',!!prefs.hideDocIcon);if(g&&anchor){if(anchor.nextSibling!==avatarHost)anchor.after(avatarHost);avatarHost.hidden=false;paintAvatar();loadMe();}else if(avatarHost.isConnected)avatarHost.remove();syncMode();wsSync();try{paintSideRing();}catch{}try{lbSync();}catch{}if(!drawerMoOn&&document.body){drawerMoOn=true;drawerMo.observe(document.body,{childList:true});}}
       if(reloadHost.isConnected)reloadHost.remove();document.documentElement.toggleAttribute('data-amp-glass',!!prefs.glassDrawer);if(ready)pull.bind();
       const eligible=/^\/agent(?:\/|$)/.test(location.pathname);entry.hidden=!eligible;let mode='none';
       if(eligible&&ready&&main){const parent=main.parentElement,p=getComputedStyle(parent),m=getComputedStyle(main),isSibling=host.parentNode===parent&&!host.hidden,available=main.getBoundingClientRect().width+(isSibling?host.getBoundingClientRect().width+(parseFloat(p.columnGap)||0):0),wide=innerWidth>=1024&&available>=900&&p.display.includes('flex')&&p.flexDirection==='row';
@@ -8907,6 +9498,7 @@ details.mc-card .section.credits{margin-top:12px}
       {const hide=!eligible||mode==='none'||!compact&&!pref.open||compact&&!expanded,sig=[compact,expanded,hide,prefs.sheetFull,prefs.sheetH,innerHeight].join('|'),go=()=>{placeNav();host.toggleAttribute('data-compact',compact);host.toggleAttribute('data-expanded',expanded);host.hidden=hide;foldAt.on=eligible&&mode==='wide';placeFold();applySheet();};
         if(sig!==sheetSig&&(compact||sheetSig)){sheetSig=sig;sheetAnchor(go);}else{sheetSig=sig;go();}}
       if(ready){placeGrip();localTitles();sentTimes();try{headerTitle();}catch{}try{docIcon();}catch{}if(!((attach.n=(attach.n||0)+1)%4)){statusBar();try{noteScan();}catch{}}}
+      queueMicrotask(()=>{atGen=domHub.gen;}); // v1.11.86 自己这次摆放引起的 DOM 变化（观察器回调排在这之前）不算“有变化”
     }
     function cacheTab(){
       const list=[...catalog.entries.values()].filter(x=>x.models?.length||x.title).sort((a,b)=>(b.at||'').localeCompare(a.at||''));const h=el('div','section-heading',null,body);el('h3','','本地会话缓存',h);el('span','eyebrow',list.length+' 个会话',h);
@@ -8964,7 +9556,7 @@ details.mc-card .section.credits{margin-top:12px}
       if(tab==='logs'){const key='all:'+catalog.logRevision;if(logKey!==key){logKey=key;void catalog.readAllLogs().then(rows=>{if(logKey!==key)return;logItems=rows;logSerial++;paint();});}}
       if(tab==='settings'&&Date.now()-usageAt>5000){usageAt=Date.now();void catalog.usage().then(u=>{usageInfo=u;settingsSerial++;paint();});}
       const next=[tab,tab==='overview'?legacyDisplay.revision+'|'+force.serial+'|'+(force.busy?1:0)+'|'+(sid||'')+'|'+mon.serial+'|'+prefs.spendUnit:0,s,c,historical,moreOpen,tab==='cache'?catalog.revision:0,cacheLimit,openSid,tab==='logs'?logSerial:0,tab==='logs'?pref.level:null,!!r?.busy,Date.now()<cooldown,rawFilter,rawSpan,tab==='raw'?rawStore.get(s?.key)?.spans.size:0,tab==='settings'?settingsSerial:0,confirmRawClear,tab==='settings'?JSON.stringify(prefs):'',tab==='raw'?JSON.stringify(rawOf(s)?.probe&&Object.keys(rawOf(s).probe)):'',tab==='overview'?spendSerial+'|'+mon.serial:0,gv&&['overview','sources','raw'].includes(tab)?'g'+gv.stage:''];
-      if(next.some((x,i)=>x!==bodyStamp[i])||!bodyStamp.length){const scroll=body.scrollTop,sameTab=bodyStamp[0]===tab,focus=root.activeElement?.dataset.focus;bodyStamp=next;body.replaceChildren();if(tab==='cache')cacheTab();else if(tab==='logs')logTab();else if(tab==='settings')settingsTab();else if(tab==='about')aboutTab();else if(gv)empty('老虎机揭晓中…','厂商 → 型号 → 档位 依次停下后显示这一抽的完整信息。');else if(!c){if(tab==='overview'&&turnSid){heroCard({sid:turnSid},null,!historyView&&!turnKey);monitorCard(turnSid,null,!historyView&&!turnKey);}empty(turnKey?'正在读取此轮缓存':'尚无模型记录',turnKey?'如长时间无内容，说明此轮快照不可用。':'发送一条新消息后，型号与配置会自动填入。');}else if(tab==='sources')sources(s,c);else if(tab==='raw')rawTab(s,c);else overview(s,c);body.scrollTop=sameTab?scroll:0;if(focus)[...body.querySelectorAll('[data-focus]')].find(e=>e.dataset.focus===focus)?.focus({preventScroll:true});}
+      if(next.some((x,i)=>x!==bodyStamp[i])||!bodyStamp.length){const scroll=bodyScroll,sameTab=bodyStamp[0]===tab,focus=root.activeElement?.dataset.focus;bodyStamp=next;body.replaceChildren();if(tab==='cache')cacheTab();else if(tab==='logs')logTab();else if(tab==='settings')settingsTab();else if(tab==='about')aboutTab();else if(gv)empty('老虎机揭晓中…','厂商 → 型号 → 档位 依次停下后显示这一抽的完整信息。');else if(!c){if(tab==='overview'&&turnSid){heroCard({sid:turnSid},null,!historyView&&!turnKey);monitorCard(turnSid,null,!historyView&&!turnKey);}empty(turnKey?'正在读取此轮缓存':'尚无模型记录',turnKey?'如长时间无内容，说明此轮快照不可用。':'发送一条新消息后，型号与配置会自动填入。');}else if(tab==='sources')sources(s,c);else if(tab==='raw')rawTab(s,c);else overview(s,c);{const v=sameTab?scroll:0;if(v||bodyScroll)body.scrollTop=v;bodyScroll=v;}if(focus)[...body.querySelectorAll('[data-focus]')].find(e=>e.dataset.focus===focus)?.focus({preventScroll:true});}
     }
     // 独立检测页：上半“一键检测”（立刻读取本对话此刻的全部记录，看中途有没有换模型、换成了谁），下半“原脚本检测”（v8.1.0 原样结果，只换排版）
     const posText=c=>!c?'':(c.turn?'第 '+c.turn+' 轮':'未标记轮次')+(c.attempt>1?'（第 '+c.attempt+' 次）':'')+' · 第 '+c.n+' 次调用';
@@ -9019,7 +9611,7 @@ details.mc-card .section.credits{margin-top:12px}
         const bar=el('div','bar',null,col),h=Math.max(4,Math.round(46*Math.sqrt(x.v/max)));bar.style.height=h+'px';if(x.rs>0){const r=el('i','',null,bar);r.style.height=Math.max(2,Math.round(h*Math.min(1,x.rs)))+'px';}
         const ic=el('div','mc-step-ic',null,col);if(x.think)icon('brain',ic);else if(x.tools.length)icon('terminal',ic);else el('i','dot',null,ic);
         col.title='第 '+(steps.length-shown.length+i+1)+' 步'+(x.name?' · '+short_(x.name):'')+(x.think?' · 有思考':'')+(x.tools.length?' · 工具 '+x.tools.join(', '):'')+(x.v?' · '+(x.est?'约 ':'')+spendShort(Math.round(x.v))+' token':'');});
-      requestAnimationFrame(()=>{strip.scrollLeft=strip.scrollWidth;});
+      afterLayout(strip,()=>{strip.scrollLeft=strip.scrollWidth;}); // v1.11.86 排版之后再滚到最新一步（不强制整页排版）
       return n;
     }
     // 原脚本 v8.1.0：收进“本轮实时”里可展开的一栏，“Key: value”拆成配置行，原文收进“原始显示”
@@ -9435,9 +10027,10 @@ details.mc-card .section.credits{margin-top:12px}
       toggle(sec,'输入法弹出时一起上移','默认开启（手机端）：弹出输入法时，对话内容、输入框、底部模型信息栏一起上移——最新的内容跟着输入框推上去，不会被挡住；模型信息栏贴在输入法上方，不再藏起来。\n· 输入框变成多行时，对话内容同样跟着往上推。\n· 关闭后恢复旧行为：打字时隐藏底部信息栏。',prefs.kbResize!==false,v=>{prefs.kbResize=v;try{bar?.sync();}catch{}});
       toggle(sec,'玻璃侧栏（手机）','默认开启：左侧对话列表抽屉变窄，背景改成半透明磨砂玻璃、遮罩调淡，能看到后面的页面。关闭恢复 Arena 原样。',prefs.glassDrawer,v=>{prefs.glassDrawer=v;document.documentElement.toggleAttribute('data-amp-glass',v);});
       toggle(sec,'显示“已重置”的推断限流','默认关闭：如“新会话 10/10 · 已重置”只是按上限推断的数值，不是必要信息。',prefs.showQuotaReset,v=>{prefs.showQuotaReset=v;});
-      toggle(sec,'对话名显示本地编号 #N','默认关闭：左侧对话名只显示模型名，避免与加载进度、厂商图标挤在一起。',prefs.showSeq,v=>{prefs.showSeq=v;for(const m of marks.values()){m.span.removeAttribute('data-amp-local-title');m.span.removeAttribute('data-amp-short');}localTitles();});
+      toggle(sec,'对话名显示本地编号 #N','默认关闭：左侧对话名只显示模型名，避免与加载进度、厂商图标挤在一起。',prefs.showSeq,v=>{prefs.showSeq=v;for(const m of marks.values()){m.span.removeAttribute('data-amp-local-title');m.span.removeAttribute('data-amp-short');m.span.removeAttribute('data-amp-sub');}localTitles();});
       toggle(sec,'电脑端圆角输入框（同手机端）','默认开启：电脑上的输入框也改成手机端那样的圆角长条——左边 +，右边厂商图标和发送（模式切换放在哪见下一项）。',prefs.deskGem,v=>{prefs.deskGem=v;document.documentElement.toggleAttribute('data-amp-dgem',deskGemOn());syncMode();});
       toggle(sec,'模式切换放在左侧栏（电脑）','默认开启：输入框里不再出现模式按钮（Battle / Agent / Side by Side / Direct），所有页面都一样，页面一出来就藏好、不会先闪一下。模式切换在左侧栏：展开时在 logo 右边；收成图标栏时在图标栏里（只显示图标）；侧栏整个藏起来时在打开侧栏的按钮旁边。关闭后输入框里的原按钮恢复显示。',prefs.modeSide,v=>{prefs.modeSide=v;document.documentElement.toggleAttribute('data-amp-modehide',modeSideOn());syncMode();});
+      toggle(sec,'Leaderboard 收进 logo 菜单','默认开启：侧栏里的 Leaderboard 一项藏起来，给对话卡片腾出位置；点左上角 Arena logo 展开的菜单，最上面就是 Leaderboard。',prefs.lbLogo!==false,v=>{prefs.lbLogo=v;document.documentElement.toggleAttribute('data-amp-lblogo',v);});
       toggle(sec,'长对话先显示最新内容','默认开启：打开 / 刷新很长的对话时，只先排版最底下几条（最新的），上面的消息先占位，往上翻到附近才渲染出来（显示过的不再收回）。页面出来更快，不用等整段对话从上到下排完。',prefs.lazyLog,v=>{prefs.lazyLog=v;savePrefs();try{errReload.lazyMark();}catch{}});
       toggle(sec,'丢失的消息提示补齐','默认开启：发出去、服务器也收到了，刷新后页面里却没有这条消息（这一轮还在进行，Arena 先显示旧对话、接着续 bash 输出）时，提示要不要补齐；点“补齐显示”把这条消息按原样式插回最新一轮，正在进行的内容接在它下面。只改显示、不重发；真正的消息出来后自动撤掉。',prefs.backfill,v=>{prefs.backfill=v;});
       toggle(sec,'消息旁显示发送时间','来自消息 id 内的 UUIDv7 时间戳；无法解析时用本机记录的提交时间。',prefs.showSent,v=>{prefs.showSent=v;if(!v)clearSent();});
@@ -9449,19 +10042,28 @@ details.mc-card .section.credits{margin-top:12px}
         const rs=el('select','selector',null,wr);for(const v of [1,2,3]){const o=el('option','',v+' 次',rs);o.value=String(v);}rs.value=String(gs.watchdogRetries);rs.onchange=()=>gacha.saveSettings({watchdogRetries:+rs.value});}
       {const gs=gacha.settings();toggle(sec,'首包提示（实验）','默认关闭：手动发送的每条消息末尾自动追加一句，让模型先输出“思考中…”再继续。服务端尽早收到首包就不会因约 90 秒无输出而改派；看门狗也会看到输出而不去停止。抽卡时不追加。代价：模型的隐藏深度思考会变短，分析改为写在正文里；刷新页面后消息里能看到这句。',gs.warmup,v=>{gacha.saveSettings({warmup:v});});
         const pr=el('div','setting',null,sec),pg=el('div','grow',null,pr);el('span','','首包提示内容',pg);const inp=el('textarea','',null,pg);inp.rows=2;inp.value=gs.warmupText;inp.style.cssText='width:100%;margin-top:6px;resize:vertical;font:inherit;font-size:12px;padding:6px 8px;border-radius:8px;border:1px solid var(--amp-line,rgba(128,128,128,.35));background:transparent;color:inherit;box-sizing:border-box';inp.onchange=()=>gacha.saveSettings({warmupText:inp.value.trim()||WARMUP_DEFAULT});inp.onkeydown=e=>e.stopPropagation();}
-      toggle(sec,'模型被改派时自动停止生成','默认开启：原模型首包超时被 Arena 换成别的模型后立即停止，避免替补模型长时间推理白白消耗额度；关闭则让替补模型继续回答。\n· 抽卡的那一轮不停：让改派后的模型答完，才能准确识别这一抽是哪个模型。',prefs.stopOnResample,v=>{prefs.stopOnResample=v;savePrefs();});
+      toggle(sec,'模型被改派时自动停止生成','默认关闭：打开后，原模型首包超时被 Arena 换成别的模型时立即停止，避免替补模型长时间推理白白消耗额度；关着就让替补模型继续回答，只提示不停止。\n· 停止后侧栏卡片会变色提醒；Arena 停止后有时需要重新载入对话才能再发送。\n· 抽卡的那一轮不停：让改派后的模型答完，才能准确识别这一抽是哪个模型。',prefs.stopOnResample,v=>{prefs.stopOnResample=v;savePrefs();});
       toggle(sec,'页面底部信息栏','固定在页面最底部：美金额度、Pulse、credits、限流、当前模型、抽卡进度与更新时间。',prefs.showBar,v=>{prefs.showBar=v;bar?.sync();if(v)void refreshPulse(true);});
       toggle(sec,'余额按 Pulse 实时推算','默认开启：美金计费记录（spend.recorded）只在读到新一轮时才更新——换对话、刷新页面都不会变；Pulse 是服务端实时的剩余百分比。Pulse 读数比最新一条计费记录新时，左下角“美金 剩余 / 总额度”按 总额度 × Pulse% 推算（带 ≈，精度 1%），两者在同一个百分点内时仍显示记录的精确值。\n· Pulse 空闲 5 分钟读一次，有一轮在进行或刚结束时每分钟一次，每次发送前后各读一次；被限流 10 分钟内不读。\n· 记录之后不久读到的 Pulse 反而更高（连续两次高出 3 个点以上）说明两者对不上，自动改回按计费记录显示。',prefs.pulseLive,v=>{prefs.pulseLive=v;bar?.sync();if(v)void refreshPulse(true);});
       toggle(sec,'为信息栏预留页面空间','把 Arena 的整屏容器高度减去信息栏高度，避免遮挡输入框；遇到布局异常时可关闭。',prefs.barOffset,v=>{prefs.barOffset=v;bar?.sync();});
+      const rs=el('section','section',null,body);el('h3','section-heading','卡住自救 · 刷新',rs);
+      toggle(rs,'回复写完卡住时自动恢复','默认开启：回复写完、白点还在转时（页面在等服务器的“本轮结束”信号），按顺序自救，并在输入框上方显示进度：\n· 回复写完 '+prefs.stallRecon+' 秒还没收到结束信号：让页面无感重连一次实时通道（带断点续上，补收漏掉的结束信号；不重发、不点停止）。实时通道原来有心跳、现在 15 秒没有任何数据：马上重连。\n· 回复写完 '+prefs.stallStatus+' 秒还在转：向 Arena 查询这一轮的状态（和页面自带的查询同一个接口）。已完成 → 再重连一次，还卡就重新载入对话；仍在处理（保存 / 压缩上下文）→ 显示“服务器确认还在收尾”，按服务器建议的间隔再查，不自动重新载入。\n· 兜底：回复写完 '+prefs.stallCap+' 秒仍没结束、服务器也没确认结束 → 只显示「重新载入」按钮（服务器上可能还在跑，不自动）。\n· 模型长时间思考 / 跑工具时显示“已 xx 秒没有新内容 · 连接正常（心跳 x 秒前）”，不再只有一个白点在转。',prefs.stallFix,v=>{prefs.stallFix=v;});
+      toggle(rs,'允许自动重新载入对话','默认开启：服务器确认这一轮已结束（run-status 已完成 / 已失败）、页面还显示进行中时，5 秒倒计时自动重新载入（可取消）；收到结束信号也要先向服务器确认，确认不了的只显示按钮。每轮最多一次，10 分钟最多 5 次；输入框有未发送的内容或附件、抽卡进行中、页面显示限流提示时不自动（只给按钮）；页面在后台时等切回来再倒计时。关闭后只显示按钮。',prefs.stallReload,v=>{prefs.stallReload=v;});
+      toggle(rs,'出错后自动重新载入（仅在确认这一轮已结束后）','默认开启：对话里出现 “Something went wrong” 时不再倒计时刷新（服务器上这一轮可能还在跑），而是显示「这一轮可能还在服务器上运行」，每 10 秒以上向 Arena 查一次这一轮的状态（遵守服务器要求的间隔），服务器确认已完成 / 已失败后才重新载入对话。\n· 关闭后只显示按钮：「完成后重新载入」「现在重新载入」「忽略」。\n· 查不到状态（没有消息 id、连续 3 次查询失败）时也只显示按钮；从不点 Arena 的 Retry（那会重新发送这一轮）。\n· 输入框有未发送的内容或附件、抽卡进行中、10 分钟内已自动刷新 3 次时不自动。侧栏卡片和顶部提示会跟着显示：检测到出错 → 等待这一轮完成 → 已重新载入，请确认回复是否完整。',prefs.errAuto,v=>{prefs.errAuto=v;});
+      {const sr=el('div','setting',null,rs),sg=el('div','grow',null,sr);info(el('span','setting-title','重连 / 查询 / 兜底',sg),'set:stall','都从“回复写完”（流里出现 finish）算起。默认 8 / 20 / 60 秒。',sr);
+        const mk=(k,opts)=>{const x=el('select','selector',null,sr);x.setAttribute('aria-label',k);for(const v of opts){const o=el('option','',v+' 秒',x);o.value=String(v);}if(!opts.includes(prefs[k])){const o=el('option','',prefs[k]+' 秒',x);o.value=String(prefs[k]);}x.value=String(prefs[k]);x.onchange=()=>{prefs[k]=+x.value;savePrefs();bodyStamp=[];render();};};
+        mk('stallRecon',[5,8,10,15]);mk('stallStatus',[15,20,30,45]);mk('stallCap',[45,60,90,150]);}
+      toggle(rs,'刷新时只重新载入对话（不整页刷新）','默认开启：自动恢复、出错后重新载入、下拉刷新、脚本提示卡上的「重新载入」都先只重建对话区——切到新对话页再切回来，Arena 重新拉取这个对话、重连实时通道；侧栏、脚本、样式都不重新加载，快很多。（Arena 自己“out of sync”横幅上的 Refresh 不接管，仍是 Arena 原来的整页刷新。）\n· 自动重新载入只在这一轮已结束（或服务器已确认结束）、输入框没有未发送内容和附件、抽卡没在跑时进行；手动点的会先记下输入框里的文字，载入后放回去。\n· 5 分钟内重新载入过同一个对话还卡住、或页面路由不可用时，才整页刷新。日志里记着每次用时（“对话已重新载入（x 秒）”/“整页刷新完成：x 秒”）。',prefs.softReload,v=>{prefs.softReload=v;});
       const ms=el('section','section',null,body);el('h3','section-heading','实时监控',ms);
       toggle(ms,'实时监控换模型','默认开启：读取页面上的对话状态（不发请求），出现新的步骤或思考链变化时立即补读一次 Trace 核对型号：首步和疑点最短 2.5 秒，普通步骤 5 秒起，长回复逐步放慢到 16 秒，每轮最多 90 次，遇到限流自动暂停。每次读到 Trace 都自动逐次调用比对（不额外请求），换模型会在概览的“本轮实时”里标出。\n连续 used bash（只调用工具、没有思考）之后突然出现思考链，直接判定为路由切换、换了模型。',prefs.monOn,v=>{prefs.monOn=v;savePrefs();mon.serial++;});
       toggle(ms,'按步骤实时估算消耗','默认开启：这一轮进行中，按页面上已经出现的步骤（每步 = 一次模型调用，大多是 used bash）实时累加 token / 美金；Trace 里已完成的调用直接用实际用量。每步的基准是本机学到的同一模型（型号 + 档位）的历史样本——抽卡的单次调用就是很干净的样本；每轮结束读到实际用量 / 计费后自动校准、记下估算偏差，用得越多越准。显示在概览卡片的大数字和底部信息栏“本轮”。',prefs.liveEst,v=>{prefs.liveEst=v;savePrefs();spendSerial++;});
       toggle(ms,'按 Pulse 校准估算','默认开启：Pulse（剩余额度百分比，服务端实时）比美金计费记录及时，拿它当“实际扣了多少”的依据：\n· 每轮发送时和结束后各读一次 Pulse，差值 × 总额度 ≈ 这一轮实际扣掉的额度（概览卡片里的“Pulse 实测”，精度 1%）。\n· 最近一段 Pulse 的下降（没有回升 / 重置）和同一时间本机记录的消耗相比，得到校准系数，乘到估算值上（进行中的实时估算、没有计费数据的轮次）；至少降 5 个点、覆盖 3 轮以上才用，系数限制在 0.5–2 倍。\n· 其他设备 / 其他页面的消耗也会让 Pulse 下降，这时系数会偏高。',prefs.pulseCal,v=>{prefs.pulseCal=v;paint();});
       toggle(ms,'疑似换模型时弹出提醒','默认开启：回复先出正文、过一会儿才出现思考链（中途开始思考）这类强信号出现时，顶部弹出“疑似换模型”并立即核对；一开始就在思考不算。抽卡进行中、以及抽卡开出的对话里由抽卡发出的那一轮一律不弹。核对确认后仍由“模型变更提醒”通知，不会重复弹。',prefs.monAlert,v=>{prefs.monAlert=v;savePrefs();});
-      toggle(ms,'疑似换模型时自动停止生成','默认关闭：出现强信号时立即停止生成，避免替补模型继续消耗额度。“正文之后才出现思考链”已由抽卡设置里的“路由到 Thinking 时停止”（默认开启）处理，这里额外覆盖“前几步只调用工具、之后才开始思考”等情况（一开始就在思考不算，不会停）。启发式判断，可能误停，确有需要再开启。',prefs.monStop,v=>{prefs.monStop=v;savePrefs();});
+      toggle(ms,'疑似换模型时自动停止生成','默认关闭：出现强信号（回复先出正文或前几步只调用工具、之后才开始思考；一开始就在思考不算）时立即停止生成，避免替补模型继续消耗额度。\n· 这是普通对话里唯一会自动停止的地方：抽卡设置里的「抽卡时：回复中途路由到 Thinking 就停止」只管抽卡轮次，抽卡轮次里由它处理，这里不重复停。\n· 启发式判断，多步回复也可能出现同样的信号，可能误停；停止后侧栏卡片会变色提醒，而且可能要重新载入对话才能继续发送。确有需要再开启。',prefs.monStop,v=>{prefs.monStop=v;savePrefs();});
       const cloud=el('section','section',null,body);el('h3','section-heading','云端标题 · 备注',cloud);
       toggle(cloud,'备注 + 云端会话名（模型/时间/备注）','默认开启：左侧卡片上 Arena 的 Rename / Archive 显示为「备注」「归档」，Arena 自带的重命名停用——点「备注」在卡片上原地写（回车保存，Esc 取消，清空即删除），不弹窗；「归档」照常。\n· 云端会话名统一为 模型/月-日-时:分/备注，如 claude-opus-5.5-max/9-26-14:31/脚本修改，用 Arena 自带的搜索就能按备注 / 模型 / 日期找到对话。\n· 模型名跟着识别结果自动更新；时间是最近一次自己发送消息的时间（抽卡发出的不算）。只管在这台设备上发过消息或写过备注的对话。\n· 本地先显示：卡片立即变成“模型 · 备注”，悬停看完整名称；云端改名等这一轮结束、页面空闲之后在后台进行，一次一个，失败自动重试，不打断操作。',prefs.noteTitle,v=>{prefs.noteTitle=v;savePrefs();if(v)noteScan();else{noteEdClose(false);noteUnlabel();}try{window.dispatchEvent(new Event('amp-title-sync'));}catch{}bodyStamp=[];render();});
       if(prefs.noteTitle){const s0=sidOf(location.href);if(s0){const n0=notes.get(s0),w0=n0?noteTitle(s0):'';const nr=el('div','setting',null,cloud),ng=el('div','grow',null,nr);el('span','','当前会话备注',ng);el('span','hint',n0?w0+(n0.c===w0?' · 云端已同步':n0.e===w0?' · 云端改名没成功，有改动时再试':' · 空闲后写入云端'):'还没有：发一条消息或写个备注后自动命名',ng);const ni=el('input','note-input',null,nr);ni.type='text';ni.maxLength=60;ni.placeholder='写备注，回车保存';ni.value=n0?.n||'';ni.setAttribute('aria-label','当前会话备注');ni.onkeydown=e=>{e.stopPropagation();if(e.key==='Enter'&&!e.isComposing&&e.keyCode!==229){e.preventDefault();noteSet(s0,ni.value);bodyStamp=[];render();}};}}
+      toggle(cloud,'标签页标题显示备注','默认开启：当前对话有备注时，浏览器标签页标题只显示备注（开多个 Arena 标签页时一眼分清）；没有备注就保持 Arena 自己的标题。离开对话、清掉备注或关掉这里时恢复原标题。',prefs.tabNote,v=>{prefs.tabNote=v;setTimeout(()=>{try{tabTitle.refresh();}catch{}},0);});
       toggle(cloud,'把本地标题同步到 Arena 会话名','使用页面自带的重命名接口（PATCH /api/history/agentic/{id}），会覆盖 Arena 上已有的会话名；每个会话同一标题只发送一次。开着上面的“备注 + 云端会话名”时，自己发过消息 / 写过备注的对话按那边的格式命名，这里不再改它们。',prefs.cloudSync,v=>{prefs.cloudSync=v;if(v){const e=catalog.entries.get(sidOf(location.href));if(e)void syncTitle(e);}});
       const fr=el('div','setting',null,cloud),fg=el('div','grow',null,fr);info(el('span','setting-title','同步格式',fg),'set:fmt',prefs.cloudFormat==='name'?'仅内部名称，如 gpt-5.1-codex-high':'编号 + 内部名称，如 #12 gpt-5.1-codex-high',fr);const fs=el('select','selector',null,fr);fs.setAttribute('aria-label','同步格式');for(const [id,text]of [['prefix','#编号 名称'],['name','仅名称']]){const o=el('option','',text,fs);o.value=id;}fs.value=prefs.cloudFormat;fs.onchange=()=>{prefs.cloudFormat=fs.value;savePrefs();bodyStamp=[];render();};
       const cur=catalog.entries.get(sidOf(location.href));const cr=el('div','setting',null,cloud),cg=el('div','grow',null,cr);el('span','','当前会话',cg);el('span','hint',cur?(cur.cloud?.title?'已同步：'+cur.cloud.title:'未同步')+' · 本地：'+cur.title:'尚无本地标题',cg);if(cur)button(cr,'立即同步','把当前会话的本地标题写入 Arena',async()=>{say('正在同步…');const ok=await syncTitle(cur,true);say(ok?'已同步':'未同步，见日志');},'clear').style.marginTop='0';
@@ -9479,11 +10081,17 @@ details.mc-card .section.credits{margin-top:12px}
       if(confirmRawClear)button(acts,'取消','取消清理',()=>{confirmRawClear=false;render();});
     }
     // 用户消息旁的发送时间：写在气泡下方操作格（data-user-message-action，复制按钮所在）的属性上，由 ::before 渲染在按钮左侧；不插入节点
-    function clearSent(){for(const [node]of sentMarks){node.removeAttribute('data-amp-sent');node.removeAttribute('title');}sentMarks.clear();}
+    function clearSent(){for(const [node]of sentMarks){node.removeAttribute('data-amp-sent');node.removeAttribute('title');}sentMarks.clear();sentDirty=true;}
+    // v1.11.86 性能：只在对话区里找，而且只在出现了新的用户消息（共用观察器看到新增的消息节点）、换了对话区或换了页面时才重新扫；
+    // 流式输出（只有助手的回复在变）时不扫
+    let stLog=null,stPath='',sentDirty=true;
+    domHub.on(recs=>{if(sentDirty)return;for(const r of recs)for(const n of r.addedNodes)if(n.nodeType===1&&(n.matches('[data-user-message-body-row],[data-chat-message-id]')||n.querySelector?.('[data-user-message-body-row]'))){sentDirty=true;return;}},{log:true});
     function sentTimes(){
       if(!prefs.showSent||document.readyState!=='complete')return;
+      const lg=domHub.log();if(!lg)return;
+      if(!sentDirty&&lg===stLog&&stPath===location.pathname)return;sentDirty=false;stLog=lg;stPath=location.pathname;
       for(const [node]of sentMarks)if(!node.isConnected){sentMarks.delete(node);}
-      const rows=document.querySelectorAll('[data-chat-message-id] [data-user-message-body-row]'),need=[];let changed=0;
+      const rows=lg.querySelectorAll('[data-chat-message-id] [data-user-message-body-row]'),need=[];let changed=0;
       for(const rowEl of rows){
         const host=rowEl.closest('[data-chat-message-id]'),id=host?.getAttribute('data-chat-message-id'),node=rowEl.querySelector(':scope>[data-user-message-action]')||rowEl;if(!id||sentMarks.has(node))continue;
         const t=uuidTime(id);if(t!==null){apply(node,t,'UUIDv7');continue;}
@@ -9491,7 +10099,7 @@ details.mc-card .section.credits{margin-top:12px}
         if(!sentPending.has(id)){sentPending.add(id);need.push(id);}
       }
       function apply(node,ms,source){const text=stamp(ms);if(!text)return;node.setAttribute('data-amp-sent',text);node.title='发送于 '+fullStamp(ms)+' · '+source;sentMarks.set(node,ms);changed++;}
-      if(need.length)void catalog.sentAt(need).then(()=>{for(const id of need)sentPending.delete(id);paint();});
+      if(need.length)void catalog.sentAt(need).then(()=>{for(const id of need)sentPending.delete(id);sentDirty=true;paint();});
       if(changed)log('debug','发送时间','标注 '+changed+' 条消息');
     }
     ui={host,entry,attach,render,view,spendBrief,noteEdit:sid=>noteEdit(sid),pulseRatio:()=>{try{return pulseRatio();}catch{return null;}},liveEst:()=>{try{return liveEst(sidOf(location.href));}catch{return null;}},show(t){if(t==='detector'||t==='hunt'){t='overview';monFocusAt=Date.now();bodyStamp=[];}if(typeof t==='string'&&tabs.some(x=>x[0]===t)){tab=t;historyView=null;turnKey=null;}if(compact)expanded=true;else pref.open=true;persist();render();},toggle(){if(compact)expanded=!expanded;else pref.open=!pref.open;persist();render();},destroy(){clearTimeout(toastTimer);try{clearHeader();}catch{}for(const [a,m]of marks)restoreMark(a,m);marks.clear();clearSent();if(aliasSheet)document.adoptedStyleSheets=document.adoptedStyleSheets.filter(s=>s!==aliasSheet);aliasStyle?.remove();applySidebar(null);entry.remove();host.remove();gripHost.remove();foldHost.remove();reloadHost.remove();pull.destroy();glassStyle.remove();document.documentElement.removeAttribute('data-amp-glass');gemStyle.remove();deskGemStyle.remove();avatarHost.remove();modeHost.remove();drawerMo.disconnect();document.documentElement.removeAttribute('data-amp-gem');document.documentElement.removeAttribute('data-amp-dgem');document.documentElement.removeAttribute('data-amp-mode-moved');document.documentElement.removeAttribute('data-amp-mode-open');}};render();
@@ -9502,18 +10110,40 @@ details.mc-card .section.credits{margin-top:12px}
   if(document.body)mountAll();else{const observer=new MutationObserver(()=>{if(document.body){observer.disconnect();mountAll();}});observer.observe(document.documentElement||document,{childList:true,subtree:true});}
   // v1.11.85 正在拖侧栏宽度（标记里是开始时间；超过 60 秒当作没清掉的残留，直接去掉）
   function sbDragging(){const v=document.documentElement.getAttribute('data-amp-sbdrag');if(v===null)return false;if(Date.now()-(+v||0)<60000)return true;document.documentElement.removeAttribute('data-amp-sbdrag');return false;}
-  const routeTimer=setInterval(()=>{if(location.pathname!==lastRoute){lastRoute=location.pathname;paint();}if(!sbDragging()){ui?.attach();bar?.sync();}},500);
+  // v1.11.86 标签页标题只显示备注：当前对话有备注 → 标签页标题 = 备注（开多个 Arena 标签页时一眼分清）；没备注保持 Arena 自己的标题。
+  // 备注来源和侧栏卡片一致：本机备注记录（notes）优先，没有再从云端会话名 模型/时间/备注 里取备注那段（侧栏标题 / 本地目录标题）。
+  // 官方标题 = 当前不等于我们写入值的那个标题（Next.js 切页时会改写）；离开对话、清掉备注、关掉开关时还原成它。
+  // 何时更新：路由变化、amp-title-sync、storage（别的标签页改了备注）、开关；Next.js 改写标题在 500ms 路由定时器里比较一次字符串就发现，
+  // 不加整页观察器。只在值不同时才写。<title> 可能在 body 里：只用 document.title 读写，不用 head>title。
+  const tabTitle=(()=>{let ours='',official='',want=null,wantAt=0;
+    const calc=()=>{if(!prefs.tabNote)return '';const sid=sidOf(location.href);if(!sid)return '';let n='';
+      try{if(noteOwns(sid))n=notes.get(sid)?.n||'';else n=splitNote(noteSideTitle(sid)||catalog.entries.get(sid)?.title||'').note||'';}catch{}
+      return String(n).replace(/\s+/g,' ').trim().slice(0,80);};
+    function sync(force){
+      const soft=window.__AMP_SOFT_NAV__;if(soft&&soft.until>Date.now())return; // 重新载入对话时短暂经过 /agent：不动标题
+      const now=Date.now();if(force||want===null||now-wantAt>5000){want=calc();wantAt=now;}
+      const cur=document.title;if(cur!==ours)official=cur;
+      if(want){if(cur!==want)document.title=want;ours=want;}
+      else if(ours){if(cur===ours&&official&&official!==ours)document.title=official;ours='';}
+    }
+    const refresh=()=>{try{sync(true);}catch{}};
+    window.addEventListener('amp-title-sync',refresh);
+    window.addEventListener('storage',e=>{if(!e.key||e.key===NOTE_KEY)setTimeout(refresh,50);});
+    return {sync,refresh};})();
+  let attachPend=false,attachMoved=false;
+  const routeTimer=setInterval(()=>{let moved=false;if(location.pathname!==lastRoute){lastRoute=location.pathname;moved=true;paint();try{tabTitle.sync(true);}catch{}}else{try{tabTitle.sync(false);}catch{}}if(!sbDragging()){if(!attachPend){attachPend=true;requestAnimationFrame(()=>setTimeout(()=>{attachPend=false;try{if(!sbDragging())ui?.attach(moved||attachMoved);}catch{}attachMoved=false;},0));}if(moved)attachMoved=true;bar?.sync();}},500);
+  // v1.11.86 性能：定时摆放放到下一帧画完之后做（这时排版是新的，读尺寸不会在流式输出时强制整页排版）
   // v1.11.73 启动 / 切换对话时不再干等 500ms 轮询：DOM 一有变化就在下一帧挂载（最多 100ms 一次），页面一次成形，不再一块块跳
   let fastUntil=Date.now()+20000,fastT=0,fastLast=0,fastPath=location.pathname;
-  const fastRun=()=>{fastT=0;fastLast=performance.now();try{ui?.attach();}catch{}try{bar?.sync();}catch{}};
-  const fastMo=new MutationObserver(()=>{if(location.pathname!==fastPath){fastPath=location.pathname;fastUntil=Date.now()+6000;}if(fastT||Date.now()>fastUntil)return;fastT=setTimeout(()=>requestAnimationFrame(fastRun),Math.max(0,100-(performance.now()-fastLast)));});
-  try{fastMo.observe(document.documentElement,{childList:true,subtree:true});}catch{}
+  const fastRun=()=>{fastT=0;fastLast=performance.now();try{ui?.attach(true);}catch{}try{bar?.sync();}catch{}};
+  // v1.11.86 共用观察器：只看对话区以外的变化（流式输出不再触发）
+  const fastOff=domHub.on(()=>{if(location.pathname!==fastPath){fastPath=location.pathname;fastUntil=Date.now()+6000;}if(fastT||Date.now()>fastUntil)return;fastT=setTimeout(()=>requestAnimationFrame(fastRun),Math.max(0,100-(performance.now()-fastLast)));});
   // 状态行里的倒计时与“已重置”切换需要定期重绘；回到前台时顺带刷新额度
   const statusTimer=setInterval(()=>{if(!document.hidden&&(prefs.showQuota||prefs.showCredits))paint();},30000);
   const onVisible=()=>{if(document.hidden)return;try{syncShared();}catch{}paint();if(Date.now()-pulseOkAt()>60000){pulseReqAt=0;void refreshPulse(true);}if(Date.now()-(balance?.at||0)>BALANCE_INTERVAL)void refreshBalance();};document.addEventListener('visibilitychange',onVisible);
-  const resize=()=>{ui?.attach();paint();};window.addEventListener('resize',resize);
+  const resize=()=>{ui?.attach(true);paint();};window.addEventListener('resize',resize);
   const flushAll=()=>{for(const r of runs.values())if(r.data)save(r.data);void catalog.flush();};window.addEventListener('pagehide',flushAll);
-  function stop(){clearInterval(mon.timer);gacha.stop();gacha.setPaint(null);bar?.destroy();bar=null;legacyDisplay.onchange=null;stopped=true;onLog=null;onSnapshot=null;clearInterval(routeTimer);try{fastMo.disconnect();}catch{}clearInterval(routeWatch);clearTimeout(paintTimer);for(const r of runs.values()){clearTimeout(r.timer);r.abort?.abort();r.token=null;}for(const reader of readers){try{reader.cancel().catch(()=>{});}catch{}}if(window.fetch===wrapped)window.fetch=native;if(XO?.open===xhrOpen)XO.open=oldOpen;if(XO?.send===xhrSend)XO.send=oldSend;if(window.EventSource===eventSource)window.EventSource=ES;window.removeEventListener('resize',resize);window.removeEventListener('pagehide',flushAll);window.removeEventListener('storage',onStorage);document.removeEventListener('visibilitychange',onVisible);clearInterval(statusTimer);clearInterval(noteTimer);clearTimeout(balanceTimer);clearTimeout(balanceResetTimer);for(const c of costState.values())clearTimeout(c.timer);ui?.destroy();catalog.destroy();}
+  function stop(){clearInterval(mon.timer);gacha.stop();gacha.setPaint(null);bar?.destroy();bar=null;legacyDisplay.onchange=null;stopped=true;onLog=null;onSnapshot=null;clearInterval(routeTimer);try{fastOff();}catch{}clearInterval(routeWatch);clearTimeout(paintTimer);for(const r of runs.values()){clearTimeout(r.timer);r.abort?.abort();r.token=null;}for(const reader of readers){try{reader.cancel().catch(()=>{});}catch{}}if(window.fetch===wrapped)window.fetch=native;if(XO?.open===xhrOpen)XO.open=oldOpen;if(XO?.send===xhrSend)XO.send=oldSend;if(window.EventSource===eventSource)window.EventSource=ES;window.removeEventListener('resize',resize);window.removeEventListener('pagehide',flushAll);window.removeEventListener('storage',onStorage);document.removeEventListener('visibilitychange',onVisible);clearInterval(statusTimer);clearInterval(noteTimer);clearTimeout(balanceTimer);clearTimeout(balanceResetTimer);for(const c of costState.values())clearTimeout(c.timer);ui?.destroy();catalog.destroy();}
   window.__AMP_LITE__={version:VERSION,stop,huntLive(){
     const r=selectedRun();
     const blocks=[quota.chat,quota.append].filter(q=>q?.blocked&&(!q.resetAt||q.resetAt>Date.now()));
@@ -9538,9 +10168,11 @@ details.mc-card .section.credits{margin-top:12px}
   window.addEventListener('amp:account',()=>accountReset('登录账号变化'));
   try{if(localStorage.getItem('amp.account.dirty')){localStorage.removeItem('amp.account.dirty');setTimeout(()=>accountReset('切换后首次加载'),800);}}catch{}
   window.__AMP_LITE__.mon={state:sid=>mon.bySid.get(sid||sidOf(location.href))||null,verdict:sid=>monState(sid||sidOf(location.href)),tick:monTick,kick:monKick};window.__AMP_LITE__.attn={all:()=>attn.all(),raise:(s,k,t)=>attn.raise(s,k,t),clear:s=>attn.clear(s)};window.__AMP_LITE__.gacha={start:()=>gacha.start(),stop:gacha.stop,state:gacha.state,peek:gacha.peek,settings:gacha.settings,followModel:gacha.followModel,quietTurn:gacha.quietTurn};window.__AMP_LITE__.usd=()=>usd?{...usd}:null;window.__AMP_LITE__.usdNow=()=>{const u=usdNow();return u?{...u}:null;};window.__AMP_LITE__.pulseTurn=sid=>{const t=pulseTurnFor(sid||sidOf(location.href),NaN);return t?{...t}:null;};window.__AMP_LITE__.pulseRatio=()=>ui?.pulseRatio?.()||null;window.__AMP_LITE__.pulse=()=>pulse?{...pulse}:null;window.__AMP_LITE__.notes={all:()=>JSON.parse(JSON.stringify(Object.fromEntries(notes))),title:sid=>noteTitle(sid||sidOf(location.href)),set:(sid,t)=>noteSet(sid,t),sent:(sid,at)=>noteSent(sid,at),tick:()=>noteTick(true),edit:sid=>ui?.noteEdit?.(sid)};
+  window.__AMP_LOG__=(level,stage,text)=>{try{log(level,stage,String(text||''));}catch{}};
   log('debug','初始化','v'+VERSION+' 已就绪');
+  if(mig86Old)log('info','设置','v1.11.86：「模型被改派时自动停止生成」改为默认关闭，已替你关闭一次；需要的话可以在设置 → 实时监控里重新打开');
   // 存储自检：写入/读回一个测试键，失败时在日志里给出明确提示（保存无效的常见原因：存储已满、隐私模式、站点数据被清理）。
-  try{const t='amp.selftest',v=String(Date.now()),ok=ampStore.set(t,v)&&localStorage.getItem(t)===v;try{localStorage.removeItem(t);}catch{}const u=ampStore.usage();log(ok?'debug':'info','存储',(ok?'本地存储正常':'本地存储不可写，设置将无法保存')+' · 已用约 '+Math.round(u.total/1024)+' KB（本脚本 '+Math.round(u.ours/1024)+' KB）');}catch{}
+  try{const t='amp.selftest',v=String(Date.now()),ok=ampStore.set(t,v)&&localStorage.getItem(t)===v;try{localStorage.removeItem(t);}catch{}const freed=ampStore.headroom();if(freed.length)log('warn','存储','本地存储快满了，已提前清理脚本缓存（'+freed.join('、')+'），给 Arena 的对话恢复状态留空间');const u=ampStore.usage();log(ok?'debug':'info','存储',(ok?'本地存储正常':'本地存储不可写，设置将无法保存')+' · 已用约 '+Math.round(u.total/1024)+' KB（本脚本 '+Math.round(u.ours/1024)+' KB）');}catch{}
 })();
 
 })();
