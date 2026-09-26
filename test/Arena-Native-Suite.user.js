@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.80
+// @version      1.11.81
 // @description  【测试版】Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.80' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.81' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 // v1.11.78 “-public”也是部署标记（grok-4.7-xhigh-public）：和 -vertex 一样不显示，档位才能识别出来（xhigh）
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '').replace(/-public(?=$|[\s·])/ig, '') : n;
@@ -5991,7 +5991,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.80', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.81', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -7343,7 +7343,7 @@ details.mc-card .section.credits{margin-top:12px}
 :host([data-compact]) .mc-fam{font-size:18px}
 :host([data-compact]) .mc-card{border-radius:16px}
 .about-upds{display:flex;flex-direction:column;align-items:stretch;gap:6px;margin:0;min-width:0}.about-upds .upd{display:flex;justify-content:flex-start;width:100%;min-height:36px;margin:0;padding:8px 12px!important;border:1px solid var(--line);border-radius:10px;font:12px/1.4 var(--mono);color:var(--fg);text-align:left;white-space:normal;overflow:visible;max-width:none;text-overflow:clip}.about-upds .upd:hover{background:var(--raised)}.about-upds .upd[data-new='1']{border-color:transparent}.about-upds .upd.chentry{justify-content:center;border-style:dashed;color:var(--secondary);opacity:1}.about-upds .chform{padding:2px 0}
-.head{min-height:0;padding:0 8px 0 14px;gap:10px;border-bottom:1px solid var(--line)}.head .head-id{display:flex;align-items:center;gap:6px;flex:none;min-width:0}.head h2{font-size:13px;font-weight:600;white-space:nowrap}.head .tabs{flex:1;min-width:0;border-bottom:0;padding:0;gap:13px}.head .tab{padding:11px 0 10px}.head .head-export{margin-left:auto}.head .tab[aria-selected=true]:after{bottom:0}
+.head{min-height:0;padding:0 8px 0 14px;gap:10px;border-bottom:1px solid var(--line)}.head .head-id{display:flex;align-items:center;gap:6px;flex:none;min-width:0}.head h2{font-size:13px;font-weight:600;white-space:nowrap}.head .tabs{flex:1;min-width:0;border-bottom:0;padding:0;gap:13px}.head .tab{padding:11px 0 10px}.head .head-export{margin-left:-2px}.head .tab[aria-selected=true]:after{bottom:0}
 .status{padding-top:5px}.pickers{margin-top:9px}
 .mc-top>.mc-unit{margin-left:auto}.mc-unit{flex:none;width:30px;height:30px;padding:0!important;border-radius:50%!important;border:1px solid var(--edge);background:var(--bg);font:600 14px/1 var(--mono);color:var(--heading)}.mc-unit[data-unit=token]{font-size:12.5px}.mc-unit:hover{background:var(--raised)}
 .mc-spend{margin-top:10px;padding-top:10px;border-top:1px solid var(--line);min-width:0}.mc-spend-lab{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--secondary)}.mc-spend-big{font:600 25px/1.2 var(--mono);letter-spacing:-.03em;color:var(--heading);margin:3px 0 1px;overflow-wrap:anywhere}.mc-spend-big[data-live]{animation:ampPulse 1.6s ease-in-out infinite}.mc-spend-note{font-size:10.5px;line-height:1.5;color:var(--secondary);overflow-wrap:anywhere}.mc-spend-sub{margin-top:5px;font-size:11.5px;color:var(--secondary)}.mc-spend-sub b{font-weight:500;color:var(--fg);font-family:var(--mono)}
@@ -7664,7 +7664,7 @@ details.mc-card .section.credits{margin-top:12px}
     const marks=new Map(),aliasCSS='[data-amp-local-title]{position:relative!important;color:transparent!important;display:block!important;flex:1 1 0%!important;min-width:0!important}[data-amp-local-title]>*{visibility:hidden!important}[data-amp-local-title]::after{content:attr(data-amp-short) / "";position:absolute;inset:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:hsl(var(--text-primary,24 6% 17%));pointer-events:none}[data-user-message-action][data-amp-sent]{display:flex!important;align-items:center;justify-content:flex-end;width:auto!important}[data-user-message-action][data-amp-sent]::before,[data-user-message-body-row][data-amp-sent]::after{content:attr(data-amp-sent);font-size:11px;line-height:1;font-family:inherit;font-variant-numeric:tabular-nums;color:hsl(var(--text-secondary,35 6% 45%));white-space:nowrap;pointer-events:none;opacity:.8}[data-user-message-action][data-amp-sent]::before{margin-right:6px}[data-user-message-body-row][data-amp-sent]::after{margin-top:2px}';
     let aliasSheet,aliasStyle;try{aliasSheet=new CSSStyleSheet();aliasSheet.replaceSync(aliasCSS);document.adoptedStyleSheets=[...document.adoptedStyleSheets,aliasSheet];}catch{aliasStyle=el('style','',aliasCSS,document.head||document.body);}
     let tab='overview',historyView=null,turnKey=null,selected=null,moreOpen=false,boundPath=location.pathname,compact=false,expanded=false,bodyStamp=[],pickerStamp='',turnStamp='',toastTimer=0,logItems=[],logKey='',logSerial=0,cacheLimit=50,openSid=null,confirmLogClear=false,lastLayout='',lastCooling=false,seenRevision=0,rawFilter='all',rawSpan=null,rawSerial=0,usageInfo=null,usageAt=0,confirmRawClear=false,settingsSerial=0,sentMarks=new Map(),sentPending=new Set(),sentStamp='';
-    // 右上角按钮：切换深色 / 浅色模式（模型信息改由底部余额栏 / 信息栏打开）。
+    // 深色 / 浅色切换按钮（模型信息改由底部余额栏 / 信息栏打开）。v1.11.81 电脑端放在 Arena“收起 / 展开工作区侧边栏”按钮左边（见 placeEntry）。
     const pageDark=()=>{const d=document.documentElement;return d.classList.contains('dark')||d.dataset.theme==='dark'||(!d.classList.contains('light')&&getComputedStyle(d).colorScheme==='dark');};
     function flipTheme(){const next=pageDark()?'light':'dark',d=document.documentElement;
       try{localStorage.setItem('theme',next);}catch{}
@@ -7975,7 +7975,7 @@ details.mc-card .section.credits{margin-top:12px}
     const compactBar=el('div','compact-bar',null,panel),compactTop=el('div','compact-top',null,compactBar),compactName=el('span','compact-name mono','模型信息',compactTop);
     {const eb=button(compactTop,'','导出当前页的记录',()=>void exportView(),'sheet-btn');icon('download',eb);}
     const compactToggle=button(compactTop,'','收起模型信息',()=>{expanded=false;render();},'sheet-btn');icon('close',compactToggle);
-    const compactInfo=el('div','compact-info','',compactBar),compactText=el('span','ci-text','',compactInfo),compactChip=button(compactInfo,'','说明',()=>say(chipWhy(),4200),'chip');compactChip.hidden=true;
+    const compactInfo=el('div','compact-info','',compactBar),compactText=el('span','ci-text','',compactInfo);
     // 手机底部抽屉：顶部把手（和标题行）上下拖动调高度，松手停在哪就是哪（不吸附）；顶到最上面 = 全屏，拉到最底 = 收起；轻点把手切换全屏。高度按屏幕比例记住。
     // v1.11.78 不再浮在页面上盖住输入框：始终在页面里占位，再高就把整页往上推（见 applySheet 上面的说明）。
     const SHEET_MIN=96,SHEET_CLOSE=72;
@@ -8011,9 +8011,10 @@ details.mc-card .section.credits{margin-top:12px}
         savePrefs();sheetAnchor(applySheet);};
       for(const hd of [sheetGrip,compactBar]){hd.addEventListener('pointerdown',down);hd.addEventListener('pointermove',move);hd.addEventListener('pointerup',up);hd.addEventListener('pointercancel',up);}
     }
-    // v1.11.80 顶部压成一行：模型信息 · 编号 · 标签页 · 导出；右上角的“收起”去掉（面板边缘的小箭头就能收起）
+    // v1.11.80 顶部压成一行：模型信息 · 编号 · 标签页；右上角的“收起”去掉（面板边缘的小箭头就能收起）
+    // v1.11.81 导出按钮挪到编号后面（原来“缓存 / 上次”小圆标的位置）；那个小圆标点了只在面板最底下闪一行字，看不出作用，去掉（手机抽屉里的也去掉）
     const head=el('header','head',null,panel),heading=el('div','head-id',null,head);el('h2','','模型信息',heading);const numberLabel=el('span','local-number mono','',heading);numberLabel.title='本地会话编号（同一浏览器内统一递增）';
-    const headChip=button(heading,'','说明',()=>say(chipWhy(),4200),'chip');headChip.hidden=true;const headExport=button(head,'','导出当前页的记录',()=>void exportView(),'sheet-btn head-export');icon('download',headExport);
+    const headExport=button(heading,'','导出当前页的记录',()=>void exportView(),'sheet-btn head-export');icon('download',headExport);
     const banner=el('div','cache-banner',null,panel),bannerText=el('span','grow','',banner);button(banner,'返回当前','返回当前会话的最新记录',()=>{historyView=null;turnKey=null;selected=null;rawSpan=null;tab=tab==='cache'?'overview':tab;render();},'return-live');
     const nav=el('div','tabs',null,panel);nav.setAttribute('role','tablist');nav.setAttribute('aria-label','模型信息视图');
     // 一级标签一屏放得下：来源 + 原始 合成“数据”，缓存 + 日志 合成“记录”（页内再切）；版本与更新单独放“关于”
@@ -8025,7 +8026,7 @@ details.mc-card .section.credits{margin-top:12px}
     nav.onkeydown=e=>{let i=groups.indexOf(groupOf(tab));if(e.key==='ArrowRight')i=(i+1)%groups.length;else if(e.key==='ArrowLeft')i=(i+groups.length-1)%groups.length;else if(e.key==='Home')i=0;else if(e.key==='End')i=groups.length-1;else return;e.preventDefault();tabButtons[i].click();tabButtons[i].focus();};
     const subnav=el('div','subtabs',null,panel);subnav.setAttribute('role','group');subnav.hidden=true;let subStamp='';
     // 宽屏：标签页和标题同一行（放进 head）；手机底部抽屉：head 隐藏，标签页单独一行
-    const placeNav=()=>{if(!compact){if(nav.parentElement!==head||nav.nextSibling!==headExport)head.insertBefore(nav,headExport);}else if(nav.parentElement!==panel||nav.nextSibling!==subnav)panel.insertBefore(nav,subnav);};placeNav();
+    const placeNav=()=>{if(!compact){if(nav.parentElement!==head||nav.previousSibling!==heading)heading.after(nav);}else if(nav.parentElement!==panel||nav.nextSibling!==subnav)panel.insertBefore(nav,subnav);};placeNav();
     const status=el('div','status',null,panel);status.setAttribute('aria-live','polite');
     const pickers=el('div','pickers',null,panel);
     const turnPicker=el('label','call-picker',null,pickers);el('span','','轮次',turnPicker);const turnSelect=el('select','selector',null,turnPicker);turnSelect.setAttribute('aria-label','选择轮次');turnSelect.onchange=()=>{const live=liveKey();turnKey=turnSelect.value===live?null:turnSelect.value;selected=null;rawSpan=null;render();};
@@ -8090,7 +8091,6 @@ details.mc-card .section.credits{margin-top:12px}
     // 说明文字默认收起：标题旁的 ⓘ 点一下展开、再点收起（展开状态记住，重绘不丢）
     const openInfo=new Set();
     function info(anchor,key,text,after){if(!text||!anchor)return null;const on=openInfo.has(key),b=el('button','info-btn',null,anchor);b.type='button';b.title='说明';b.setAttribute('aria-label','说明');b.setAttribute('aria-expanded',String(on));b.dataset.focus='i:'+key;icon('info',b);const p=el('div','info-text',String(text));p.hidden=!on;let ref=after||anchor;while(ref.nextElementSibling&&ref.nextElementSibling.classList.contains('info-text'))ref=ref.nextElementSibling;ref.after(p);b.onclick=e=>{e.preventDefault();e.stopPropagation();const next=!openInfo.has(key);if(next)openInfo.add(key);else openInfo.delete(key);p.hidden=!next;b.setAttribute('aria-expanded',String(next));};return b;}
-    function chipWhy(){return selectedRun()?.data?'上次记录：本轮还没读到新数据，显示的是上一次读取的结果（非本轮结论）。发送新消息后自动更新。':'本地缓存：这个页面还没读到本轮记录，显示的是本机保存的缓存（非本轮结论）。发送新消息后自动更新。';}
     async function copy(text,what='型号'){try{await navigator.clipboard.writeText(String(text));say('已复制'+what);}catch{say('复制不可用，请手动选中复制');}}
     function restoreMark(a,m){m.span.removeAttribute('data-amp-local-title');m.span.removeAttribute('data-amp-short');if(m.tip!==undefined){if(m.tip===null)a.removeAttribute('title');else a.setAttribute('title',m.tip);}if(m.description===null)a.removeAttribute('aria-description');else a.setAttribute('aria-description',m.description);}
     // 自定义/代号型号（如 dxzui）本身看不出厂商：若响应型号/内部名已识别出厂商，就显示成 dxzui-Claude。
@@ -8250,10 +8250,47 @@ details.mc-card .section.credits{margin-top:12px}
     el('style','','[data-amp-doc-hidden]{display:none!important}'
       +'html[data-amp-docpre] main div.flex.items-center.gap-2>:is(div:has(>button:only-child:not([aria-label]) svg),button:not([aria-label]):not([role]):not([aria-haspopup]):has(svg)):has(+:is(button[aria-label="Send message"],button[aria-label="发送消息"],[data-amp-native-gacha="1"])){display:none!important}'
       +'html[data-amp-quietnav] body>[role="dialog"][data-mobile="true"],html[data-amp-quietnav] body>div.bg-black\\/80[data-state]:not([role]){opacity:0!important;transition:none!important;animation:none!important;pointer-events:none!important}',document.head||document.body);
+    // v1.11.81 深浅色按钮放在 Arena“收起 / 展开工作区侧边栏”按钮的左边。新版 Arena 把这个按钮改名为 Collapse / Expand workspace sidebar（也不一定在 main 里），
+    // 以前认不出新名字就浮在窗口右上角，正好压在模型信息顶部的标签页上。插进按钮旁边后会检查是不是真的紧挨着：父元素不是横排、按钮是绝对定位、
+    // 或者父元素把子元素分散排开（justify-between 之类）时，改成浮在那个按钮左边，不去挤 Arena 自己的排版；实在找不到按钮时浮在对话区（不是整个窗口）右上角，避开模型信息面板。
+    // 手机 Gemini 布局照旧：插进顶栏、由 CSS 排在工作区按钮后面。
+    const WS_LBL=/^(?:(?:toggle|open|close|collapse|expand|show|hide)\s+(?:the\s+)?workspace(?:\s+(?:sidebar|panel))?|(?:打开|关闭|收起|展开|切换|显示|隐藏)工作区(?:侧边栏|侧栏|面板)?)$/i,entryLoose=new WeakSet();
+    function themeAnchor(gem){
+      const narrow=innerWidth<768;let best=null,bp=9;
+      for(const b of document.querySelectorAll('button[aria-label*="workspace" i],button[aria-label*="工作区"]')){
+        const l=(b.getAttribute('aria-label')||'').trim();if(!WS_LBL.test(l))continue;
+        const m=b.closest('main');if(gem&&!m)continue;if(narrow&&b.closest('[role="dialog"],[data-vaul-drawer]'))continue;
+        const r=b.getBoundingClientRect();if(gem?!(r.width>0&&r.height>0):!(r.width>=8&&r.height>=8))continue;
+        const top=m?m.getBoundingClientRect().top:0;if(r.top>=top+(gem?100:140)||r.bottom<=0)continue;
+        const p=/collapse|expand|收起|展开/i.test(l)?0:1;if(p<bp){best=b;bp=p;}
+      }
+      return best;
+    }
+    function placeEntry(anchor,gem){
+      const inflow=()=>{if(entry.hasAttribute('data-floating'))entry.removeAttribute('data-floating');for(const k of ['left','top','right','z-index'])if(entry.style.getPropertyValue(k))entry.style.removeProperty(k);};
+      const float=(x,y)=>{if(entry.parentNode!==document.body)document.body.append(entry);if(!entry.hasAttribute('data-floating'))entry.setAttribute('data-floating','');const L=Math.round(x)+'px',T=Math.round(y)+'px';if(entry.style.left!==L)entry.style.left=L;if(entry.style.top!==T)entry.style.top=T;if(entry.style.right!=='auto')entry.style.right='auto';};
+      if(anchor&&gem){if(entry.parentNode!==anchor.parentNode||entry.nextSibling!==anchor)anchor.before(entry);inflow();return;}
+      if(anchor){
+        const p=anchor.parentElement,cs=p?getComputedStyle(p):null,row=!!cs&&/flex/.test(cs.display)&&!/column/.test(cs.flexDirection)&&!/absolute|fixed/.test(getComputedStyle(anchor).position);
+        if(row&&!entryLoose.has(anchor)){
+          if(entry.parentNode!==p||entry.nextSibling!==anchor)anchor.before(entry);inflow();
+          if(entry.hidden)return;
+          const er=entry.getBoundingClientRect(),ar=anchor.getBoundingClientRect(),gap=ar.left-er.right;
+          if(er.width>0&&gap>=-1&&gap<=24&&Math.abs(er.top+er.height/2-(ar.top+ar.height/2))<=8)return;
+          entryLoose.add(anchor);  // 被分散排开了（或换了行）：这个按钮以后都改成浮在它左边
+        }
+        const ar=anchor.getBoundingClientRect();float(ar.left-(entry.offsetWidth||32)-6,ar.top+(ar.height-(entry.offsetHeight||32))/2);
+        // 浮起来后被按钮所在的面板盖住（面板自己的 z-index 更高）：层级抬到比按钮的祖先高一级
+        if(!entry.hidden){const r=entry.getBoundingClientRect(),hit=r.width>0?document.elementFromPoint(r.left+r.width/2,r.top+r.height/2):entry;if(hit&&hit!==entry){let z=40;for(let e=anchor;e&&e!==document.body;e=e.parentElement){const v=parseInt(getComputedStyle(e).zIndex,10);if(Number.isFinite(v))z=Math.max(z,v+1);}const zs=String(z);if(entry.style.zIndex!==zs)entry.style.zIndex=zs;}}
+        return;
+      }
+      const m=document.querySelector('main')?.getBoundingClientRect(),ok=!!m&&m.width>0,vw=document.documentElement.clientWidth||innerWidth;
+      float((ok?m.right:vw)-56-(entry.offsetWidth||32),(ok?Math.max(0,m.top):0)+12);
+    }
     function attach(){
       if(stopped||!document.body)return;const cooling=Date.now()<cooldown;if(cooling!==lastCooling){lastCooling=cooling;paint();}const main=document.querySelector('main'),ready=document.readyState==='complete'||!!document.querySelector('next-route-announcer'); // v1.11.73 React 水合完成即可（Next.js 在提交后插入 next-route-announcer），不再等 load（手机上常晚好几秒）
-      const anchor=ready?[...document.querySelectorAll('main button[aria-label="Toggle workspace sidebar"],main button[aria-label="Open workspace"],main button[aria-label="Close workspace"],main button[aria-label="打开工作区"],main button[aria-label="切换工作区侧边栏"]')].find(b=>{const r=b.getBoundingClientRect(),m=b.closest('main').getBoundingClientRect();return r.width>0&&r.height>0&&r.top<m.top+100;}):null;
-      if(anchor){if(entry.parentNode!==anchor.parentNode||entry.nextSibling!==anchor)anchor.before(entry);entry.removeAttribute('data-floating');}else{if(entry.parentNode!==document.body)document.body.append(entry);entry.setAttribute('data-floating','');}
+      entry.hidden=!/^\/agent(?:\/|$)/.test(location.pathname);
+      const gem0=gemOn(),anchor=ready?themeAnchor(gem0):null;placeEntry(anchor,gem0);
       {const g=gemOn();document.documentElement.toggleAttribute('data-amp-gem',g);document.documentElement.toggleAttribute('data-amp-dgem',deskGemOn());document.documentElement.toggleAttribute('data-amp-wsr',prefs.wsRight!==false);document.documentElement.toggleAttribute('data-amp-wspre',g&&prefs.wsEdge!==false);document.documentElement.toggleAttribute('data-amp-docpre',!!prefs.hideDocIcon);if(g&&anchor){if(anchor.nextSibling!==avatarHost)anchor.after(avatarHost);avatarHost.hidden=false;paintAvatar();loadMe();}else if(avatarHost.isConnected)avatarHost.remove();syncMode();wsSync();if(!drawerMoOn&&document.body){drawerMoOn=true;drawerMo.observe(document.body,{childList:true});}}
       if(reloadHost.isConnected)reloadHost.remove();document.documentElement.toggleAttribute('data-amp-glass',!!prefs.glassDrawer);if(ready)pull.bind();
       const eligible=/^\/agent(?:\/|$)/.test(location.pathname);entry.hidden=!eligible;let mode='none';
@@ -8310,7 +8347,7 @@ details.mc-card .section.credits{margin-top:12px}
       compactName.textContent=triggerLabel.textContent;{const st=monState(sid),[,sfx]=famTier(liveCall?.internal||liveCall?.model||''),tier=liveCall?.effort?.value||sfx,rs=liveCall&&liveCall.reasoning.status!=='conflict'?number(liveCall.reasoning.value):null;compactText.textContent=liveCall?[tier?'档位 '+tier:'',rs?'思考 '+spendShort(rs):rs===0?'无思考链':'',st.tone==='idle'?'':st.short].filter(Boolean).join(' · ')||'已识别':'尚无模型记录';compactText.dataset.tone=liveCall?st.tone:'';}numberLabel.textContent=seqLabel(s?.sid||sid);
       // v1.11.79 这一抽还在老虎机里揭晓：模型信息只写已经停下的格子（厂商 → 型号），详情等三格都停下再显示
       const gv=sid?(()=>{try{return gachaSlot.view(sid);}catch{return null;}})():null;if(gv){triggerLabel.textContent=compactName.textContent=gachaSlot.stageName(gv);compactText.textContent='识别中…';compactText.dataset.tone='';}
-      const historical=!!historyView||!!turnKey||!r?.data&&!!s||!!r?.data&&r.data.revision!==r.revision,explicitHist=!!historyView||!!turnKey;banner.hidden=!explicitHist||!['overview','sources','raw'].includes(tab);{const ct=!explicitHist&&historical?(r?.data?'上次':'缓存'):'';for(const ch of [compactChip,headChip]){ch.hidden=!ct;if(ch.textContent!==ct)ch.textContent=ct;}}
+      const historical=!!historyView||!!turnKey||!r?.data&&!!s||!!r?.data&&r.data.revision!==r.revision,explicitHist=!!historyView||!!turnKey;banner.hidden=!explicitHist||!['overview','sources','raw'].includes(tab);
       bannerText.textContent=historyView?'本地缓存 · '+(seqLabel(historyView.sid)||'')+' · '+turnLabel(historyView):turnKey?'历史轮次 · '+turnLabel(s)+' · 非最新记录':r?.data?'上次记录 · 非本轮结论':'本地缓存 · 非本轮结论';banner.querySelector('button').hidden=!(historyView||turnKey);
       const grp=groupOf(tab);groupLast[grp[0]]=tab;for(let i=0;i<groups.length;i++){const on=groups[i]===grp;tabButtons[i].setAttribute('aria-selected',String(on));tabButtons[i].tabIndex=on?0:-1;}body.setAttribute('aria-labelledby','amp-tab-'+grp[0]);subnav.hidden=grp[2].length<2;if(!subnav.hidden){const k=grp[0]+'|'+tab;if(subStamp!==k){subStamp=k;subnav.replaceChildren();subnav.setAttribute('aria-label',grp[1]);for(const id of grp[2]){const t=(tabs.find(x=>x[0]===id)||[id,id])[1],sb=button(subnav,t,t,()=>{tab=id;render();});sb.setAttribute('aria-pressed',String(id===tab));}}}
       logBar.hidden=tab!=='logs';clearLogs.textContent=confirmLogClear?'确认清理全部日志':'清理日志';cancelClear.hidden=!confirmLogClear;read.disabled=!!historyView||!!r?.busy||Date.now()<cooldown;
