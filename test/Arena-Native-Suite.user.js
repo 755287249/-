@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.79
+// @version      1.11.80
 // @description  【测试版】Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.79' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.80' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 // v1.11.78 “-public”也是部署标记（grok-4.7-xhigh-public）：和 -vertex 一样不显示，档位才能识别出来（xhigh）
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '').replace(/-public(?=$|[\s·])/ig, '') : n;
@@ -4610,8 +4610,9 @@ const errReload = (() => {
     if (!sid || !/^[\w-]{8,128}$/.test(sid)) return;
     try { wrap.sent(sid); } catch {}
     if (!info || typeof info.mid !== 'string' || !/^[\w-]{4,128}$/.test(info.mid)) return;
-    const all = sends(), now = Date.now();
-    all[sid] = { mid: info.mid, at: +info.at || now, text: norm(info.text).slice(0, 40), st: +info.st || 0 };
+    const all = sends(), now = Date.now(), la = lastAssistantInfo();
+    // v1.11.80 另外记下全文（补齐显示用）和发送时上一轮回复的段数（补齐时据此找到“这一轮”从哪开始）
+    all[sid] = { mid: info.mid, at: +info.at || now, text: norm(info.text).slice(0, 40), full: String(info.full || '').slice(0, 4000), st: +info.st || 0, pc: la?.pc || 0 };
     for (const k of Object.keys(all)) if (!all[k] || !(now - all[k].at < 86400e3)) delete all[k];
     Object.keys(all).sort((a, b) => all[b].at - all[a].at).slice(12).forEach(k => delete all[k]);
     saveSends(all);
@@ -4620,7 +4621,7 @@ const errReload = (() => {
   function pendingCheck() {
     const sid = sidNow(); if (!sid) return;
     const e = sends()[sid]; if (!e || !e.mid || !(Date.now() - e.at < 45 * 60e3)) return;
-    const t0 = Date.now(); let seenAt = 0, wasBusy = false, idleAt = 0, closed = false, shownAt = 0;
+    const t0 = Date.now(); let seenAt = 0, wasBusy = false, idleAt = 0, closed = false, shownAt = 0, asked = false;
     // v1.11.72 同一条消息只提示一次：显示过就记在本机（之后刷新、切回来、别的标签页都不再弹），8 秒后自己收起；
     // 页面在后台时不弹；页面恢复得慢时多等一会儿（消息列表出现后 8 秒）再判断“没显示”。
     const quiet = () => { const x = sends()[sid]; return !!x && x.mid === e.mid && !!x.q; };
@@ -4641,15 +4642,124 @@ const errReload = (() => {
         else if (ours) hide();
         return;
       }
-      if (closed || timer || errBar || (box && !box.hidden && !ours)) return;
-      if (ours) { if (Date.now() - shownAt > 8000) { closed = true; hide(); return; } }
-      else if (quiet() || document.hidden || Date.now() - seenAt < 8000) return;
-      const bad = e.st >= 400, got = e.st >= 200 && e.st < 300;
-      const msg = '你' + ago() + '发送的' + (e.text ? '“' + e.text + '”' : '消息') + (bad ? '，服务器返回了 ' + e.st + '，可能没发出去；过一会儿还不出现再重新发送。' : (got ? '服务器已收到，' : '，') + '这一轮还在进行或收尾，页面暂时没显示——不用重发，完成后会出现。');
+      if (closed || timer || errBar || fill.el || (box && !box.hidden && !ours)) return;
+      const bad = e.st >= 400, got = e.st >= 200 && e.st < 300, canFill = !bad && !!(e.full || e.text) && prefOn('backfill') && turnBusy();
+      if (ours) { if (Date.now() - shownAt > (asked ? 120000 : 8000)) { closed = true; hide(); return; } }
+      else if ((!canFill && quiet()) || document.hidden || Date.now() - seenAt < 8000) return;
+      // v1.11.80 这一轮正在进行（页面在续 bash 等输出）而这条消息不见了：问要不要补齐显示
+      const msg = canFill ? '你' + ago() + '发送的' + (e.text ? '“' + e.text + '”' : '消息') + (got ? '，服务器已收到' : '') + '，这一轮正在进行，但页面上没有这条消息（刷新时这一轮还没保存）。要把它补回来、接在最新一轮吗？'
+        : '你' + ago() + '发送的' + (e.text ? '“' + e.text + '”' : '消息') + (bad ? '，服务器返回了 ' + e.st + '，可能没发出去；过一会儿还不出现再重新发送。' : (got ? '服务器已收到，' : '，') + '这一轮还在进行或收尾，页面暂时没显示——不用重发，完成后会出现。');
       if (ours) { const t = box.querySelector('.t'); if (t) t.textContent = msg; }
+      else if (canFill) { asked = true; shownAt = Date.now(); show(msg, [['补齐显示', () => { closed = true; hide(); backfill(e, sid); }], ['刷新', () => reloadNow(sid, false)], ['不用', () => { closed = true; markQuiet(); hide(); }]], false, 'pending'); }
       else { markQuiet(); shownAt = Date.now(); show(msg, [['刷新', () => reloadNow(sid, false)], ['知道了', () => { closed = true; hide(); }]], false, 'pending'); }
     }, 1000);
   }
+  // ---------- v1.11.80 丢失的消息补齐显示 ----------
+  // 发出去、服务器也收到了，刷新后页面里却没有这条消息（这一轮还没收尾，Arena 先把旧对话显示出来、接着续上正在进行的 bash 输出，
+  // 看起来像“上一轮还在干活”）：自动提示要不要补齐；点“补齐显示”就把这条消息按原样式插回去，正在进行的内容接在它下面。
+  // 只是显示层面的补齐（不改 Arena 的数据、不重发）；这一轮收尾后真正的消息出现，补上的这条自动撤掉。
+  const prefOn = k => { try { return (JSON.parse(localStorage.getItem('amp.lite.v2.prefs') || '{}') || {})[k] !== false; } catch { return true; } };
+  const fill = { el: null, sid: '', mid: '', text: '', at: 0, timer: 0 };
+  function lastAssistantInfo() {
+    const v = chatValue(), msgs = v?.messages; if (!Array.isArray(msgs)) return null;
+    // 发送的那一刻页面状态里最后一条已经是刚发的用户消息，往前找上一轮的回复
+    for (let i = msgs.length - 1; i >= 0; i--) { const m = msgs[i]; if (m?.role === 'assistant') return { id: String(m.id || ''), pc: Array.isArray(m.parts) ? m.parts.length : 0 }; }
+    return null;
+  }
+  const isUserNode = n => !!n.querySelector('[data-user-message-layout],[data-user-message-body-row]');
+  // 补在哪：① 最后一条用户消息后面有两条助手消息 → 插在最后那条（正在进行的）前面；② 正在进行的内容续在上一轮的回复里 →
+  // 找到上一轮回复最后一段正文所在的块，插在它后面（后面的 bash 等就是这一轮的）；③ 都找不到 → 放在对话最后
+  function fillAnchor(e) {
+    const log = logEl(); if (!log) return null;
+    const nodes = [...log.querySelectorAll('[data-agent-transcript-message]')].filter(n => !n.hasAttribute('data-amp-backfill') && !n.closest('[data-amp-backfill]'));
+    if (!nodes.length) return { parent: log, before: null };
+    let lu = -1; nodes.forEach((n, i) => { if (isUserNode(n)) lu = i; });
+    const after = nodes.slice(lu + 1).filter(n => !isUserNode(n));
+    if (after.length >= 2) { const ref = after[after.length - 1]; return { parent: ref.parentElement, before: ref }; }
+    const node = after[0] || nodes[nodes.length - 1], v = chatValue(), m = Array.isArray(v?.messages) ? v.messages[v.messages.length - 1] : null;
+    if (m && m.role === 'assistant' && Array.isArray(m.parts)) {
+      const parts = m.parts; let k = e.pc > 0 && parts.length > e.pc ? e.pc : -1;
+      if (k < 0) for (let i = parts.length - 1; i > 0; i--) if (parts[i]?.type === 'step-start' && parts[i - 1]?.type === 'text' && parts.slice(i).every(p => p?.type !== 'text' || !String(p.text || '').trim())) { k = i; break; }
+      const prev = k > 0 ? parts.slice(0, k).reverse().find(p => p?.type === 'text' && String(p.text || '').trim()) : null;
+      if (prev) {
+        const tail = norm(prev.text).slice(-48); let deep = null;
+        if (tail.length >= 6) for (const x of node.querySelectorAll('*')) if (norm(x.textContent).endsWith(tail)) deep = x;
+        if (deep) { let a = deep; while (a.parentElement && a.parentElement !== node && !a.nextElementSibling) a = a.parentElement; if (a.nextElementSibling) return { parent: a.parentElement, before: a.nextElementSibling }; }
+      }
+    }
+    return { parent: node.parentElement, before: node.nextSibling };
+  }
+  function fillBubble(e) {
+    const log = logEl(); if (!log) return null;
+    const src = [...log.querySelectorAll('[data-agent-transcript-message]')].filter(isUserNode).pop();
+    let el;
+    if (src) {
+      el = src.cloneNode(true); el.removeAttribute('data-chat-message-id');
+      el.querySelectorAll('img,video,button,[role=button],[data-amp-sent]').forEach(x => { if (x.matches('[data-amp-sent]')) x.removeAttribute('data-amp-sent'); else x.remove(); });
+      const row = el.querySelector('[data-user-message-body-row]') || el;
+      // 正文容器：用户消息里字最多的那个叶子块，整个换成这条消息的原文
+      let body = null, len = -1; for (const x of row.querySelectorAll('*')) { if (x.children.length) continue; const l = (x.textContent || '').length; if (l > len) { len = l; body = x; } }
+      if (!body) body = row;
+      let blk = body; while (blk.parentElement && blk.parentElement !== row && blk.parentElement.children.length === 1) blk = blk.parentElement;
+      blk.replaceChildren(); const p = document.createElement('div'); p.style.whiteSpace = 'pre-wrap'; p.textContent = e.full || e.text || ''; blk.append(p);
+    } else {
+      el = document.createElement('div');
+      el.innerHTML = '<div style="display:flex;justify-content:flex-end;margin:12px 0"><div style="max-width:80%;padding:8px 14px;border-radius:18px;background:hsl(var(--surface-tertiary,33 31% 94%));white-space:pre-wrap"></div></div>';
+      el.querySelector('div > div').textContent = e.full || e.text || '';
+    }
+    el.setAttribute('data-agent-transcript-message', ''); el.setAttribute('data-amp-backfill', e.mid);
+    const tag = document.createElement('div'); tag.textContent = '补齐显示 · 服务器已收到 · ' + new Date(e.at).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' }) + ' 发送';
+    tag.style.cssText = 'text-align:right;font-size:11px;line-height:1.4;margin:-6px 4px 8px 0;color:hsl(var(--text-tertiary,35 6% 42%));opacity:.85';
+    el.append(tag); return el;
+  }
+  function fillRemove() { clearInterval(fill.timer); fill.timer = 0; try { fill.el?.remove(); } catch {} fill.el = null; fill.mid = ''; }
+  function fillPlace(e) {
+    const a = fillAnchor(e); if (!a || !a.parent) return false; if (fill.el && a.before === fill.el) a.before = fill.el.nextSibling;
+    if (!fill.el || !fill.el.isConnected && fill.mid !== e.mid) fill.el = fillBubble(e); if (!fill.el) return false;
+    if (fill.el.parentElement !== a.parent || fill.el.nextSibling !== a.before) { try { a.parent.insertBefore(fill.el, a.before && a.before.parentElement === a.parent ? a.before : null); } catch { return false; } }
+    return true;
+  }
+  function backfill(e, sid) {
+    fillRemove(); Object.assign(fill, { sid, mid: e.mid, text: e.text, at: e.at });
+    if (!fillPlace(e)) { toast('没找到合适的位置，补齐失败；可以等这一轮结束后刷新'); return; }
+    toast('已补齐：这条消息接在最新一轮，正在进行的内容在它下面', 2600);
+    const t0 = Date.now();
+    fill.timer = setInterval(() => {
+      if (sidNow() !== sid || Date.now() - t0 > 30 * 60e3) { fillRemove(); return; }
+      if (document.querySelector('[data-chat-message-id="' + CSS.escape(e.mid) + '"]')) { fillRemove(); return; } // 真正的消息出来了
+      if (!fill.el?.isConnected || !fill.el.nextSibling && turnBusy()) fillPlace(e); // 被 React 重绘掉了 / 位置变了：放回去
+    }, 1000);
+  }
+  // ---------- v1.11.80 长对话：先渲染最底下（最新）的内容，上面的等往上翻到附近再渲染 ----------
+  // 除最后几条外的消息先标成 content-visibility:auto（浏览器跳过它们的排版和绘制，只占一个估计高度）；往上翻到附近就取消标记、正常显示，
+  // 已经显示过的不会再收回。刷新 / 打开长对话时最新内容立刻出来，不用等整段对话从上到下排完。设置里可关。
+  const lazy = { io: null, root: null, seen: new WeakSet(), mo: null, pending: false };
+  // 标记只改属性、不读布局（不会在页面排版前强制排版）；监听“往上翻到附近”的 IntersectionObserver 放到下一帧再建
+  function lazyMark() {
+    lazy.pending = false;
+    if (!CONV.test(location.pathname)) return;
+    if (!prefOn('lazyLog')) { for (const n of document.querySelectorAll('[data-amp-far]')) n.removeAttribute('data-amp-far'); return; }
+    const log = document.querySelector('main [role="log"]'); if (!log) return;
+    const nodes = log.querySelectorAll('[data-agent-transcript-message]'), keep = 6; if (nodes.length <= keep + 4) return;
+    let added = 0;
+    for (let i = 0; i < nodes.length - keep; i++) { const n = nodes[i]; if (lazy.seen.has(n) || n.hasAttribute('data-amp-far') || n.hasAttribute('data-amp-backfill')) continue; n.setAttribute('data-amp-far', ''); added++; }
+    if (added || !lazy.io) setTimeout(lazyWatch, 0);
+  }
+  function lazyWatch() {
+    const root = findScroller() || null;
+    if (!lazy.io || lazy.root !== root) { try { lazy.io?.disconnect(); } catch {} lazy.root = root; lazy.io = new IntersectionObserver(es => { for (const x of es) if (x.isIntersecting) { x.target.removeAttribute('data-amp-far'); lazy.seen.add(x.target); lazy.io.unobserve(x.target); } }, { root, rootMargin: '120% 0px 120% 0px' }); lazy.watched = new WeakSet(); }
+    for (const n of document.querySelectorAll('[data-amp-far]')) if (!lazy.watched.has(n)) { lazy.watched.add(n); lazy.io.observe(n); }
+  }
+  // 脚本一启动（document-start）就开始监听：消息节点一插进来（同一个微任务里、浏览器排版之前）就标记，第一次排版就只排最后几条
+  function lazyBoot() {
+    try {
+      const put = () => { if (!document.getElementById('amp-lazy-css') && (document.head || document.documentElement)) { const st = document.createElement('style'); st.id = 'amp-lazy-css'; st.textContent = '[data-amp-far]{content-visibility:auto;contain-intrinsic-size:auto 240px}'; (document.head || document.documentElement).append(st); } };
+      put(); lazy.mo = new MutationObserver(recs => { if (lazy.pending) return; for (const r of recs) for (const n of r.addedNodes) if (n.nodeType === 1 && (n.matches('[data-agent-transcript-message]') || n.querySelector?.('[data-agent-transcript-message]'))) { lazy.pending = true; put(); lazyMark(); return; } });
+      lazy.mo.observe(document, { childList: true, subtree: true });
+    } catch {}
+  }
+  lazyBoot();
+  function lazyStart() { setInterval(() => { try { lazyMark(); } catch {} }, 3000); }
   function afterLoad() {
     const sid = sidNow(), j = read(JUST_KEY, null);
     try { sessionStorage.removeItem(JUST_KEY); } catch {}
@@ -4660,13 +4770,13 @@ const errReload = (() => {
     try { pendingCheck(); } catch {}
   }
   function start() {
-    afterLoad(); try { follow.init(); } catch {}
+    afterLoad(); try { follow.init(); } catch {} try { lazyStart(); } catch {}
     setInterval(() => { try { tick(); } catch {} }, 2000);
     setInterval(() => { try { follow.watch(); } catch {} try { wrap.check(); } catch {} }, 1000);
     addEventListener('resize', () => { if (box && !box.hidden) place(); });
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
-  return { tick, findError, bottomOnce, follow, reloadNow, draft, gachaBusy, toast, sidNow, turnBusy, noteSend, noteSendStatus, findScroller, noteFinish: s => wrap.finish(s) };
+  return { tick, findError, bottomOnce, follow, reloadNow, draft, gachaBusy, toast, sidNow, turnBusy, noteSend, noteSendStatus, findScroller, noteFinish: s => wrap.finish(s), lazyMark: () => { try { lazyMark(); } catch {} } };
 })();
 
 // ====================================================================================
@@ -4745,15 +4855,50 @@ const brand = (() => {
   // 版本号：取名字里第一个数字 + 紧随的次版本（claude-opus-5.5 → 5.05、claude-fable-5-1 → 5.01、gpt-6 → 6）；日期等长数字忽略。
   const version = t => { const k = String(t || '').toLowerCase().replace(/^#\d+\s*/, '').replace(/\s*·\s*\d+\s*$/, '').replace(/(\d)([a-z])/g, '$1-$2').replace(/([a-z])(\d)/g, '$1-$2').split(/[^a-z0-9]+/).filter(Boolean); const i = k.findIndex(x => /^\d{1,2}$/.test(x)); if (i < 0) return null; const minor = /^\d{1,2}$/.test(k[i + 1] || '') ? +k[i + 1] : 0; return +k[i] + minor / 100; };
   // 有 logo 的地方不写厂商前缀：claude-opus-5.5-medium-vertex → opus-5.5-medium（去 -vertex，K3 大写）
-  const VPRE = /^(?:[\w.-]+\/)?(?:gpt|chatgpt|claude|gemini|grok|kimi|qwen|deepseek|mimo|glm|llama|mistral|doubao|minimax)[-_ ]+(?=[\w])/i;
+  // v1.11.80 连写的厂商前缀也去掉：qwen3.8-max → 3.8-max（以前只认 qwen-3.8 这种带分隔符的，连写时型号里又带一遍 qwen）
+  const VPRE = /^(?:[\w.-]+\/)?(?:gpt|chatgpt|claude|gemini|grok|kimi|qwen|deepseek|mimo|glm|llama|mistral|doubao|minimax)(?:[-_ ]+(?=[\w])|(?=\d))/i;
   const short = n => { n = noVertex(String(n || '')).trim(); if (!of(n)) return n; let r = n.replace(VPRE, ''); if (r === n) r = (n.match(/^[\w.-]+\/(.+)$/) || [])[1] || n; if (/^k\d/.test(r)) r = 'K' + r.slice(1); return r; };
   // 同一模型判定：去 -vertex / 厂商前缀 / 分隔符差异（5-5 与 5.5）后比较；只多了档位或更细的后缀视为同一模型（细化，不算变更）
   const TIERX = /-(none|minimal|low|medium|high|xhigh|max|thinking)$/;
   const canon = n => short(n).toLowerCase().replace(/-(agent)$/, '').replace(/[._\s/]+/g, '-').replace(/-+/g, '-');
-  const same = (a, b) => { const x = canon(a), y = canon(b); if (!x || !y) return false; if (x === y) return true; const bx = x.replace(TIERX, ''), by = y.replace(TIERX, ''); const tx = (x.match(TIERX) || [])[1], ty = (y.match(TIERX) || [])[1]; if (bx === by) return !tx || !ty || tx === ty; return (by.startsWith(bx + '-') && !tx) || (bx.startsWith(by + '-') && !ty); };
+  // v1.11.80 厂商不同一定不是同一模型（去掉厂商前缀后 gpt-5 与 glm-5 都成了 “5”，以前会被当成同一个）
+  const same = (a, b) => { const va = of(a), vb = of(b); if (va && vb && va !== vb) return false; const x = canon(a), y = canon(b); if (!x || !y) return false; if (x === y) return true; const bx = x.replace(TIERX, ''), by = y.replace(TIERX, ''); const tx = (x.match(TIERX) || [])[1], ty = (y.match(TIERX) || [])[1]; if (bx === by) return !tx || !ty || tx === ty; return (by.startsWith(bx + '-') && !tx) || (bx.startsWith(by + '-') && !ty); };
   const tierOf = n => (canon(n).match(TIERX) || [])[1] || '';
   return { of, hint, NAME, version, short, same, canon, tierOf, forSid: (sid, title) => of(title) || of(hint.get(sid)) };
 })();
+// v1.11.80 名称拆成 厂商 / 型号 / 档位（顶部标题、老虎机、模型信息、底栏共用一套规则）：
+// · 档位词在名字任何位置都认（取最后一个）：qwen3.8-max-0902 → Qwen · 3.8-0902 · max（以前只认结尾，档位成了“标准”、型号整串照抄）；
+// · 型号去掉厂商前缀（含 qwen3.8 这种连写）与 -vertex / -public / -agent 部署标记；
+// · 重复的段只留一个：astra-max-max → astra · max，qwen-qwen-latedate → latedate；日期 2026-09-02 保持原样，不当成版本号 09.02。
+const modelParts = (() => {
+  const TW = /^(none|minimal|low|medium|high|xhigh|max)$/, DEPLOY = /^(vertex|public|agent|bedrock)$/;
+  const VW = /^(gpt|chatgpt|claude|gemini|grok|kimi|qwen|qwq|deepseek|mimo|glm|chatglm|llama|mistral|doubao|minimax|anthropic|openai|google|xai|moonshot|zhipu)$/;
+  const FUSED = /^(?:gpt|claude|gemini|grok|kimi|qwen|qwq|deepseek|mimo|glm|llama|mistral|doubao|minimax)(?=\d)/;
+  return (name, tierHint) => {
+    const raw = noVertex(String(name || '')).replace(/^#\d+\s*/, '').replace(/\s*·\s*\d+\s*$/, '').trim();
+    const vid = brand.of(raw), hint = String(tierHint || '').toLowerCase();
+    let toks = raw.replace(/^[\w.-]+\//, '').toLowerCase().split(/[-_\s·:/()[\]]+/).filter(Boolean).filter(t => !DEPLOY.test(t));
+    let tier = '';
+    for (let i = toks.length - 1; i >= 0; i--) if (TW.test(toks[i])) { if (!tier) tier = toks[i]; toks.splice(i, 1); }
+    if (TW.test(hint)) tier = hint;
+    toks = toks.filter(t => !VW.test(t)).map((t, i) => (i === 0 ? t.replace(FUSED, '') : t)).filter(Boolean);
+    const out = [];
+    for (let i = 0; i < toks.length; i++) {
+      const x = toks[i], last = out.at(-1);
+      // 日期（2026-09-02）整体保留
+      if (/^\d{4}$/.test(x) && /^\d{2}$/.test(toks[i + 1] || '') && /^\d{2}$/.test(toks[i + 2] || '')) { out.push(x + '-' + toks[i + 1] + '-' + toks[i + 2]); i += 2; continue; }
+      if (/^\d{1,2}$/.test(x) && last && /^\d{1,2}$/.test(last)) { out[out.length - 1] = last + '.' + x; continue; }
+      if (out.includes(x)) continue;
+      out.push(x);
+    }
+    let family = out.join('-');
+    if (/^k\d/.test(family)) family = 'K' + family.slice(1);
+    return { vid, vendor: brand.NAME[vid] || '', family, tier };
+  };
+})();
+// 显示用：同一个名字里重复的段只留一个（qwen-qwen-x → qwen-x，astra-max-max → astra-max）
+// loose = 不是模型名（没认出厂商）时只合并紧挨着的重复档位词（xxx-max-max → xxx-max），普通对话标题里的重复词不动
+const dedupeName = (s, loose) => { const p = String(s || '').split('-'), out = []; for (const x of p) { const k = x.toLowerCase(), last = out.length ? out[out.length - 1].toLowerCase() : ''; if (k && out.length && (loose ? k === last && /^(none|minimal|low|medium|high|xhigh|max)$/.test(k) : out.some(y => y.toLowerCase() === k))) continue; out.push(x); } return out.join('-'); };
 // ====================================================================================
 // 抽卡老虎机（v1.11.34）：抽卡进行时在屏幕中央显示三段式滚轮——厂商 → 型号 → 档位，
 // v1.11.77 三个轮子同时起转、同速同相位（始终对齐成一排）；下面是总进度条。
@@ -4761,21 +4906,17 @@ const brand = (() => {
 // 顶部标题、进度条下的状态行、模型信息、左侧卡片都跟着轮子亮出（还没停下的格子哪里都不透露）。
 const gachaSlot = (() => {
   const MOB = (window.innerWidth || 800) < 560, H = MOB ? 36 : 44, N = 12, SPIN = 15;
-  const VW = new Set(['claude', 'gpt', 'chatgpt', 'gemini', 'grok', 'kimi', 'deepseek', 'qwen', 'glm', 'mimo', 'doubao', 'minimax', 'mistral', 'llama', 'anthropic', 'openai', 'google', 'xai', 'models', 'agent']);
   const FILL = [
     ['Claude', 'GPT', 'Gemini', 'Grok', 'Kimi', 'DeepSeek', 'Qwen', 'GLM'],
     ['opus', 'sonnet', 'haiku', 'luna', 'fable', 'pro', 'flash', 'astra', 'K3', 'nova', 'mini', 'ultra'],
     ['max', 'xhigh', 'high', 'medium', 'low', '标准']
   ];
   const TIER_RE = /^(none|minimal|low|medium|high|xhigh|max)$/;
+  // v1.11.80 与顶部标题共用 modelParts：档位词在任何位置都认，型号不再重复厂商名 / 档位
   function parts(name, tier) {
-    const n = noVertex(String(name || '')).replace(/-(agent)$/i, '').trim();
-    const bid = brand.of(n), raw = n.toLowerCase().split(/[-_\s/·:]+/).filter(Boolean);
-    let toks = raw.filter(t => !VW.has(t)), t = tier && TIER_RE.test(tier) ? tier : '';
-    if (toks.length > 1 && TIER_RE.test(toks.at(-1))) { t = t || toks.at(-1); toks.pop(); }
-    const out = [];
-    for (const x of toks) { const last = out.at(-1); if (/^\d{1,2}$/.test(x) && last && /^\d{1,2}$/.test(last)) out[out.length - 1] = last + '.' + x; else out.push(x); }
-    return { vendor: brand.NAME[bid] || (raw[0] || '—'), family: out.join('-') || '—', tier: !t || t === 'none' ? '标准' : t };
+    const n = noVertex(String(name || '')).replace(/-(agent)$/i, '').trim(), mp = modelParts(n, tier && TIER_RE.test(tier) ? tier : '');
+    const raw = n.toLowerCase().split(/[-_\s/·:]+/).filter(Boolean), t = mp.tier;
+    return { vendor: mp.vendor || (raw[0] || '—'), family: mp.family || '—', tier: !t || t === 'none' ? '标准' : t };
   }
   const dark = () => { const d = document.documentElement; return d.dataset.theme === 'dark' || d.classList.contains('dark') || (!d.classList.contains('light') && getComputedStyle(d).colorScheme === 'dark'); };
   const CSS = ':host{all:initial}'
@@ -4916,7 +5057,7 @@ const gachaSlot = (() => {
       D.att = p.no || D.att;
       const skipped = p.done && p.verdict === 'skipped', sh = !skipped && p.shown && p.shown.full && (!p.sid || p.shown.sid === p.sid) ? p.shown : null;
       let want = null, wkey = '';
-      if (sh) { const pr = parts(sh.name || sh.fam || '', sh.tier); want = [brand.NAME[sh.vid] || pr.vendor, sh.fam || pr.family, sh.tier || '标准']; wkey = (sh.fam || '') + '|' + (sh.tier || ''); }
+      if (sh) { const pr = parts(sh.name || sh.fam || '', sh.tier); want = [brand.NAME[sh.vid] || pr.vendor, dedupeName(sh.fam) || pr.family, sh.tier || pr.tier || '标准']; wkey = (sh.fam || '') + '|' + (sh.tier || ''); }
       else if (p.ok) { D.okAt ||= t; if (t - D.okAt > 450) { const pr = parts(p.model, p.tier); want = [pr.vendor, pr.family, pr.tier]; } }
       if (want && (!D.targets || want.join('\n') !== D.targets.join('\n'))) { D.targets = want; D.tkey = wkey; }
       else if (want && wkey && D.tkey !== wkey) {
@@ -5182,14 +5323,15 @@ const gachaUi = (() => {
     // 只加属性 + 伪元素（不插节点），和标题左对齐。
     try { const st = document.createElement('style'); st.textContent = '[data-amp-flat]{display:contents!important}[data-amp-flatp]{display:flex!important;flex-direction:column!important;row-gap:0!important;gap:0!important}'; (document.head || document.documentElement).append(st); } catch {}
     // 样式表单独放、每次同步前确认还在（脚本启动时 head 还没有，React 水合出错重建文档时会把早插入的 style 一起清掉）
-    const CT_CSS = '[data-amp-ctime]{position:relative!important;padding-bottom:13px!important}'
-      + '[data-amp-ctime]::before{content:attr(data-amp-ctime);position:absolute;left:0;right:0;bottom:0;height:13px;font-size:10.5px;line-height:13px;font-weight:400;font-style:normal;font-variant-numeric:tabular-nums;letter-spacing:.01em;color:hsl(var(--text-tertiary,35 6% 38%));opacity:.85;white-space:nowrap;overflow:hidden;visibility:visible;pointer-events:none;text-align:left}'
-      + '[data-amp-ctime][data-amp-cnew]::before{color:hsl(var(--text-secondary,35 6% 30%));opacity:1;font-weight:600}'
-      + 'a[data-amp-current][data-amp-ink] [data-amp-ctime]::before{color:var(--amp-cur-fg,var(--amp-acc-fg,#fff));opacity:.8}';
+    // v1.11.80 卡片改成细长条：时间不再单独占一行（卡片因此变高），改为卡片右下角的小字；标题右侧让出位置，不会压到时间
+    const CT_CSS = 'a[data-amp-ctime]::after{content:attr(data-amp-ctime);position:absolute;right:7px;bottom:2px;font-size:9.5px;line-height:11px;font-weight:400;font-style:normal;font-variant-numeric:tabular-nums;letter-spacing:.01em;color:hsl(var(--text-tertiary,35 6% 38%));opacity:.85;white-space:nowrap;visibility:visible;pointer-events:none;z-index:1}'
+      + 'a[data-amp-ctime][data-amp-cnew]::after{color:hsl(var(--text-secondary,35 6% 30%));opacity:1;font-weight:600}'
+      + 'a[data-amp-current][data-amp-ink][data-amp-ctime]::after{color:var(--amp-cur-fg,var(--amp-acc-fg,#fff));opacity:.85}'
+      + 'a[data-amp-ctime] :is(span,div).truncate:not([data-amp-local-title]){padding-right:62px!important}a[data-amp-ctime] [data-amp-local-title]::after{right:62px!important}';
     const ctCss = () => { if (document.head && !document.getElementById('amp-ctime-css')) { const st = document.createElement('style'); st.id = 'amp-ctime-css'; st.textContent = CT_CSS; document.head.append(st); } };
     const entryAt = (a, sid) => { try { const k = Object.keys(a).find(x => x.startsWith('__reactFiber')); let f = k ? a[k] : null; for (let n = 0; f && n < 30; n++, f = f.return) { const e = f.memoizedProps?.entry; if (e && typeof e === 'object' && e.id === sid) { const t = Date.parse(e.updatedAt || e.lastMessageAt || e.createdAt || ''); return Number.isFinite(t) ? t : null; } } } catch {} return null; };
     const ctFmt = ms => { const d = new Date(ms), p = n => String(n).padStart(2, '0'); return (d.getFullYear() === new Date().getFullYear() ? '' : d.getFullYear() + '-') + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()); };
-    const ctEl = a => a.querySelector('[data-amp-local-title]') || a.querySelector('span.truncate,div.truncate');
+    const ctEl = a => a;
     let ctSet = new Set();
     const ctPut = (el, text, isNew) => { if (el.getAttribute('data-amp-ctime') !== text) el.setAttribute('data-amp-ctime', text); el.toggleAttribute('data-amp-cnew', !!isNew); };
     const ctOff = el => { el.removeAttribute('data-amp-ctime'); el.removeAttribute('data-amp-cnew'); };
@@ -5527,7 +5669,10 @@ const gachaUi = (() => {
       + '[data-amp-progress]{font:11px system-ui;font-variant-numeric:tabular-nums;opacity:.75;flex:none}[data-amp-progress]::before{content:"· "}'
       + '[data-amp-progress-bar]{position:absolute;bottom:0;left:0;height:2px;background:currentColor;opacity:.6;transition:width .2s}[data-amp-dot]{position:absolute;top:5px;right:3px;width:6px;height:6px;border-radius:50%;background:#e38a1e}'
       + '[data-amp-native-gacha="1"] :is([data-amp-ring],[data-amp-land]){display:none}'
-      + 'a[data-amp-target-hit],a[data-amp-vip],a[data-amp-current]{position:relative!important;isolation:isolate;border-radius:8px;transform-origin:left center;transition:transform .6s cubic-bezier(.22,.9,.3,1),background-color .3s ease,color .25s ease,box-shadow .3s ease}'
+      + 'a[data-amp-target-hit],a[data-amp-vip],a[data-amp-current]{position:relative!important;isolation:isolate;border-radius:7px;transform-origin:left center;transition:transform .6s cubic-bezier(.22,.9,.3,1),background-color .3s ease,color .25s ease,box-shadow .3s ease}'
+      /* v1.11.80 细长条卡片：高度压到 30px（以前标题下还有一行时间，卡片又宽又高），厂商图标 16px */
+      + 'a[data-amp-target-hit],a[data-amp-vip],a[data-amp-current]{height:30px!important;min-height:30px!important;max-height:30px!important;padding-top:0!important;padding-bottom:0!important;box-sizing:border-box!important}'
+      + ':is(a[data-amp-target-hit],a[data-amp-vip],a[data-amp-current]) [data-amp-vlogo]{width:16px;height:16px}:is(a[data-amp-target-hit],a[data-amp-vip],a[data-amp-current]) [data-amp-vlogo][data-full] svg{width:16px;height:16px}'
       + 'a[data-amp-target-hit]{background:color-mix(in srgb,var(--amp-acc,#2f6fed) var(--amp-tint,14%),transparent)!important;box-shadow:inset 3px 0 0 var(--amp-acc,#2f6fed);font-weight:650}'
       + 'a[data-amp-vip]{background:color-mix(in srgb,#d4a017 var(--amp-tint,22%),transparent)!important;box-shadow:inset 3px 0 0 #c9950c;font-weight:700}'
       + 'a[data-amp-target-hit] :is(span,div).truncate,a[data-amp-target-hit] [data-amp-local-title]::after{font-weight:650!important}a[data-amp-vip] :is(span,div).truncate,a[data-amp-vip] [data-amp-local-title]::after,a[data-amp-current][data-amp-done] [data-amp-local-title]::after{font-weight:700!important}'
@@ -5846,7 +5991,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.78', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.80', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -6045,13 +6190,22 @@ const gachaUi = (() => {
     return {events,spans,probe};
   }
   // 从 /in/append 载荷提取用户消息开头（≤40 字），用于在轮次列表里辨认是哪个问题。
-  function promptPreview(j) {
+  function promptText(j) {
     let found=null;
     (function walk(n,depth){if(found||!n||typeof n!=='object'||depth>7)return;if(Array.isArray(n)){for(const v of n){walk(v,depth+1);if(found)return;}return;}
       if(n.role&&n.role!=='user')return;
       for(const [k,v] of Object.entries(n))if(typeof v==='string'&&/^(text|content|prompt|message|input)$/.test(k)&&v.trim()){found=v;return;}
       for(const v of Object.values(n)){walk(v,depth+1);if(found)return;}})(j,0);
+    return found;
+  }
+  function promptPreview(j) {
+    const found=promptText(j);
     return found?found.replace(/[\x00-\x1f\x7f]+|\s+/g,' ').trim().slice(0,40)||null:null;
+  }
+  // v1.11.80 消息全文（补齐显示用，最多 4000 字，保留换行）；请求里带整段历史时取最后一条用户消息
+  function promptFull(j) {
+    const src=j&&Array.isArray(j.messages)?[...j.messages].reverse().find(m=>m?.role==='user')||j:j,found=promptText(src);
+    return found?String(found).replace(/\r\n?/g,'\n').slice(0,4000):null;
   }
   // 消息 id 是页面用 UUIDv7 生成的：前 48 位为 Unix 毫秒时间戳（版本位为 7 才解析）
   function uuidTime(id) {
@@ -6234,7 +6388,12 @@ const gachaUi = (() => {
   function liveFlags(prev,cur,done){
     const out=[];if(!cur||!cur.n)return out;
     const hist=(prev||[]).filter(m=>m&&m.n).slice(-12),th=hist.filter(m=>m.think).length,no=hist.length-th;
-    if(cur.think&&th===0){
+    // v1.11.80 一直在 used bash（连续几步只调用工具、没有思考），突然出现 Thought / 思考链 = 路由切换、换了模型：确定信号，不看此前各轮有没有思考
+    // 看思考链出现之前紧挨着的那一串步骤：连续 ≥2 步都在调用工具（前面有一步只说了句话也不影响），此前整条回复都没有思考
+    const before=cur.think&&cur.firstThink>=2?cur.steps.slice(0,cur.firstThink):[];let trail=0;for(let i=before.length-1;i>=0&&before[i].tools.length>0;i--)trail++;
+    const toolThink=trail>=2&&before.every(x=>!x.r);
+    if(toolThink){const run=before.slice(-trail),tl=[...new Set(run.flatMap(x=>x.tools))].slice(0,3).join(' / ');out.push({kind:'tool-think',level:'strong',certain:true,text:'used bash 之后突然出现思考链',detail:'前 '+trail+' 步都在调用工具（'+tl+'）、没有思考，第 '+(cur.firstThink+1)+' 步开始思考 → 路由切换，换了模型'});}
+    if(cur.think&&th===0&&!toolThink){
       const midStep=cur.firstThink>0&&cur.before>0;
       if(cur.midText||midStep)out.push({kind:'think-mid',level:cur.midText||no>=1?'strong':'medium',text:cur.midText?'回复中途出现思考链':'第 '+(cur.firstThink+1)+' 步开始出现思考链',detail:(cur.midText?'先输出了正文，之后才开始思考':'前 '+cur.firstThink+' 步都没有思考')+(no?'；此前 '+no+' 轮也都没有':'')});
       // v1.11.77 一开始就在思考不算换模型的强信号（只记录 + 补读 Trace 核对，不弹提示、不自动停）；
@@ -6276,7 +6435,7 @@ const gachaUi = (() => {
   const load=(key,fallback)=>{try{return JSON.parse(localStorage.getItem(key))??fallback;}catch{return fallback;}};
   const store=(key,value)=>{try{return ampStore.set(key,JSON.stringify(value));}catch{return false;}};
   const clamp=(v,min,max,fallback)=>Number.isFinite(v)?Math.min(max,Math.max(min,Math.round(v))):fallback;
-  const stored=load(KEY+'.prefs',{}), prefs={width:clamp(stored.width,280,720,340),sidebarWidth:clamp(stored.sidebarWidth,200,560,null),cloudSync:stored.cloudSync===true,cloudFormat:stored.cloudFormat==='name'?'name':'prefix',rawBudget:BUDGET_OPTIONS.includes(stored.rawBudget)?stored.rawBudget:64,showSent:stored.showSent!==false,showQuota:stored.showQuota!==false,showCredits:stored.showCredits!==false,showBar:stored.showBar!==false,barCollapsed:stored.barCollapsed===true,barOffset:stored.barOffset!==false,showSeq:stored.showSeq===true,hideDocIcon:stored.hideDocIcon!==false,stopOnResample:stored.stopOnResample!==false,showQuotaReset:stored.showQuotaReset===true,spendUnit:stored.spendUnit==='usd'?'usd':'token',sheetH:typeof stored.sheetH==='number'&&stored.sheetH>=0.05&&stored.sheetH<=1?stored.sheetH:0.5,sheetFull:stored.sheetFull===true,pullRefresh:stored.pullRefresh!==false,glassDrawer:stored.glassDrawer!==false,gemLayout:stored.gemLayout!==false,monOn:stored.monOn!==false,monAlert:stored.monAlert!==false,monStop:stored.monStop===true,wsRight:stored.wsRight!==false,wsSwipe:stored.wsSwipe!==false,wsEdge:stored.wsEdge!==false,wsEdgeY:typeof stored.wsEdgeY==='number'&&stored.wsEdgeY>=0.12&&stored.wsEdgeY<=0.88?stored.wsEdgeY:0.6,kbResize:stored.kbResize!==false};
+  const stored=load(KEY+'.prefs',{}), prefs={width:clamp(stored.width,280,720,340),sidebarWidth:clamp(stored.sidebarWidth,200,560,null),cloudSync:stored.cloudSync===true,cloudFormat:stored.cloudFormat==='name'?'name':'prefix',rawBudget:BUDGET_OPTIONS.includes(stored.rawBudget)?stored.rawBudget:64,showSent:stored.showSent!==false,showQuota:stored.showQuota!==false,showCredits:stored.showCredits!==false,showBar:stored.showBar!==false,barCollapsed:stored.barCollapsed===true,barOffset:stored.barOffset!==false,showSeq:stored.showSeq===true,hideDocIcon:stored.hideDocIcon!==false,stopOnResample:stored.stopOnResample!==false,showQuotaReset:stored.showQuotaReset===true,spendUnit:stored.spendUnit==='token'?'token':'usd',liveEst:stored.liveEst!==false,deskGem:stored.deskGem!==false,lazyLog:stored.lazyLog!==false,backfill:stored.backfill!==false,sheetH:typeof stored.sheetH==='number'&&stored.sheetH>=0.05&&stored.sheetH<=1?stored.sheetH:0.5,sheetFull:stored.sheetFull===true,pullRefresh:stored.pullRefresh!==false,glassDrawer:stored.glassDrawer!==false,gemLayout:stored.gemLayout!==false,monOn:stored.monOn!==false,monAlert:stored.monAlert!==false,monStop:stored.monStop===true,wsRight:stored.wsRight!==false,wsSwipe:stored.wsSwipe!==false,wsEdge:stored.wsEdge!==false,wsEdgeY:typeof stored.wsEdgeY==='number'&&stored.wsEdgeY>=0.12&&stored.wsEdgeY<=0.88?stored.wsEdgeY:0.6,kbResize:stored.kbResize!==false};
   // 手机/窄屏：底部只留一条余额栏，点击余额栏才展开模型信息
   const miniBar=()=>innerWidth<768||!!document.getElementById('amp-lite-dock')?.hasAttribute('data-compact');
   const savePrefs=()=>store(KEY+'.prefs',prefs);
@@ -6300,8 +6459,10 @@ const gachaUi = (() => {
   // 只取最新一轮最后一条 spend.recorded（cost）记录；要求 partial===false、本轮未截断；不回退到更早的轮次。
   const finiteNum=v=>typeof v==='number'&&Number.isFinite(v);
   const usdLabel=v=>typeof v==='string'&&v.length<=120&&!/[\u0000-\u001f\u007f]/.test(v)&&!/Bearer |^eyJ/.test(v)?v:null;
+  // v1.11.80 字段名兼容：Arena 若改成下划线写法（allowance_usd 等）也能读到，左下角的总金额 / 总额度不会因此丢失
+  const USD_ALT={allowanceUsd:['allowance_usd','allowanceUSD','usdAllowance'],balanceRemainingUsd:['balance_remaining_usd','balanceRemainingUSD','remainingUsd','remaining_usd'],chargedUserTotalUsd:['charged_user_total_usd'],allowanceTier:['allowance_tier'],allowanceSource:['allowance_source'],windowStartAtMs:['window_start_at_ms'],overLimit:['over_limit'],costUsd:['cost_usd'],chargedUsd:['charged_usd'],unpriced:[]};
   function usdFields(p){
-    const g=k=>get(p,k),out={allowanceUsd:finiteNum(g('allowanceUsd'))&&g('allowanceUsd')>=0?g('allowanceUsd'):null,balanceRemainingUsd:finiteNum(g('balanceRemainingUsd'))?g('balanceRemainingUsd'):null,
+    const g=k=>{let v=get(p,k);if(v===undefined||v===null)for(const a of USD_ALT[k]||[]){const x=get(p,a);if(x!==undefined&&x!==null){v=x;break;}}return v;},out={allowanceUsd:finiteNum(g('allowanceUsd'))&&g('allowanceUsd')>=0?g('allowanceUsd'):null,balanceRemainingUsd:finiteNum(g('balanceRemainingUsd'))?g('balanceRemainingUsd'):null,
       chargedUserTotalUsd:finiteNum(g('chargedUserTotalUsd'))&&g('chargedUserTotalUsd')>=0?g('chargedUserTotalUsd'):null,allowanceTier:usdLabel(g('allowanceTier')),allowanceSource:usdLabel(g('allowanceSource')),
       windowStartAtMs:Number.isSafeInteger(g('windowStartAtMs'))&&g('windowStartAtMs')>=0&&g('windowStartAtMs')<=8640000000000000?g('windowStartAtMs'):null,overLimit:typeof g('overLimit')==='boolean'?g('overLimit'):null,
       costUsd:finiteNum(g('costUsd'))&&g('costUsd')>=0?g('costUsd'):null,chargedUsd:finiteNum(g('chargedUsd'))&&g('chargedUsd')>=0?g('chargedUsd'):null,unpriced:typeof g('unpriced')==='boolean'?g('unpriced'):null};
@@ -6377,7 +6538,9 @@ button{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;ju
 button:hover{background:var(--raised);color:var(--fg)}button:focus-visible{outline:2px solid var(--fg);outline-offset:1px}
 svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var(--line);background:var(--bg);border-radius:12px;padding:4px 8px;box-shadow:0 1px 4px #0001}
 :host([data-collapsed]) .bar{display:none}:host([data-collapsed]) .pill{display:inline-flex;gap:6px}
-.detail{display:none;flex:none;margin-left:6px;height:18px;padding:0 8px;border-radius:9px;border:1px solid var(--line);color:var(--fg);font-size:11px}:host([data-mini]) .detail{display:inline-flex}:host([data-mini]) .bar{padding-right:6px}:host([data-mini]) .tools{display:none}:host([data-mini]) .bar{cursor:default}:host([data-mini]) .it[data-key=usd]{cursor:pointer}:host([data-mini]) .it{border-left:0;padding:0 8px}:host([data-mini]) .it:first-child{padding-left:0}:host([data-mini]) .meter{width:44px}`;
+.detail{display:none;flex:none;margin-left:6px;height:18px;padding:0 8px;border-radius:9px;border:1px solid var(--line);color:var(--fg);font-size:11px}:host([data-mini]) .detail{display:inline-flex}:host([data-mini]) .bar{padding-right:6px}:host([data-mini]) .tools{display:none}:host([data-mini]) .bar{cursor:default}:host([data-mini]) .it[data-key=usd]{cursor:pointer}:host([data-mini]) .it{border-left:0;padding:0 8px}:host([data-mini]) .it:first-child{padding-left:0}:host([data-mini]) .meter{width:44px}
+.items>button.rf{flex:none;height:20px;min-width:20px;padding:0 4px;margin:0 4px 0 -5px}.items>button.rf svg{transition:transform .3s}.items>button.rf[data-spin] svg{animation:rfspin .8s linear infinite}@keyframes rfspin{to{transform:rotate(360deg)}}
+.tools .ver{font-variant-numeric:tabular-nums;letter-spacing:.01em;opacity:.85}`;
     let sheet;try{sheet=new CSSStyleSheet();sheet.replaceSync(barCss);root.adoptedStyleSheets=[sheet];}catch{el('style','',barCss,root);}
     const wrap=el('div','bar',null,root),items=el('div','items',null,wrap),tools=el('div','tools',null,wrap);
     // 悬浮美金额度：圆环饼图（余额 / 已用）+ 总额度与余额，替代原来的文字提示。
@@ -6403,10 +6566,11 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     const detailBtn=el('button','detail','详细',wrap);detailBtn.title='打开模型信息';detailBtn.onclick=e=>{e.stopPropagation();tip.removeAttribute('data-show');ui?.toggle();};
     document.addEventListener('pointerdown',e=>{if(tip.hasAttribute('data-show')&&!e.composedPath().includes(host))tip.removeAttribute('data-show');},true);
     const pill=el('button','pill','',root);pill.title='展开底部信息栏';pill.onclick=()=>{prefs.barCollapsed=false;savePrefs();sync();};
-    const refreshBtn=el('button','','',tools);refreshBtn.title='立即刷新额度、Pulse 与余额';refreshBtn.setAttribute('aria-label',refreshBtn.title);
+    // v1.11.80 “立即刷新额度”挪到左边、紧挨着金额；右下角原来的“模型信息”按钮改成显示版本号（点一下看“关于”里的更新）
+    const refreshBtn=el('button','rf','');refreshBtn.title='立即刷新额度、Pulse 与余额';refreshBtn.setAttribute('aria-label',refreshBtn.title);
     refreshBtn.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>';
-    refreshBtn.onclick=()=>{void refreshBalance(true);void refreshPulse(true);paint();};
-    const panelBtn=el('button','','模型信息',tools);panelBtn.title='打开模型信息侧栏';panelBtn.onclick=()=>ui?.show();
+    refreshBtn.onclick=e=>{e.stopPropagation();refreshBtn.setAttribute('data-spin','');setTimeout(()=>refreshBtn.removeAttribute('data-spin'),900);void refreshBalance(true);void refreshPulse(true);paint();};
+    const verBtn=el('button','ver','v'+String(VERSION).replace(/^native-/,''),tools);verBtn.title='Arena Native Suite 当前版本 · 点击查看版本与更新';verBtn.onclick=()=>ui?.show('about');
     const hideBtn=el('button','','',tools);hideBtn.title='收起底部信息栏';hideBtn.setAttribute('aria-label',hideBtn.title);
     hideBtn.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>';hideBtn.onclick=()=>{prefs.barCollapsed=true;savePrefs();sync();};
     const offsetCss=`html[data-amp-bar-offset] body .h-dvh,html[data-amp-bar-offset] body .h-screen,html[data-amp-bar-offset] body .h-svh{height:calc(100dvh - ${BAR_H}px)!important}html[data-amp-bar-offset] body .max-h-dvh,html[data-amp-bar-offset] body .max-h-screen{max-height:calc(100dvh - ${BAR_H}px)!important}html[data-amp-bar-overlap] main{padding-bottom:${BAR_H}px!important;box-sizing:border-box!important}html[data-amp-bar-offset]:not([data-amp-kbhide]) main:is(.min-h-svh,.min-h-dvh,.min-h-screen){padding-bottom:${BAR_H}px!important;box-sizing:border-box!important}`;
@@ -6418,11 +6582,14 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     function item(key,state,parts,title,onclick){return {key,state,parts,title,onclick};}
     function build(){
       const out=[],now=Date.now();
+      const mini=miniBar();
+      // v1.11.80 左下角始终是“美金 剩余 / 总额度”：没有额度快照时显示 — / —（以前换成“本对话花费”，总金额和总额度就不见了）；
+      // 手机上点金额只弹出金额卡片（以前同时打开模型信息），“详细”按钮才打开模型信息
       if(usd){const pct=usd.allowanceUsd>0?usd.balanceRemainingUsd/usd.allowanceUsd*100:null,state=usd.overLimit||usd.balanceRemainingUsd<0?'low':pct===null?'':pct>=50?'good':pct>=20?'warn':'low';
         out.push(item('usd',state,[['meter',pct===null?0:Math.max(0,Math.min(100,pct))],['t','美金 '],['b',fmtUsd(usd.balanceRemainingUsd)],['t',' / '+fmtUsd(usd.allowanceUsd)],['p',pct!==null?' · '+Math.round(pct)+'%':''],['t',usd.overLimit?' · 已超限':'']],
-          '美元额度（来自 Trace spend.recorded，最新一轮最后一条已结算记录）\n剩余 '+exactUsd(usd.balanceRemainingUsd)+'\n总额度 '+exactUsd(usd.allowanceUsd)+(usd.chargedUserTotalUsd!==null?'\n窗口内已计费 '+exactUsd(usd.chargedUserTotalUsd):'')+(usd.allowanceTier?'\n档位 '+usd.allowanceTier:'')+(usd.allowanceSource?'\n来源 '+usd.allowanceSource:'')+(usd.windowStartAtMs?'\n窗口开始 '+new Date(usd.windowStartAtMs).toLocaleString('zh-CN',{hour12:false}):'')+(usd.chargedUsd!==null?'\n该条计费 '+exactUsd(usd.chargedUsd):'')+'\n记录于 '+new Date(usd.at).toLocaleString('zh-CN',{hour12:false})+'（'+ago(usd.at)+'）\n每次对话结束后自动更新；这是服务端快照，不是实时余额',miniBar()?()=>ui?.toggle():null));
-      }else{let sb=null;try{sb=ui?.spendBrief?.()||null;}catch{}if(sb)out.push(item('spend','',[['t','本对话 '],['b',sb.text]],sb.title,()=>ui?.show('overview')));else out.push(item('usd','',[['t','美金 '],['b','—']],'尚无美元额度快照：完成一轮对话后，从该轮 Trace 的计费记录读取',null));}
-      const mini=miniBar();
+          '美元额度（来自 Trace spend.recorded，最新一轮最后一条已结算记录）\n剩余 '+exactUsd(usd.balanceRemainingUsd)+'\n总额度 '+exactUsd(usd.allowanceUsd)+(usd.chargedUserTotalUsd!==null?'\n窗口内已计费 '+exactUsd(usd.chargedUserTotalUsd):'')+(usd.allowanceTier?'\n档位 '+usd.allowanceTier:'')+(usd.allowanceSource?'\n来源 '+usd.allowanceSource:'')+(usd.windowStartAtMs?'\n窗口开始 '+new Date(usd.windowStartAtMs).toLocaleString('zh-CN',{hour12:false}):'')+(usd.chargedUsd!==null?'\n该条计费 '+exactUsd(usd.chargedUsd):'')+'\n记录于 '+new Date(usd.at).toLocaleString('zh-CN',{hour12:false})+'（'+ago(usd.at)+'）\n每次对话结束后自动更新；这是服务端快照，不是实时余额',null));
+      }else out.push(item('usd','',[['t','美金 '],['b','—'],['t',' / —']],'尚无美元额度快照（剩余 / 总额度）：完成一轮对话后，从该轮 Trace 的计费记录读取；切换到没有记录的账号时也会先显示 —',null));
+      if(!mini){let sb=null;try{sb=ui?.spendBrief?.()||null;}catch{}if(sb)out.push(item('spend','',[['t','本对话 '],['b',sb.text]],sb.title,()=>ui?.show('overview')));}
       // Pulse（GET /api/me/pulse，0–100 的整数）是 Arena 的独立指标，并非美元余额；两者数值相同时并入美金一项，不再重复显示。
       const usdPct=usd&&usd.allowanceUsd>0?Math.round(usd.balanceRemainingUsd/usd.allowanceUsd*100):null;
       const pulseSame=pulse?.status==='ready'&&typeof pulse.pulse==='number'&&usdPct!==null&&pulse.pulse===usdPct;
@@ -6440,9 +6607,12 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       // v1.11.79 这一抽还在老虎机里揭晓：底栏的“模型”也只写已经停下的格子
       const gvb=(()=>{try{return gachaSlot.view(sidOf(location.href));}catch{return null;}})();
       if(c&&gvb)out.push(item('model','',[['t','模型 '],['b',gachaSlot.stageName(gvb)]],'老虎机揭晓中：厂商 → 型号 → 档位 依次停下',()=>ui?.show()));
-      else if(c){const eff=c.effort?.value||({conflict:'冲突',unsupported:'不支持'}[c.effort?.status])||'';out.push(item('model','',[['t','模型 '],['b',(c.internal||c.model||'未提供').slice(0,48)],['t',eff?' · '+eff:'']],'当前会话最近一次模型调用\n请求 '+(c.request||'—')+'\n响应 '+(c.response||'—')+'\n内部 '+(c.internal||'—')+'\n显式档位 '+(eff||'未知'),()=>ui?.show()));}
+      else if(c){const eff=c.effort?.value||({conflict:'冲突',unsupported:'不支持'}[c.effort?.status])||'',nm=c.internal||c.model||'未提供',mp=modelParts(nm,/^(none|minimal|low|medium|high|xhigh|max)$/.test(eff)?eff:''),tv=mp.family?mp.tier||eff:eff;out.push(item('model','',[['t','模型 '],['b',(mp.family?[mp.vendor,mp.family].filter(Boolean).join(' '):nm).slice(0,48)],['t',tv?' · '+tv:'']],'当前会话最近一次模型调用\n请求 '+(c.request||'—')+'\n响应 '+(c.response||'—')+'\n内部 '+(c.internal||'—')+'\n显式档位 '+(eff||'未知'),()=>ui?.show()));}
       const sid=sidOf(location.href),cr=sid?costState.get(sid)?.credits||r?.data?.credits:null;
-      if(cr&&cr.credits!==null&&cr.credits!==undefined)out.push(item('turn','',[['t','本轮 '],['b',Math.round(cr.credits).toLocaleString('zh-CN')+' cr'],['t',cr.usd!==null&&cr.usd!==undefined?' · $'+(+cr.usd).toFixed(4):'']],'GET /api/chat/{id}/cost · 本轮计费'));
+      // v1.11.80 这一轮还在进行：显示按步骤累加的实时估算（结束后读到计费 / 用量再换成实际值）
+      const le=(()=>{try{return ui?.liveEst?.()||null;}catch{return null;}})();
+      if(le&&(le.usd!==null||le.tok))out.push(item('turn','',[['t','本轮 '],['b','≈'+(le.usd!==null?'$'+le.usd.toFixed(le.usd>=1?2:4):(le.tok>=1e4?(le.tok/1e4).toFixed(1)+'万':le.tok)+' tok')],['t',' · 第 '+le.steps+' 步']],'进行中这一轮的实时估算：按页面上已出现的步骤累加（每步 = 一次模型调用，大多是 used bash），Trace 里已完成的调用用实际用量；这一轮结束后自动校准\n点击打开模型信息',()=>ui?.show('overview')));
+      else if(cr&&cr.credits!==null&&cr.credits!==undefined)out.push(item('turn','',[['t','本轮 '],['b',Math.round(cr.credits).toLocaleString('zh-CN')+' cr'],['t',cr.usd!==null&&cr.usd!==undefined?' · $'+(+cr.usd).toFixed(4):'']],'GET /api/chat/{id}/cost · 本轮计费'));
       const g=gacha.state();
       if(g){const run=['running','stopping'].includes(g.status);out.push(item('gacha',run?'good':g.status==='hit'?'good':['paused','stopped'].includes(g.status)?'warn':'',[['t','抽卡 '],['b',g.completed+'/'+g.settings.maxAttempts],['t',' · '+(run?(g.phase||'进行中'):({hit:'已命中',done:'已完成',paused:'已停止',stopped:'已停止'}[g.status]||g.status))]],(g.reason||g.phase||'')+'\n点击打开抽卡面板',()=>window.dispatchEvent(new CustomEvent('amp-native-gacha-open'))));}
       const last=Math.max(usd?.at||0,pulse?.checkedAt||0,balance?.at||0);
@@ -6500,6 +6670,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
         for(const [k,v] of x.parts){if(k==='meter'){const m=el('span','meter',null,s);el('i',null,null,m).style.width=v+'%';}else if(k==='b')el('b','',v,s);else if(k==='p'){if(v)el('b','pct',v,s);}else if(v)s.append(v);}
         if(x.onclick){s.tabIndex=0;s.setAttribute('role','button');s.onclick=x.onclick;s.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();x.onclick();}};}
         return s;}));
+      {const u=items.querySelector('.it[data-key=usd]');if(u)u.after(refreshBtn);else items.prepend(refreshBtn);}
     }
     bar={host,sync,destroy(){if(offsetSheet)document.adoptedStyleSheets=document.adoptedStyleSheets.filter(s=>s!==offsetSheet);offsetStyle?.remove();document.documentElement.removeAttribute('data-amp-bar-offset');document.documentElement.removeAttribute('data-amp-bar-overlap');host.remove();}};sync();
   }
@@ -6519,7 +6690,11 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     const L=r&&shareLog.get(r.runId);if(!L||!Array.isArray(trace?.events))return trace;
     const ev=trace.events,mark=e=>/^chat turn \d+$/.test(e?.message||'');
     // 分界落在新对话的第一个轮次标记上（服务端时间），上一个对话在分界之后才写完的尾巴仍归它自己
-    const cuts=L.map((w,i)=>{if(!i)return -Infinity;let t=Infinity;for(const e of ev){const at=toMs(e?.startTime);if(at!==null&&at>w.from&&at<t&&mark(e))t=at;}return t===Infinity?w.from+0.001:t;});
+    // v1.11.80 新对话自己的轮次标记还没写出来时：分界取它之后的第一次模型调用；连调用也还没有 = 新对话暂时什么都不认领
+    // （以前退回“上一个对话最后一条事件之后”，上一个对话收尾的用量记录 / 最后几次调用被算到新对话头上 → 误报“A 路由到 B”）。
+    // 上一个对话一次都没读到过（from=null）时，按本机接手时间前后 2 分钟找它的第一个轮次标记。
+    const stream=e=>/^ai\.(streamText\.doStream|generateText\.doGenerate)$/.test(e?.message||'');
+    const cuts=L.map((w,i)=>{if(!i)return -Infinity;const lo=w.from!==null&&w.from!==undefined?w.from:(w.at||0)-120000;let t=Infinity,s=Infinity;for(const e of ev){const at=toMs(e?.startTime);if(at===null||at<=lo)continue;if(mark(e)&&at<t)t=at;else if(stream(e)&&at<s)s=at;}return t!==Infinity?t:w.from!==null&&w.from!==undefined?s:Infinity;});
     const owner=at=>{let k=0;for(let i=1;i<cuts.length;i++)if(at>=cuts[i])k=i;return L[k].sid;};
     return {...trace,events:ev.filter(e=>{const at=toMs(e?.startTime);return at!==null&&owner(at)===r.sid;})};
   }
@@ -6529,7 +6704,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     if(r&&r.sid!==auth.sid){
       if(r.rejectedToken===token)return;
       // 同一个运行换了对话：记下分界（服务端时间，不用本机时钟），上一个对话的记录到此冻结，新对话单独记录
-      if(r.newest){const L=shareLog.get(auth.runId)||[{sid:r.sid,from:null}];L.push({sid:auth.sid,from:r.newest});while(L.length>12)L.splice(1,1);shareLog.delete(auth.runId);shareLog.set(auth.runId,L);while(shareLog.size>16)shareLog.delete(shareLog.keys().next().value);}
+      {const L=shareLog.get(auth.runId)||[{sid:r.sid,from:null}];L.push({sid:auth.sid,from:r.newest||null,at:Date.now()});while(L.length>12)L.splice(1,1);shareLog.delete(auth.runId);shareLog.set(auth.runId,L);while(shareLog.size>16)shareLog.delete(shareLog.keys().next().value);}
       log('warn','权限','同一个运行换了对话（'+String(r.sid).slice(0,8)+' → '+String(auth.sid).slice(0,8)+'）：按对话分开记录，互不串台',null,{sid:auth.sid,runId:auth.runId});
       clearTimeout(r.timer);r.abort?.abort();r.token=null;runs.delete(auth.runId);r=null;
     }
@@ -6572,10 +6747,10 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     notePost(u.pathname,kind,sid);
     const continuation=kind&&kind!=='message'||/regenerate/i.test(j.trigger||j.payload?.trigger||'');
     if(continuation){if(!/^(stop|cancel|abort|interrupt)/i.test(kind||'')){try{errReload.follow.arm();errReload.noteSend(sidOf(location.href)||sid,null);}catch{}}if(sid&&!/^(stop|cancel|abort|interrupt)/i.test(kind||'')){const l=contSeen.get(sid)||[];l.push({at:Date.now(),kind:/regenerate/i.test(j.trigger||j.payload?.trigger||'')?'regenerate':kind||'continue'});contSeen.delete(sid);contSeen.set(sid,l.slice(-40));while(contSeen.size>20)contSeen.delete(contSeen.keys().next().value);}for(const r of runs.values())if(r.sid===sid){r.tries=0;r.finalReads=0;r.liveReads=0;r.phase='工作流继续';later(r);}return;}
-    const preview=promptPreview(j), entry={revision:++revision,at:Date.now(),configs:configs(j,'页面请求','$'),prompt:preview,balance:balance&&Date.now()-balance.at<180000?{remaining:balance.remaining,at:balance.at}:null};
+    const preview=promptPreview(j), entry={revision:++revision,at:Date.now(),configs:configs(j,'页面请求','$'),prompt:preview,full:promptFull(j),balance:balance&&Date.now()-balance.at<180000?{remaining:balance.remaining,at:balance.at}:null};
     const pm=j.payload?.message,mid=j.message?.id??(pm&&typeof pm==='object'&&pm.role!=='assistant'?pm.id:undefined);if(typeof mid==='string'&&/^[\w-]{8,64}$/.test(mid)){try{onSent?.(mid,entry.at);}catch{}}
     // 发送后自动跟随最新；记下这条消息（刷新后若页面里找不到，提示“服务器已收到、不用重发”）
-    entry.mid=typeof mid==='string'?mid:null;try{errReload.follow.arm();const ps=sidOf(location.href)||sid;if(ps)errReload.noteSend(ps,entry.mid?{mid:entry.mid,text:preview,at:entry.at}:null);}catch{}
+    entry.mid=typeof mid==='string'?mid:null;try{errReload.follow.arm();const ps=sidOf(location.href)||sid;if(ps)errReload.noteSend(ps,entry.mid?{mid:entry.mid,text:preview,full:entry.full,at:entry.at}:null);}catch{}
     if(sid){submissions.set(sid,entry);void costBaseline(sid,entry);}else pendingNew=entry;
     // 记下提交前已见过的标记数与 span：后端若不写新的轮次标记（如撤回后重发），仍能靠“新出现的 span”识别本轮
     for(const r of runs.values())if(r.sid===sid){clearTimeout(r.timer);r.abort?.abort();if(r.data)save(r.data);r.revision=entry.revision;r.requestConfigs=entry.configs;r.prompt=preview;r.submittedAt=entry.at;r.baseline={markers:r.markers,spans:new Set(r.seen),since:r.newest||null};r.tries=0;r.finalReads=0;r.liveReads=0;r.cache.clear();r.missing=new Map();r.rawSpans=new Map();r.rawTrace=[];r.credits=null;if(r.probe)delete r.probe.cost;r.phase='等待新一轮';later(r,1800);}
@@ -6889,7 +7064,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       if(method==='POST'&&/\/in\/append$/.test(path)){try{errReload.noteSendStatus(sidOf(location.href)||streamSid(res.url||url),res.status);}catch{}}
       if(method==='POST'&&/\/stream\/create-chat$/.test(path)){
         if(res.status===429)res.clone().text().then(t=>noteQuota('chat',res.headers,res.status,t)).catch(()=>noteQuota('chat',res.headers,res.status));
-        else{noteQuota('chat',res.headers,res.status);if(res.ok&&res.clone){const pend=pendingNew;try{res.clone().json().then(j=>{gacha.noteChatId(j?.id);try{if(typeof j?.id==='string'&&pend?.mid)errReload.noteSend(j.id,{mid:pend.mid,text:pend.prompt,at:pend.at,st:res.status});}catch{}if(typeof j?.id==='string'&&/^[\w-]{8,128}$/.test(j.id))costNew(j.id,pend?.at,pend?.balance);}).catch(()=>{});}catch{}}}
+        else{noteQuota('chat',res.headers,res.status);if(res.ok&&res.clone){const pend=pendingNew;try{res.clone().json().then(j=>{gacha.noteChatId(j?.id);try{if(typeof j?.id==='string'&&pend?.mid)errReload.noteSend(j.id,{mid:pend.mid,text:pend.prompt,full:pend.full,at:pend.at,st:res.status});}catch{}if(typeof j?.id==='string'&&/^[\w-]{8,128}$/.test(j.id))costNew(j.id,pend?.at,pend?.balance);}).catch(()=>{});}catch{}}}
       }
       else if(method==='POST'&&/\/in\/append$/.test(path)){if(res.status===429)res.clone().text().then(t=>noteQuota('append',res.headers,res.status,t)).catch(()=>noteQuota('append',res.headers,res.status));else noteQuota('append',res.headers,res.status);}
       if(res.status===200&&method==='GET'&&/\/api\/billing\/balance$/.test(path)&&res.clone){try{res.clone().json().then(j=>noteBalance(j,'页面请求')).catch(()=>{});}catch{}}
@@ -7000,6 +7175,8 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       return {sessions,turns:rows.map(({data,...meta})=>({...meta,data:data?(withRaw?{...data,raw:raw.get(meta.key)||null}:LocalCatalog.strip(data)):null})),rawIncluded:withRaw};}
     addLog(entry){if(this.closed)return;const e={at:entry.at,level:entry.level,stage:String(entry.stage).slice(0,40),text:String(entry.text).slice(0,1600),sid:entry.sid||'',runId:entry.runId||null,spanId:entry.spanId||null};this.localLogs.push(e);if(this.localLogs.length>600)this.localLogs.shift();this.pendingLogs.push(e);this.logRevision++;if(!this.flushTimer)this.flushTimer=setTimeout(()=>this.flush(),350);}
     async flush(){this.flushTimer=0;await this.ready;const items=this.pendingLogs.splice(0);if(!this.db||this.closed||!items.length)return;try{const tx=this.db.transaction('logs','readwrite'),store=tx.objectStore('logs');let last=0;for(const [i,e]of items.entries()){const req=store.add(e);req.onsuccess=()=>{last=req.result;if(i===items.length-1&&last>4000){const cursor=store.openCursor(IDBKeyRange.upperBound(last-4000));cursor.onsuccess=()=>{const c=cursor.result;if(c){c.delete();c.continue();}};}};}tx.oncomplete=()=>{this.logRevision++;this.onchange?.();try{this.channel?.postMessage({kind:'logs'});}catch{}};tx.onerror=()=>{this.pendingLogs=[];};}catch{this.pendingLogs=[];}}
+    // v1.11.80 “记录 · 日志”是整个脚本的日志（所有对话），不再只显示当前对话
+    async readAllLogs(){await this.ready;const memory=this.localLogs.slice(-600);if(!this.db)return memory;const persisted=await this.rows('logs',null,null,'prev',600),seen=new Set();return [...persisted,...memory].sort((a,b)=>String(a.at).localeCompare(String(b.at))).filter(e=>{const k=[e.at,e.level,e.stage,e.text,e.sid,e.runId,e.spanId].join('|');if(seen.has(k))return false;seen.add(k);return true;}).slice(-600);}
     async readLogs(sid){await this.ready;const memory=this.localLogs.filter(e=>!e.sid||e.sid===sid);if(!this.db)return memory.slice(-600);const persisted=await this.rows('logs','sid',sid||'','prev',600),global=await this.rows('logs','sid','','prev',40),seen=new Set();return [...persisted,...global,...memory].sort((a,b)=>a.at.localeCompare(b.at)).filter(e=>{const k=[e.at,e.level,e.stage,e.text,e.sid,e.runId,e.spanId].join('|');if(seen.has(k))return false;seen.add(k);return true;}).slice(-600);}
     async clearLogs(){this.localLogs=[];this.pendingLogs=[];logs.length=0;await this.ready;if(this.db)await new Promise(resolve=>{try{const tx=this.db.transaction('logs','readwrite');tx.objectStore('logs').clear();tx.oncomplete=tx.onerror=()=>resolve();}catch{resolve();}});this.logRevision++;this.onchange?.();try{this.channel?.postMessage({kind:'logs'});}catch{}}
     destroy(){this.closed=true;clearTimeout(this.flushTimer);clearTimeout(this.sentTimer);this.channel?.close();this.db?.close();}
@@ -7166,6 +7343,15 @@ details.mc-card .section.credits{margin-top:12px}
 :host([data-compact]) .mc-fam{font-size:18px}
 :host([data-compact]) .mc-card{border-radius:16px}
 .about-upds{display:flex;flex-direction:column;align-items:stretch;gap:6px;margin:0;min-width:0}.about-upds .upd{display:flex;justify-content:flex-start;width:100%;min-height:36px;margin:0;padding:8px 12px!important;border:1px solid var(--line);border-radius:10px;font:12px/1.4 var(--mono);color:var(--fg);text-align:left;white-space:normal;overflow:visible;max-width:none;text-overflow:clip}.about-upds .upd:hover{background:var(--raised)}.about-upds .upd[data-new='1']{border-color:transparent}.about-upds .upd.chentry{justify-content:center;border-style:dashed;color:var(--secondary);opacity:1}.about-upds .chform{padding:2px 0}
+.head{min-height:0;padding:0 8px 0 14px;gap:10px;border-bottom:1px solid var(--line)}.head .head-id{display:flex;align-items:center;gap:6px;flex:none;min-width:0}.head h2{font-size:13px;font-weight:600;white-space:nowrap}.head .tabs{flex:1;min-width:0;border-bottom:0;padding:0;gap:13px}.head .tab{padding:11px 0 10px}.head .head-export{margin-left:auto}.head .tab[aria-selected=true]:after{bottom:0}
+.status{padding-top:5px}.pickers{margin-top:9px}
+.mc-top>.mc-unit{margin-left:auto}.mc-unit{flex:none;width:30px;height:30px;padding:0!important;border-radius:50%!important;border:1px solid var(--edge);background:var(--bg);font:600 14px/1 var(--mono);color:var(--heading)}.mc-unit[data-unit=token]{font-size:12.5px}.mc-unit:hover{background:var(--raised)}
+.mc-spend{margin-top:10px;padding-top:10px;border-top:1px solid var(--line);min-width:0}.mc-spend-lab{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--secondary)}.mc-spend-big{font:600 25px/1.2 var(--mono);letter-spacing:-.03em;color:var(--heading);margin:3px 0 1px;overflow-wrap:anywhere}.mc-spend-big[data-live]{animation:ampPulse 1.6s ease-in-out infinite}.mc-spend-note{font-size:10.5px;line-height:1.5;color:var(--secondary);overflow-wrap:anywhere}.mc-spend-sub{margin-top:5px;font-size:11.5px;color:var(--secondary)}.mc-spend-sub b{font-weight:500;color:var(--fg);font-family:var(--mono)}
+.mc-est{font-size:10px;line-height:1;padding:2px 6px;border-radius:999px;color:var(--warn);background:color-mix(in srgb,var(--warn) 13%,transparent)}.mc-est.ok{color:var(--green);background:color-mix(in srgb,var(--green) 12%,transparent)}
+.mc-hero .mc-callbar{margin-top:10px}
+.mc-hero{padding:12px 13px 11px}.mc-hero .vlogo.mc-big{width:28px;height:28px}.mc-hero .vlogo.mc-big svg{width:16px;height:16px}.mc-hero .vlogo.mc-big[data-full] svg{width:28px;height:28px}.mc-hero .mc-fam{font-size:17px}.mc-hero .mc-name{gap:3px 7px}.mc-meta{font-size:11px;color:var(--secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}.mc-hero .mc-spend{margin-top:9px;padding-top:9px}
+.mc-sec{margin-top:10px;padding-top:9px;border-top:1px solid var(--line)}details.mc-sec>summary{display:flex;align-items:center;gap:7px;list-style:none;cursor:pointer;font-size:12px;font-weight:500;color:var(--heading);min-width:0}details.mc-sec>summary::-webkit-details-marker{display:none}details.mc-sec>summary .eyebrow{margin-left:auto;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}details.mc-sec>summary .mc-chev{width:13px;height:13px;color:var(--secondary);transition:transform .18s;flex:none}details.mc-sec[open]>summary .mc-chev{transform:rotate(90deg)}details.mc-sec[open]>summary{margin-bottom:6px}details.mc-sec .tl{margin-top:4px}
+.mc-livecard .mc-act{margin-top:10px}.mc-livecard .mc-act .note{margin-top:6px}
 `;
   function el(tag,cls,text,parent){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined&&text!==null)e.textContent=text;if(parent)parent.append(e);return e;}
   function button(parent,text,title,fn,cls=''){const b=el('button',cls,text,parent);b.type='button';b.title=title;b.setAttribute('aria-label',title);b.dataset.focus=title;b.onclick=fn;return b;}
@@ -7322,7 +7508,7 @@ details.mc-card .section.credits{margin-top:12px}
   const mon={bySid:new Map(),serial:0,sig:'',stamp:'',timer:0,alerts:new Set()};
   const TIER_LV={none:0,minimal:1,low:2,medium:3,high:4,xhigh:5,max:6},TIER_SPLIT=/^(.*?)[-\s·]+(none|minimal|low|medium|high|xhigh|max)$/i;
   // 名称 → [家族名, 档位]：与顶栏一致（有厂商时去掉厂商前缀）
-  function famTier(n){n=String(n||'');const x=brand.of(n)?brand.short(n):noVertex(n),m=x.match(TIER_SPLIT);return m?[m[1],m[2].toLowerCase()]:[x,''];}
+  function famTier(n){n=String(n||'');const mp=modelParts(n);if(mp.family)return [mp.family,mp.tier];const x=brand.of(n)?brand.short(n):noVertex(n),m=x.match(TIER_SPLIT);return m?[m[1],m[2].toLowerCase()]:[x,''];}
   function monOf(sid){let m=mon.bySid.get(sid);if(!m){m={sid,flags:[],auto:null,cur:null,hist:[],sums:new Map(),msgId:'',steps:0,busy:false,wasBusy:false,local:null,localAt:0,localRev:-1,localBusy:false,autoKey:'',at:0};mon.bySid.set(sid,m);while(mon.bySid.size>12)mon.bySid.delete(mon.bySid.keys().next().value);}return m;}
   // 与抽卡的 completion() 相同：从 [role=log] 的 React fiber 往上找 useChat 的 {id, messages, status}
   function monChat(){
@@ -7338,8 +7524,15 @@ details.mc-card .section.credits{margin-top:12px}
     const msgs=c.messages,last=msgs.at(-1),lp=Array.isArray(last?.parts)?last.parts:[],tail=lp.at(-1);
     const sig=c.sid+'|'+msgs.length+'|'+(last?.id||'')+'|'+lp.length+'|'+(typeof tail?.text==='string'?tail.text.length:0)+'|'+(tail?.state||'')+'|'+c.status;
     if(sig===mon.sig)return;mon.sig=sig;
+    // v1.11.80 锁定当前对话：刚切换对话的几秒里，页面状态里可能还是上一个对话的消息（消息 id 已记在别的对话名下）→ 这一帧不认，
+    // 免得把上一个对话的模型 / 步骤 / 思考链算到新对话头上（抽卡连续换对话时误报“上一个对话的模型路由到了这个对话”）
+    {const own=mon.own||(mon.own=new Map()),now_=Date.now();if(mon.lastSid!==c.sid){mon.lastSid=c.sid;mon.sidAt=now_;}
+      let stale=false;for(const x of c.messages){const o=x?.id&&own.get(x.id);if(o&&o!==c.sid){stale=true;break;}}
+      if(stale&&now_-(mon.sidAt||0)<4000){mon.sig='';return;}
+      for(const x of c.messages)if(x?.id&&own.get(x.id)!==c.sid){own.delete(x.id);own.set(x.id,c.sid);if(own.size>4000)own.delete(own.keys().next().value);}}
     const m=monOf(c.sid),now=Date.now(),busy=c.status==='submitted'||c.status==='streaming';
     let ui_=-1;for(let i=msgs.length-1;i>=0;i--)if(msgs[i]?.role==='user'){ui_=i;break;}
+    m.userAt=ui_>=0?uuidTime(String(msgs[ui_]?.id||''))||m.userAt||null:null; // 这一轮的用户消息时间（估算只认这之后开始的调用）
     const after=msgs.slice(ui_+1).filter(x=>x?.role==='assistant'),curMsg=after.at(-1)||null;
     const hist=msgs.slice(0,Math.max(0,ui_)).concat(after.slice(0,-1)).filter(x=>x?.role==='assistant').slice(-12).map(x=>monSum(m,x));
     const cur=curMsg?monSum(m,curMsg):null;
@@ -7349,7 +7542,8 @@ details.mc-card .section.credits{margin-top:12px}
     if(cur&&cur.n>m.steps){const first=m.steps===0;m.steps=cur.n;if(busy)monKick(c.sid,first?'first':'step');}
     if(m.wasBusy&&!busy)setTimeout(()=>{const r=forceRun(c.sid);if(r&&!r.finalReads)monKick(c.sid,'done');},3500);
     m.wasBusy=busy;
-    if(cur)for(const f of liveFlags(hist,cur,!busy)){const key=cur.id+':'+f.kind;if(m.flags.some(x=>x.key===key))continue;const x={...f,key,at:now,msg:cur.id,step:cur.n,status:'suspect'};m.flags.push(x);if(m.flags.length>24)m.flags.shift();monFlag(c.sid,x,busy);}
+    // 确定信号（used bash 之后出现思考链）直接记为“已确认换模型”：换之前的型号记为 from，新型号等 Trace 读到再补上
+    if(cur)for(const f of liveFlags(hist,cur,!busy)){const key=cur.id+':'+f.kind;if(m.flags.some(x=>x.key===key))continue;const x={...f,key,at:now,msg:cur.id,step:cur.n,status:f.certain?'confirmed':'suspect'};if(f.certain){x.from=monCurrentName(c.sid)||null;x.to=null;}m.flags.push(x);if(m.flags.length>24)m.flags.shift();monFlag(c.sid,x,busy);}
     const stamp=[c.sid,cur?.id,cur?.n,cur?.think,cur?.tools,busy,m.flags.map(f=>f.key+f.status).join(','),m.autoKey].join('|');
     if(stamp!==mon.stamp){mon.stamp=stamp;mon.serial++;paint();}
   }
@@ -7359,6 +7553,7 @@ details.mc-card .section.credits{margin-top:12px}
   function monFlag(sid,f,busy){
     log(f.level==='strong'?'warn':'info','实时监控',f.text+(f.detail?'（'+f.detail+'）':''),null,{sid});
     if(f.level!=='weak')monKick(sid,'anomaly');
+    if(f.certain&&prefs.monAlert&&!mon.alerts.has(f.key)&&(mon.alerts.add(f.key),!gacha.quietTurn(sid))){try{routeAlert.show('换模型 · 路由切换',f.from||null,'出现思考链的新模型',f.detail,'drop');}catch{}}
     if(f.level==='strong'&&prefs.monAlert&&!mon.alerts.has(f.key)&&(mon.alerts.add(f.key),!gacha.quietTurn(sid))){const cur=monCurrentName(sid);try{routeAlert.show('疑似换模型 · 正在核对',null,f.text,(cur?'当前识别 '+short_(cur)+' · ':'')+f.detail,'drop');}catch{}}
     if(f.level==='strong'&&prefs.monStop&&busy&&pageGenerating()&&!(f.kind==='think-mid'&&mon.bySid.get(sid)?.cur?.midText&&monGuardOn())){const b=document.querySelector('button[aria-label="Stop generating"],button[aria-label="Stop response"],button[aria-label="停止生成"]');if(b&&!b.disabled){b.click();log('warn','实时监控','已按设置自动停止生成',null,{sid});}}
   }
@@ -7398,6 +7593,8 @@ details.mc-card .section.credits{margin-top:12px}
     if(!m.busy&&tk)m.idleKey=tk;
     const fresh=!!tk&&(!m.busy||m.idleKey===undefined||tk!==m.idleKey);
     for(const f of m.flags){
+      // 已判定换模型（used bash 之后出现思考链）但还不知道换成了谁：Trace 里这一轮出现不同型号时补上
+      if(f.certain&&f.status==='confirmed'&&!f.to&&f.msg===m.cur?.id&&cur){const ch=out.changes.filter(c=>!c.local&&c.turn===cur.turn&&c.attempt===cur.attempt&&!c.tierOnly).at(-1);if(ch){f.from=ch.from;f.to=ch.to;log('warn','实时监控','换模型已由 Trace 确认：'+ch.from+' → '+ch.to+'（'+f.text+'）',null,{sid});}}
       if(f.status!=='suspect')continue;
       if(f.msg!==m.cur?.id){f.status='stale';continue;}
       if(!fresh)continue;
@@ -7418,7 +7615,7 @@ details.mc-card .section.credits{margin-top:12px}
     const conf=m?.flags.filter(f=>f.status==='confirmed'&&recent(f)).at(-1);
     const inTurn=c=>cur&&c.turn===cur.turn&&c.attempt===cur.attempt&&!c.local;
     const ch=auto?.changes.filter(c=>inTurn(c)&&!c.tierOnly).at(-1);
-    if(ch||conf){const a=ch?.from||conf.from,b=ch?.to||conf.to;return {tone:'switch',icon:'swap',short:'本轮换了模型',text:'已确认换模型：'+short_(a)+' → '+short_(b)+(ch?'（第 '+ch.n+' 次调用起）':''),from:a,to:b};}
+    if(ch||conf){const a=ch?.from||conf.from,b=ch?.to||conf.to;if(!b&&conf?.certain)return {tone:'switch',icon:'swap',short:'本轮换了模型',text:'已判定换模型：used bash 之后突然出现思考链（路由切换）'+(a?'，原来是 '+short_(a):'')+' · 新型号等 Trace 确认',from:a,to:null};return {tone:'switch',icon:'swap',short:'本轮换了模型',text:'已确认换模型：'+short_(a)+' → '+short_(b)+(ch?'（第 '+ch.n+' 次调用起）':''),from:a,to:b};}
     const sus=m?.flags.filter(f=>f.status==='suspect'&&recent(f)).at(-1);
     if(sus)return {tone:'suspect',icon:'alert',short:'疑似换模型',text:'疑似换模型：'+sus.text+' · 正在核对',flag:sus};
     const tier=auto?.tiers.filter(inTurn).at(-1)||auto?.changes.filter(c=>inTurn(c)&&c.tierOnly).map(c=>({from:tierName(c.from),to:tierName(c.to)})).at(-1);
@@ -7566,6 +7763,17 @@ details.mc-card .section.credits{margin-top:12px}
       +'html[data-amp-gem] main button[aria-label="Add files and connections"]{position:relative}html[data-amp-gem] main button[aria-label="Add files and connections"] > span{opacity:0}'
       +'html[data-amp-gem] main button[aria-label="Add files and connections"]::after{content:"";position:absolute;inset:auto;left:50%;top:50%;width:22px;height:22px;margin:-11px 0 0 -11px;background:currentColor;-webkit-mask:url(data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2024%2024%22%3E%3Cpath%20d=%22M12%204.5v15M4.5%2012h15%22%20stroke=%22black%22%20stroke-width=%221.7%22%20stroke-linecap=%22round%22/%3E%3C/svg%3E) center/contain no-repeat;mask:url(data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2024%2024%22%3E%3Cpath%20d=%22M12%204.5v15M4.5%2012h15%22%20stroke=%22black%22%20stroke-width=%221.7%22%20stroke-linecap=%22round%22/%3E%3C/svg%3E) center/contain no-repeat;pointer-events:none}'
       +'}',document.head||document.body);
+    // v1.11.80 电脑端输入框也改成手机端的圆角长条（+ · 输入 · 厂商图标 · 发送）：从上面的手机端样式里挑出输入框相关的规则，换成电脑端的根选择器；
+    // 模式按钮只有真的挪进左侧栏（data-amp-mode-moved）才从输入框里藏起来。设置里可关。
+    const deskGemCss=(()=>{try{
+      const txt=gemStyle.textContent,inner=txt.slice(txt.indexOf('{')+1,txt.lastIndexOf('}')),rules=[];let depth=0,start=0;
+      for(let i=0;i<inner.length;i++){const ch=inner[i];if(ch==='{')depth++;else if(ch==='}'){depth--;if(depth===0){rules.push(inner.slice(start,i+1));start=i+1;}}}
+      let out=rules.filter(r=>/^\s*@keyframes/.test(r)||/editor-content|Add files and connections|Send message|aria-label\^="Stop"|data-amp-native-gacha/.test(r)&&!/Open sidebar|Open workspace|Toggle workspace|data-amp-ws|amp-avatar|amp-lite-panel/.test(r)).join('').replace(/html\[data-amp-gem\]/g,'html[data-amp-dgem]');
+      out=out.replace('html[data-amp-dgem] main button[aria-label="Add files and connections"] ~ button[role="combobox"]{display:none!important}','html[data-amp-dgem][data-amp-mode-moved] main button[aria-label="Add files and connections"] ~ button[role="combobox"]{display:none!important}');
+      out=out.replace(/html\[data-amp-dgem\]\[data-amp-mode-open\][^{]*\{[^}]*\}/,'html[data-amp-dgem][data-amp-mode-open] main button[aria-label="Add files and connections"] ~ button[role="combobox"]{display:flex!important;position:fixed!important;left:var(--amp-mode-x,10px)!important;top:var(--amp-mode-y,8px)!important;width:var(--amp-mode-w,44px)!important;height:var(--amp-mode-h,32px)!important;min-width:0!important;opacity:0!important;pointer-events:none!important;z-index:1!important}');
+      return '@media (min-width:768px){'+out+'}';
+    }catch{return '';}})();
+    const deskGemStyle=el('style','',deskGemCss,document.head||document.body);
     // 右上角头像 + 余额圆环（美金剩余 / 总额度：≥20% 绿色，<20% 橙色，<5% 或超限红色）。
     // 点头像：装了账号切换脚本（v1.0.21+）就打开账号切换面板，否则打开左侧抽屉（底部是账号那一行）。
     let me=(()=>{const m=load(KEY+'.me',null);return m&&typeof m==='object'?m:null;})(),meBusy=0,avStamp='';
@@ -7592,16 +7800,28 @@ details.mc-card .section.credits{margin-top:12px}
       const open=!!document.querySelector('[data-amp-switcher]');try{window.dispatchEvent(new CustomEvent('amp:switch-open'));}catch{}if(open)return;setTimeout(()=>{if(!document.querySelector('[data-amp-switcher]'))side();},350);}
     // 抽屉顶部 logo 旁的模式切换：原按钮在输入框工具栏里（手机上藏起来不占位置）；点这里先关抽屉，再在左上角打开 Arena 自己的模式菜单
     const modeHost=document.createElement('div');modeHost.id='amp-mode';const modeRoot=modeHost.attachShadow({mode:'open'});
-    el('style','',':host{display:inline-flex;flex:none;align-items:center;margin:0 4px 0 2px}.mode{display:inline-flex;align-items:center;gap:3px;height:30px;padding:0 5px 0 7px;border-radius:9px;border:1px solid hsl(var(--border-medium,30 9% 87%) / .8);background:hsl(var(--surface-primary,36 45% 98%) / .45);color:inherit;font:inherit;cursor:pointer;-webkit-tap-highlight-color:transparent}.mode:active{background:hsl(var(--surface-primary,36 45% 98%) / .85)}.ico{display:inline-flex}.ico svg{width:16px;height:16px;display:block}.mode>svg{width:12px;height:12px;opacity:.6}',modeRoot);
-    const modeBtn=button(modeRoot,'','切换模式',()=>modeTap(),'mode'),modeIco=el('span','ico',null,modeBtn);icon('down',modeBtn);
+    el('style','',':host{display:inline-flex;flex:none;align-items:center;margin:0 4px 0 2px}.mode{display:inline-flex;align-items:center;gap:3px;height:30px;padding:0 5px 0 7px;border-radius:9px;border:1px solid hsl(var(--border-medium,30 9% 87%) / .8);background:hsl(var(--surface-primary,36 45% 98%) / .45);color:inherit;font:inherit;cursor:pointer;-webkit-tap-highlight-color:transparent}.mode:active{background:hsl(var(--surface-primary,36 45% 98%) / .85)}.ico{display:inline-flex}.ico svg{width:16px;height:16px;display:block}.mode>svg{width:12px;height:12px;opacity:.6}'
+      +'.lbl{display:none;font-size:13px;line-height:1;white-space:nowrap}:host([data-desk]){margin:0 auto 0 6px}:host([data-desk]) .mode{height:28px;gap:5px;padding:0 6px 0 8px;border-radius:8px}:host([data-desk]) .mode:hover{background:hsl(var(--surface-tertiary,33 31% 94%))}:host([data-desk]) .lbl{display:inline}:host([data-narrow]) .lbl{display:none}',modeRoot);
+    const modeBtn=button(modeRoot,'','切换模式',()=>modeTap(),'mode'),modeIco=el('span','ico',null,modeBtn),modeLbl=el('span','lbl','',modeBtn);icon('down',modeBtn);
+    // v1.11.80 电脑端也把模式切换挪到左侧栏 logo 旁（与手机端一致）；侧栏收起 / 找不到位置时输入框里的原按钮照常显示
+    const deskGemOn=()=>!!prefs.deskGem&&innerWidth>=768&&/^\/agent(?:\/|$)/.test(location.pathname);
     const modeTrigger=()=>document.querySelector('main button[aria-label="Add files and connections"] ~ button[role="combobox"]')||[...document.querySelectorAll('main button[role="combobox"]')].find(b=>/^(Battle|Agent|Side by Side|Direct)\b/i.test((b.textContent||'').trim()))||null;
-    function syncMode(){const row=document.querySelector('[role="dialog"][data-mobile="true"] [data-sidebar="header"] > div'),trig=gemOn()?modeTrigger():null;
+    function syncMode(){let row=null,desk=false;const mob=gemOn()?document.querySelector('[role="dialog"][data-mobile="true"] [data-sidebar="header"] > div'):null;
+      if(mob)row=mob;else if(deskGemOn()){row=[...document.querySelectorAll('[data-sidebar="sidebar"]:not([data-mobile="true"]) [data-sidebar="header"] > div')].find(r=>{const b=r.getBoundingClientRect();return b.width>=150&&b.height>0;})||null;desk=!!row;}
+      const trig=row?modeTrigger():null;document.documentElement.toggleAttribute('data-amp-mode-moved',!!(desk&&trig));
       if(!row||!trig){if(modeHost.isConnected)modeHost.remove();return;}
-      const logo=row.querySelector(':scope > ul')||row.firstElementChild;if(logo&&logo.nextSibling!==modeHost)logo.after(modeHost);
-      const name=(trig.textContent||'').trim()||'模式';if(modeHost.dataset.name!==name){modeHost.dataset.name=name;modeIco.replaceChildren();const sv=trig.querySelector('svg');if(sv)modeIco.append(sv.cloneNode(true));modeBtn.title='模式：'+name+' · 点击切换';modeBtn.setAttribute('aria-label',modeBtn.title);}
+      modeHost.toggleAttribute('data-desk',desk);modeHost.toggleAttribute('data-narrow',desk&&row.getBoundingClientRect().width<236);
+      const logo=row.querySelector(':scope > ul')||[...row.children].find(x=>x!==modeHost);if(logo&&logo.nextSibling!==modeHost)logo.after(modeHost);
+      const name=(trig.textContent||'').trim()||'模式';if(modeHost.dataset.name!==name){modeHost.dataset.name=name;modeIco.replaceChildren();const sv=trig.querySelector('svg');if(sv)modeIco.append(sv.cloneNode(true));modeLbl.textContent=name;modeBtn.title='模式：'+name+' · 点击切换';modeBtn.setAttribute('aria-label',modeBtn.title);}
       // 顺便记下侧栏底部的头像（/api/me 没给头像时用）
       const fi=document.querySelector('[role="dialog"][data-mobile="true"] [data-sidebar="footer"] img'),fs=fi&&(fi.currentSrc||fi.src);if(fs&&me&&!me.anon&&!me.avatar){me.avatar=fs;store(KEY+'.me',me);avStamp='';paintAvatar();}}
-    function modeTap(){const hb=document.querySelector('[role="dialog"][data-mobile="true"] [data-sidebar="header"] > div > button');if(hb)hb.click();else document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true}));
+    function modeTap(){
+      // 电脑端：侧栏不用关；把输入框里藏起来的原按钮（透明、不可点）挪到这个按钮的位置再打开，Arena 的模式菜单就出现在这里
+      if(modeHost.hasAttribute('data-desk')){const t=modeTrigger();if(!t)return;const d=document.documentElement,r=modeBtn.getBoundingClientRect();
+        for(const [k,v] of [['x',r.left],['y',r.top],['w',r.width],['h',r.height]])d.style.setProperty('--amp-mode-'+k,Math.round(v)+'px');d.setAttribute('data-amp-mode-open','');
+        requestAnimationFrame(()=>{const tr=t.getBoundingClientRect();try{t.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,composed:true,pointerType:'mouse',button:0,buttons:1,isPrimary:true,clientX:tr.left+tr.width/2,clientY:tr.top+tr.height/2}));}catch{}
+          setTimeout(()=>{if(t.getAttribute('aria-expanded')!=='true')t.click();},80);let n=0;const iv=setInterval(()=>{n++;if(t.getAttribute('aria-expanded')!=='true'&&n>3||n>300||!t.isConnected){clearInterval(iv);d.removeAttribute('data-amp-mode-open');}},200);});return;}
+      const hb=document.querySelector('[role="dialog"][data-mobile="true"] [data-sidebar="header"] > div > button');if(hb)hb.click();else document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true}));
       setTimeout(()=>{const t=modeTrigger();if(!t)return;const d=document.documentElement;d.setAttribute('data-amp-mode-open','');requestAnimationFrame(()=>{t.click();let n=0;const iv=setInterval(()=>{n++;if(t.getAttribute('aria-expanded')!=='true'&&n>2||n>300||!t.isConnected){clearInterval(iv);d.removeAttribute('data-amp-mode-open');}},200);});},420);}
     // v1.11.70 手机端工作区：顶栏不再单独放工作区按钮，收进右侧屏幕边缘的小把手——向左拖出来（或轻点）打开，上下拖动换位置（会记住）。
     // 原生按钮只是视觉隐藏（保留 1px 给顶栏定位），打开时照样点它；工作区打开 / 有弹窗 / 正在输入时把手自动让开；新对话还没有工作区时把手变灰。
@@ -7791,17 +8011,21 @@ details.mc-card .section.credits{margin-top:12px}
         savePrefs();sheetAnchor(applySheet);};
       for(const hd of [sheetGrip,compactBar]){hd.addEventListener('pointerdown',down);hd.addEventListener('pointermove',move);hd.addEventListener('pointerup',up);hd.addEventListener('pointercancel',up);}
     }
-    const head=el('header','head',null,panel),heading=el('div','grow',null,head);el('h2','','模型信息',heading);const numberLabel=el('span','local-number mono','',heading);numberLabel.title='本地会话编号（同一浏览器内统一递增）';
-    const headChip=button(heading,'','说明',()=>say(chipWhy(),4200),'chip');headChip.hidden=true;{const eb=button(heading,'','导出当前页的记录',()=>void exportView(),'sheet-btn head-export');icon('download',eb);const hb=button(head,'','收起模型信息（收起后点屏幕右边缘的小按钮展开）',()=>{pref.open=false;persist();render();},'head-fold');el('span','','收起',hb);icon('chevron',hb);}
+    // v1.11.80 顶部压成一行：模型信息 · 编号 · 标签页 · 导出；右上角的“收起”去掉（面板边缘的小箭头就能收起）
+    const head=el('header','head',null,panel),heading=el('div','head-id',null,head);el('h2','','模型信息',heading);const numberLabel=el('span','local-number mono','',heading);numberLabel.title='本地会话编号（同一浏览器内统一递增）';
+    const headChip=button(heading,'','说明',()=>say(chipWhy(),4200),'chip');headChip.hidden=true;const headExport=button(head,'','导出当前页的记录',()=>void exportView(),'sheet-btn head-export');icon('download',headExport);
     const banner=el('div','cache-banner',null,panel),bannerText=el('span','grow','',banner);button(banner,'返回当前','返回当前会话的最新记录',()=>{historyView=null;turnKey=null;selected=null;rawSpan=null;tab=tab==='cache'?'overview':tab;render();},'return-live');
     const nav=el('div','tabs',null,panel);nav.setAttribute('role','tablist');nav.setAttribute('aria-label','模型信息视图');
     // 一级标签一屏放得下：来源 + 原始 合成“数据”，缓存 + 日志 合成“记录”（页内再切）；版本与更新单独放“关于”
-    const tabs=[['overview','概览'],['detector','监控'],['hunt','抽卡'],['sources','来源'],['raw','原始'],['cache','缓存'],['logs','日志'],['settings','设置'],['about','关于']];
-    const groups=[['overview','概览',['overview']],['detector','监控',['detector']],['hunt','抽卡',['hunt']],['data','数据',['sources','raw']],['records','记录',['cache','logs']],['settings','设置',['settings']],['about','关于',['about']]];
+    // v1.11.80 “监控”并入“概览”（本轮实时），“抽卡”页去掉（抽卡看发送键旁的抽卡面板）；概览 / 数据只看当前对话，记录 / 设置 / 关于是整个脚本的
+    const tabs=[['overview','概览'],['sources','来源'],['raw','原始'],['cache','缓存'],['logs','日志'],['settings','设置'],['about','关于']];
+    const groups=[['overview','概览',['overview']],['data','数据',['sources','raw']],['records','记录',['cache','logs']],['settings','设置',['settings']],['about','关于',['about']]];
     const groupOf=t=>groups.find(g=>g[2].includes(t))||groups[0],groupLast={};
     const tabButtons=groups.map(([gid,text,leaves])=>{const b=button(nav,text,text,()=>{tab=leaves.includes(groupLast[gid])?groupLast[gid]:leaves[0];render();},'tab');b.setAttribute('role','tab');b.id='amp-tab-'+gid;return b;});
     nav.onkeydown=e=>{let i=groups.indexOf(groupOf(tab));if(e.key==='ArrowRight')i=(i+1)%groups.length;else if(e.key==='ArrowLeft')i=(i+groups.length-1)%groups.length;else if(e.key==='Home')i=0;else if(e.key==='End')i=groups.length-1;else return;e.preventDefault();tabButtons[i].click();tabButtons[i].focus();};
     const subnav=el('div','subtabs',null,panel);subnav.setAttribute('role','group');subnav.hidden=true;let subStamp='';
+    // 宽屏：标签页和标题同一行（放进 head）；手机底部抽屉：head 隐藏，标签页单独一行
+    const placeNav=()=>{if(!compact){if(nav.parentElement!==head||nav.nextSibling!==headExport)head.insertBefore(nav,headExport);}else if(nav.parentElement!==panel||nav.nextSibling!==subnav)panel.insertBefore(nav,subnav);};placeNav();
     const status=el('div','status',null,panel);status.setAttribute('aria-live','polite');
     const pickers=el('div','pickers',null,panel);
     const turnPicker=el('label','call-picker',null,pickers);el('span','','轮次',turnPicker);const turnSelect=el('select','selector',null,turnPicker);turnSelect.setAttribute('aria-label','选择轮次');turnSelect.onchange=()=>{const live=liveKey();turnKey=turnSelect.value===live?null:turnSelect.value;selected=null;rawSpan=null;render();};
@@ -7821,7 +8045,7 @@ details.mc-card .section.credits{margin-top:12px}
     const toast=el('div','toast','',panel);toast.hidden=true;toast.setAttribute('role','status');
     // 版本 / 更新 / 正式版·测试版入口：原来挤在底部，现在放“关于”页（节点常驻，切到“关于”时挂进页面）
     const aboutBox=el('div','upds about-upds');let aboutChannel='';
-    async function exportView(){if(tab==='hunt'){download(gacha.state()||{},'arena-gacha-'+Date.now()+'.json');return;}if(tab==='detector'){download({...legacyDisplay.snapshot(),oneClick:force.bySid.get(sidOf(location.href))||null},'arena-independent-detector-'+Date.now()+'.json');return;}const data=exported();data.logs=await catalog.readLogs(data.sid);download(data,'amp-lite-'+(data.sid||'export').slice(0,8)+'-'+Date.now()+'.json');}
+    async function exportView(){if(tab==='logs'||tab==='cache'){const all=await catalog.readAllLogs();download({tool:'Arena Native Suite',version:VERSION,at:new Date().toISOString(),kind:'logs',logs:all},'amp-lite-logs-'+Date.now()+'.json');return;}const data=exported();data.logs=await catalog.readLogs(data.sid);if(tab==='overview'){const sid=sidOf(location.href);data.monitor={verdict:monState(sid),flags:mon.bySid.get(sid)?.flags||[],oneClick:force.bySid.get(sid)||null,legacy:legacyDisplay.snapshot()};}download(data,'amp-lite-'+(data.sid||'export').slice(0,8)+'-'+Date.now()+'.json');}
     ;(()=>{const cmp=(x,y)=>{const p=String(x).split('.').map(Number),q=String(y).split('.').map(Number);for(let i=0;i<Math.max(p.length,q.length);i++){const d=(p[i]||0)-(q[i]||0);if(d)return d>0?1:-1;}return 0;};const box=aboutBox;const BASE='https://raw.githubusercontent.com/755287249/-/main/test/';const mk=(label,file,getCur)=>{const RAW=BASE+file,CK='amp.native.upd.'+file;let latest=null,busy=false,fresh=null;const ub=el('button','footer-note upd','',box);ub.type='button';ub.dataset.self='1';const paint=(msg)=>{const cur=getCur();ub.dataset.new=cur&&latest&&cmp(latest,cur)>0?'1':'';ub.dataset.miss=cur?'':'1';ub.title=(cur?label+' 当前 v'+cur:label+' 未检测到（未安装或未启用）')+(latest?'，GitHub 最新 v'+latest+(ub.dataset.src?'（'+ub.dataset.src+'）':''):'')+'。点击'+(ub.dataset.new||!cur?'打开安装页':'重新检查');const old=!cur&&file.includes('Switch')&&!!document.querySelector('[data-amp-switch],[data-amp-login],[data-amp-switcher],#amp-switcher-css');const ahead=cur&&latest&&cmp(cur,latest)>0;ub.textContent=label+' '+(msg||(!cur?(old?'旧版（≤1.0.17）· 安装 v'+(latest||'新版'):latest?'未检测到 · 安装 v'+latest:'未检测到 · 安装'):ub.dataset.new?'v'+cur+' → v'+latest+' · 更新':ahead?'v'+cur+' · GitHub 仍是 v'+latest:latest?'v'+cur+' · 已是最新':'v'+cur+' · 检查更新'));if(!cur&&!msg)ub.title=label+' 未检测到版本号：可能是 v1.0.17 及更早的版本（不会上报版本），或未安装/未启用。安装最新版后即可显示。'+(latest?'GitHub 最新 v'+latest+'。':'');if(ahead&&!msg)ub.title=label+' 本地 v'+cur+' 比 GitHub 上的 v'+latest+' 新，请把新版上传到 GitHub。';};const check=async(force)=>{if(busy)return;try{const c=JSON.parse(localStorage.getItem(CK)||'null');if(!force&&c&&Date.now()-c.at<5*60e3&&!(getCur()&&cmp(getCur(),c.v)>0)){latest=c.v;paint();return;}}catch{}busy=true;paint('检查中…');try{const F=window.__ampNativeFetch||fetch,vOf=t=>(String(t).match(/\/\/\s*@version\s+([\d.]+)/)||[])[1]||null,errs=[];let best=null,src='';const take=(v,from)=>{if(v&&(!best||cmp(v,best)>0)){best=v;src=from;}};
           // 1) GitHub API 查这个文件最新提交的 sha，再按 sha 取原文（路径唯一，不会被 CDN/镜像缓存）；2) 兜底直接取 main
           try{const c=await F.call(window,'https://api.github.com/repos/755287249/-/commits?sha=main&per_page=1&path='+encodeURIComponent((/\/test\/$/.test(BASE)?'test/':'')+file),{cache:'no-store',credentials:'omit'});if(!c.ok)throw new Error('API HTTP '+c.status);const sha=(await c.json())?.[0]?.sha;if(!sha)throw new Error('API 无提交');const r=await F.call(window,BASE.replace('/main/','/'+sha+'/')+file,{cache:'no-store',credentials:'omit',headers:{Range:'bytes=0-4095'}});if(!r.ok)throw new Error('sha HTTP '+r.status);take(vOf(await r.text()),'commit '+sha.slice(0,7));fresh=BASE.replace('/main/','/'+sha+'/')+file;}catch(e){errs.push(e.message||String(e));}
@@ -7874,9 +8098,10 @@ details.mc-card .section.credits{margin-top:12px}
     function modelOf(sid,record){if(record?.vmodel)return record.vmodel;const snap=catalog.snapshots.get(sid)||(sid===sidOf(location.href)?liveView(sid):null);if(!snap)return '';const c=[...servingCalls(snap)].reverse().find(c=>brand.of(c.internal)||brand.of(c.response));return c?(brand.of(c.internal)?c.internal:c.response):((snap.internalNames||[]).find(n=>brand.of(n))||'');}
     function withVendor(sid,record,name){name=String(name||'');if(!name||brand.of(name))return name;
       // dxzui / clzui 请求名：不再有特殊地位，只作为短前缀 dx- / cl- 加上识别到的模型（去厂商名）：dx-opus-5.5
-      const zp=name.match(/^(dx|cl)zui\b/i);if(zp){const m=modelOf(sid,record);if(m&&brand.of(m))return zp[1].toLowerCase()+'-'+brand.short(m).replace(/(^|-)(\d{1,2})-(\d{1,2})(?=$|-)/,'$1$2.$3');return zp[1].toLowerCase()+'zui';}const m=modelOf(sid,record);if(m&&brand.of(m)&&!name.includes(m))return name+'-'+m;const v=record?.vendor;return v&&brand.NAME[v]?name+'-'+brand.NAME[v].toLowerCase():name;}
+      const zp=name.match(/^(dx|cl)zui\b/i);if(zp){const m=modelOf(sid,record);if(m&&brand.of(m))return zp[1].toLowerCase()+'-'+brand.short(m).replace(/(^|-)(\d{1,2})-(\d{1,2})(?=$|-)/,'$1$2.$3');return zp[1].toLowerCase()+'zui';}const m=modelOf(sid,record);if(m&&brand.of(m)&&!name.includes(m)){const tk=s=>s.toLowerCase().split(/[-_\s.]+/).filter(Boolean),mt=new Set(tk(m));return tk(name).every(t=>mt.has(t))?m:name+'-'+m;}const v=record?.vendor;return v&&brand.NAME[v]?name+'-'+brand.NAME[v].toLowerCase():name;}
     // 左侧卡片已有厂商图标：文字去掉厂商/系列前缀（gpt-6-luna-max → 6-luna-max，kimi-k3 → K3），悬停显示全称
-    function shortModel(n){n=String(n||'');if(!brand.of(n))return n;const m=n.match(/^(?:[\w.-]+\/)?(?:gpt|chatgpt|claude|gemini|grok|kimi|qwen|deepseek|mimo|glm|llama|mistral|doubao|minimax)[-_ ]+(.+)$/i);let r=m?m[1]:(n.match(/^[\w.-]+\/(.+)$/)||[])[1];if(!r||!/[\w]/.test(r))return n;if(/^k\d/.test(r))r='K'+r.slice(1);return r;}
+    // v1.11.80 连写的厂商前缀（qwen3.8-…）也去掉；重复的段只留一个（astra-max-max → astra-max）
+    function shortModel(n){n=String(n||'');if(!brand.of(n))return dedupeName(n,true);const m=n.match(/^(?:[\w.-]+\/)?(?:gpt|chatgpt|claude|gemini|grok|kimi|qwen|deepseek|mimo|glm|llama|mistral|doubao|minimax)(?:[-_ ]+|(?=\d))(.+)$/i);let r=m?m[1]:(n.match(/^[\w.-]+\/(.+)$/)||[])[1];if(!r||!/[\w]/.test(r))return dedupeName(n);if(/^k\d/.test(r))r='K'+r.slice(1);return dedupeName(r);}
     let titleSyncRaf=0;window.addEventListener('amp-title-sync',()=>{if(titleSyncRaf)return;titleSyncRaf=requestAnimationFrame(()=>{titleSyncRaf=0;try{localTitles();}catch{}try{headerTitle();}catch{}try{window.dispatchEvent(new CustomEvent('amp-native-gacha'));}catch{}try{if(gacha.running())paint();}catch{}});});
     const ltMemo=new WeakMap();
     function localTitles(){
@@ -7957,7 +8182,8 @@ details.mc-card .section.credits{margin-top:12px}
       // v1.11.77 三样只在“完整身份”确定的同一时刻一起出现 / 一起更新（不再先出厂商、再出型号、最后补档位）；老虎机读的就是这里的结果。
       // 识别中：名称位置显示对话原标题、副标题“识别中…”，不出 logo 和档位；本对话之前已有完整结果的，新一轮识别中继续显示旧结果，等新结果完整了再整体换。
       const rc0=servingCalls(r?.data).at(-1),known=!!brand.of(shownName),TSPLIT=/^(.*?)[-\s·]+(none|minimal|low|medium|high|xhigh|max)$/i;
-      const split=n=>{n=noVertex(String(n||''));const x=brand.of(n)?brand.short(n):n,m=x.match(TSPLIT);return m&&brand.of(n)?[m[1],m[2].toLowerCase()]:[x,''];};
+      // v1.11.80 拆名字改用 modelParts：档位在名字中间也认（qwen3.8-max-0902 → 3.8-0902 · max），重复段只留一个
+      const split=n=>{n=noVertex(String(n||''));const mp=modelParts(n);if(mp.family)return [mp.family,mp.tier];const x=brand.of(n)?brand.short(n):n,m=x.match(TSPLIT);return m?[dedupeName(m[1],!brand.of(n)),m[2].toLowerCase()]:[dedupeName(x,!brand.of(n)),''];};
       const generating=!!document.querySelector('button[aria-label="Stop generating"],button[aria-label="Stop response"],button[aria-label="停止生成"]');
       // “完整”= Trace 已读完且不是部分记录（部分记录里往往只有请求名、没有带档位的内部名）；回复结束 12 秒仍只有部分记录就接受现有结果
       const idleMs=(()=>{if(!r)return 0;const k=r.runId;if(generating){hdrIdle.delete(k);return 0;}if(!hdrIdle.has(k)){hdrIdle.set(k,Date.now());if(hdrIdle.size>30)hdrIdle.delete(hdrIdle.keys().next().value);}return Date.now()-hdrIdle.get(k);})();
@@ -7983,7 +8209,7 @@ details.mc-card .section.credits{margin-top:12px}
       let tg=hdr.tier;if(!tg||!tg.isConnected||nm.nextElementSibling!==tg){tg?.remove();tg=document.createElement('span');tg.setAttribute('data-amp-htier','');nm.after(tg);hdr.tier=tg;}
       if(tg.dataset.t!==tierTxt||tg.textContent!==tierTxt){tg.dataset.t=tierTxt;tg.replaceChildren();if(tierTxt){const lv=TIER_LV[tierTxt]??0;tg.dataset.lv=String(lv);tg.append(document.createTextNode(tierTxt));}tg.removeAttribute('data-pop');void tg.offsetWidth;if(tierTxt)tg.setAttribute('data-pop','');}
       tg.hidden=!tierTxt;tg.toggleAttribute('data-hi',/^(max|xhigh|high)$/.test(tierTxt));tg.toggleAttribute('data-amp-hdark',isDark());
-      // 换模型徽标：本轮已确认（实心）/ 疑似（描边）；点一下打开“监控”页
+      // 换模型徽标：本轮已确认（实心）/ 疑似（描边）；点一下打开概览的“本轮实时”（原“监控”页）
       {const ms_=monState(sid),show=(ms_.tone==='switch'||ms_.tone==='suspect')&&!qt;let sw=hdr.swap;if(!sw||!sw.isConnected||tg.nextElementSibling!==sw){sw?.remove();sw=document.createElement('span');sw.setAttribute('data-amp-hswap','');sw.setAttribute('role','button');sw.tabIndex=0;sw.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>';const go=e=>{e.preventDefault();e.stopPropagation();ui?.show('detector');};sw.addEventListener('click',go,true);sw.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' ')go(e);});tg.after(sw);hdr.swap=sw;}
         sw.hidden=!show;if(show){sw.dataset.tone=ms_.tone;sw.title=ms_.text;sw.setAttribute('aria-label',ms_.text);}}
       nm.style.setProperty('--amp-hp',Math.round(p)+'%');nm.toggleAttribute('data-amp-hdone',(!full||showFull)&&(final||(full&&idNew)||(done&&!recent)));nm.toggleAttribute('data-amp-hdark',isDark());
@@ -8028,7 +8254,7 @@ details.mc-card .section.credits{margin-top:12px}
       if(stopped||!document.body)return;const cooling=Date.now()<cooldown;if(cooling!==lastCooling){lastCooling=cooling;paint();}const main=document.querySelector('main'),ready=document.readyState==='complete'||!!document.querySelector('next-route-announcer'); // v1.11.73 React 水合完成即可（Next.js 在提交后插入 next-route-announcer），不再等 load（手机上常晚好几秒）
       const anchor=ready?[...document.querySelectorAll('main button[aria-label="Toggle workspace sidebar"],main button[aria-label="Open workspace"],main button[aria-label="Close workspace"],main button[aria-label="打开工作区"],main button[aria-label="切换工作区侧边栏"]')].find(b=>{const r=b.getBoundingClientRect(),m=b.closest('main').getBoundingClientRect();return r.width>0&&r.height>0&&r.top<m.top+100;}):null;
       if(anchor){if(entry.parentNode!==anchor.parentNode||entry.nextSibling!==anchor)anchor.before(entry);entry.removeAttribute('data-floating');}else{if(entry.parentNode!==document.body)document.body.append(entry);entry.setAttribute('data-floating','');}
-      {const g=gemOn();document.documentElement.toggleAttribute('data-amp-gem',g);document.documentElement.toggleAttribute('data-amp-wsr',prefs.wsRight!==false);document.documentElement.toggleAttribute('data-amp-wspre',g&&prefs.wsEdge!==false);document.documentElement.toggleAttribute('data-amp-docpre',!!prefs.hideDocIcon);if(g&&anchor){if(anchor.nextSibling!==avatarHost)anchor.after(avatarHost);avatarHost.hidden=false;paintAvatar();loadMe();}else if(avatarHost.isConnected)avatarHost.remove();syncMode();wsSync();if(!drawerMoOn&&document.body){drawerMoOn=true;drawerMo.observe(document.body,{childList:true});}}
+      {const g=gemOn();document.documentElement.toggleAttribute('data-amp-gem',g);document.documentElement.toggleAttribute('data-amp-dgem',deskGemOn());document.documentElement.toggleAttribute('data-amp-wsr',prefs.wsRight!==false);document.documentElement.toggleAttribute('data-amp-wspre',g&&prefs.wsEdge!==false);document.documentElement.toggleAttribute('data-amp-docpre',!!prefs.hideDocIcon);if(g&&anchor){if(anchor.nextSibling!==avatarHost)anchor.after(avatarHost);avatarHost.hidden=false;paintAvatar();loadMe();}else if(avatarHost.isConnected)avatarHost.remove();syncMode();wsSync();if(!drawerMoOn&&document.body){drawerMoOn=true;drawerMo.observe(document.body,{childList:true});}}
       if(reloadHost.isConnected)reloadHost.remove();document.documentElement.toggleAttribute('data-amp-glass',!!prefs.glassDrawer);if(ready)pull.bind();
       const eligible=/^\/agent(?:\/|$)/.test(location.pathname);entry.hidden=!eligible;let mode='none';
       if(eligible&&ready&&main){const parent=main.parentElement,p=getComputedStyle(parent),m=getComputedStyle(main),isSibling=host.parentNode===parent&&!host.hidden,available=main.getBoundingClientRect().width+(isSibling?host.getBoundingClientRect().width+(parseFloat(p.columnGap)||0):0),wide=innerWidth>=1024&&available>=900&&p.display.includes('flex')&&p.flexDirection==='row';
@@ -8037,7 +8263,7 @@ details.mc-card .section.credits{margin-top:12px}
       }
       if(mode!==lastLayout){lastLayout=mode;if(mode==='compact')expanded=false;bodyStamp=[];paint();}
       // v1.11.78 抽屉出现 / 收起 / 换高度时对话区底部保持不动（像输入法弹出、收起一样顶上去、落回来）
-      {const hide=!eligible||mode==='none'||!compact&&!pref.open||compact&&!expanded,sig=[compact,expanded,hide,prefs.sheetFull,prefs.sheetH,innerHeight].join('|'),go=()=>{host.toggleAttribute('data-compact',compact);host.toggleAttribute('data-expanded',expanded);host.hidden=hide;foldAt.on=eligible&&mode==='wide';placeFold();applySheet();};
+      {const hide=!eligible||mode==='none'||!compact&&!pref.open||compact&&!expanded,sig=[compact,expanded,hide,prefs.sheetFull,prefs.sheetH,innerHeight].join('|'),go=()=>{placeNav();host.toggleAttribute('data-compact',compact);host.toggleAttribute('data-expanded',expanded);host.hidden=hide;foldAt.on=eligible&&mode==='wide';placeFold();applySheet();};
         if(sig!==sheetSig&&(compact||sheetSig)){sheetSig=sig;sheetAnchor(go);}else{sheetSig=sig;go();}}
       if(ready){placeGrip();localTitles();sentTimes();try{headerTitle();}catch{}try{docIcon();}catch{}if(!((attach.n=(attach.n||0)+1)%4))statusBar();}
     }
@@ -8062,7 +8288,8 @@ details.mc-card .section.credits{margin-top:12px}
     function logTab(){
       const allowed=new Set(pref.level==='debug'?['info','warn','error','detail','debug']:pref.level==='detail'?['info','warn','error','detail']:['info','warn','error']),list=logItems.filter(e=>allowed.has(e.level));
       if(!list.length){el('p','note','这个级别下暂无日志。',body);return;}
-      for(const e of list.slice(-300).reverse()){const line=el('div','logline '+e.level,null,body),meta=el('div','log-meta',null,line);el('span','',e.stage+' · '+({info:'普通',detail:'详细',debug:'调试',warn:'警告',error:'错误'}[e.level]||e.level),meta);el('time','mono',new Date(e.at).toLocaleTimeString('zh-CN',{hour12:false}),meta);el('p','',e.text,line);if(e.runId||e.spanId){const d=el('details','log-origin',null,line);el('summary','','标识',d);if(e.runId)el('code','',e.runId,d);if(e.spanId)el('code','',e.spanId,d);}}
+      const curSid=sidOf(location.href);
+      for(const e of list.slice(-300).reverse()){const line=el('div','logline '+e.level,null,body),meta=el('div','log-meta',null,line);el('span','',e.stage+' · '+({info:'普通',detail:'详细',debug:'调试',warn:'警告',error:'错误'}[e.level]||e.level)+(e.sid?' · '+(e.sid===curSid?'当前对话':(seqLabel(e.sid)||e.sid.slice(0,8))):''),meta);el('time','mono',new Date(e.at).toLocaleTimeString('zh-CN',{hour12:false}),meta);el('p','',e.text,line);if(e.runId||e.spanId){const d=el('details','log-origin',null,line);el('summary','','标识',d);if(e.runId)el('code','',e.runId,d);if(e.spanId)el('code','',e.spanId,d);}}
     }
     function aboutTab(){
       const top=el('div','about-head',null,body);el('div','about-logo','A',top);const tx=el('div','grow',null,top);el('div','about-title','Arena Native Suite',tx);el('div','about-sub',(aboutChannel?aboutChannel+' · ':'')+'v'+String(VERSION).replace(/^native-/,''),tx);
@@ -8086,62 +8313,85 @@ details.mc-card .section.credits{margin-top:12px}
       const historical=!!historyView||!!turnKey||!r?.data&&!!s||!!r?.data&&r.data.revision!==r.revision,explicitHist=!!historyView||!!turnKey;banner.hidden=!explicitHist||!['overview','sources','raw'].includes(tab);{const ct=!explicitHist&&historical?(r?.data?'上次':'缓存'):'';for(const ch of [compactChip,headChip]){ch.hidden=!ct;if(ch.textContent!==ct)ch.textContent=ct;}}
       bannerText.textContent=historyView?'本地缓存 · '+(seqLabel(historyView.sid)||'')+' · '+turnLabel(historyView):turnKey?'历史轮次 · '+turnLabel(s)+' · 非最新记录':r?.data?'上次记录 · 非本轮结论':'本地缓存 · 非本轮结论';banner.querySelector('button').hidden=!(historyView||turnKey);
       const grp=groupOf(tab);groupLast[grp[0]]=tab;for(let i=0;i<groups.length;i++){const on=groups[i]===grp;tabButtons[i].setAttribute('aria-selected',String(on));tabButtons[i].tabIndex=on?0:-1;}body.setAttribute('aria-labelledby','amp-tab-'+grp[0]);subnav.hidden=grp[2].length<2;if(!subnav.hidden){const k=grp[0]+'|'+tab;if(subStamp!==k){subStamp=k;subnav.replaceChildren();subnav.setAttribute('aria-label',grp[1]);for(const id of grp[2]){const t=(tabs.find(x=>x[0]===id)||[id,id])[1],sb=button(subnav,t,t,()=>{tab=id;render();});sb.setAttribute('aria-pressed',String(id===tab));}}}
-      logBar.hidden=tab!=='logs';clearLogs.textContent=confirmLogClear?'确认清理全部日志':'清理日志';cancelClear.hidden=!confirmLogClear;read.disabled=['detector','hunt'].includes(tab)||!!historyView||!!r?.busy||Date.now()<cooldown;
+      logBar.hidden=tab!=='logs';clearLogs.textContent=confirmLogClear?'确认清理全部日志':'清理日志';cancelClear.hidden=!confirmLogClear;read.disabled=!!historyView||!!r?.busy||Date.now()<cooldown;
       statusBar();
       const dataTabs=['overview','sources','raw'].includes(tab),turnSid=historyView?.sid||sid,turns=catalog.turnsOf(turnSid),liveData=liveView(turnSid),options=liveData&&!turns.some(t=>t.key===liveData.key)?[...turns,{...liveData,key:liveData.key}]:turns;
       turnPicker.hidden=!dataTabs||options.length<2;
       if(!turnPicker.hidden){const lk=historyView?null:liveKey(),key=options.map(t=>t.key+':'+t.prompt+':'+t.count).join('|')+'|'+lk;if(turnStamp!==key){turnStamp=key;turnSelect.replaceChildren();for(const t of options){const o=el('option','',turnTitle(t,t.key===lk),turnSelect);o.value=t.key;}}turnSelect.value=historyView?.key||turnKey||lk||'';}
       picker.hidden=!c||s.calls.length<2||!dataTabs;if(!picker.hidden){const key=s.calls.map(x=>x.id+':'+x.model+':'+x.tokens.output).join('|');if(pickerStamp!==key){pickerStamp=key;select.replaceChildren();for(const [i,call]of s.calls.entries()){const o=el('option','',(i+1+s.prior)+'. '+clock(call.at)+' · '+call.model+(call.tokens.output!==null?' · 出 '+fmt(call.tokens.output):''),select);o.value=call.id;}}select.value=c.id;}
       pickers.hidden=turnPicker.hidden&&picker.hidden;
-      if(tab==='logs'){const logSid=historyView?.sid||sid,key=(logSid||'')+':'+catalog.logRevision;if(logKey!==key){logKey=key;void catalog.readLogs(logSid).then(rows=>{if(logKey!==key)return;logItems=rows;logSerial++;paint();});}}
+      if(tab==='logs'){const key='all:'+catalog.logRevision;if(logKey!==key){logKey=key;void catalog.readAllLogs().then(rows=>{if(logKey!==key)return;logItems=rows;logSerial++;paint();});}}
       if(tab==='settings'&&Date.now()-usageAt>5000){usageAt=Date.now();void catalog.usage().then(u=>{usageInfo=u;settingsSerial++;paint();});}
-      const next=[tab,tab==='detector'?legacyDisplay.revision+'|'+force.serial+'|'+(sid||'')+'|'+mon.serial:tab==='hunt'?gacha.revision:0,s,c,historical,moreOpen,tab==='cache'?catalog.revision:0,cacheLimit,openSid,tab==='logs'?logSerial:0,tab==='logs'?pref.level:null,!!r?.busy,Date.now()<cooldown,rawFilter,rawSpan,tab==='raw'?rawStore.get(s?.key)?.spans.size:0,tab==='settings'?settingsSerial:0,confirmRawClear,tab==='settings'?JSON.stringify(prefs):'',tab==='raw'?JSON.stringify(rawOf(s)?.probe&&Object.keys(rawOf(s).probe)):'',tab==='overview'?spendSerial+'|'+mon.serial:0,gv&&['overview','sources','raw'].includes(tab)?'g'+gv.stage:''];
-      if(next.some((x,i)=>x!==bodyStamp[i])||!bodyStamp.length){const scroll=body.scrollTop,sameTab=bodyStamp[0]===tab,focus=root.activeElement?.dataset.focus;bodyStamp=next;body.replaceChildren();if(tab==='hunt')huntTab();else if(tab==='detector')detectorTab();else if(tab==='cache')cacheTab();else if(tab==='logs')logTab();else if(tab==='settings')settingsTab();else if(tab==='about')aboutTab();else if(gv)empty('老虎机揭晓中…','厂商 → 型号 → 档位 依次停下后显示这一抽的完整信息。');else if(!c){if(tab==='overview'&&turnSid){liveCard(turnSid,null,!historyView&&!turnKey);spendCard({sid:turnSid});}empty(turnKey?'正在读取此轮缓存':'尚无模型记录',turnKey?'如长时间无内容，说明此轮快照不可用。':'发送一条新消息后，型号与配置会自动填入。');}else if(tab==='sources')sources(s,c);else if(tab==='raw')rawTab(s,c);else overview(s,c);body.scrollTop=sameTab?scroll:0;if(focus)[...body.querySelectorAll('[data-focus]')].find(e=>e.dataset.focus===focus)?.focus({preventScroll:true});}
+      const next=[tab,tab==='overview'?legacyDisplay.revision+'|'+force.serial+'|'+(force.busy?1:0)+'|'+(sid||'')+'|'+mon.serial+'|'+prefs.spendUnit:0,s,c,historical,moreOpen,tab==='cache'?catalog.revision:0,cacheLimit,openSid,tab==='logs'?logSerial:0,tab==='logs'?pref.level:null,!!r?.busy,Date.now()<cooldown,rawFilter,rawSpan,tab==='raw'?rawStore.get(s?.key)?.spans.size:0,tab==='settings'?settingsSerial:0,confirmRawClear,tab==='settings'?JSON.stringify(prefs):'',tab==='raw'?JSON.stringify(rawOf(s)?.probe&&Object.keys(rawOf(s).probe)):'',tab==='overview'?spendSerial+'|'+mon.serial:0,gv&&['overview','sources','raw'].includes(tab)?'g'+gv.stage:''];
+      if(next.some((x,i)=>x!==bodyStamp[i])||!bodyStamp.length){const scroll=body.scrollTop,sameTab=bodyStamp[0]===tab,focus=root.activeElement?.dataset.focus;bodyStamp=next;body.replaceChildren();if(tab==='cache')cacheTab();else if(tab==='logs')logTab();else if(tab==='settings')settingsTab();else if(tab==='about')aboutTab();else if(gv)empty('老虎机揭晓中…','厂商 → 型号 → 档位 依次停下后显示这一抽的完整信息。');else if(!c){if(tab==='overview'&&turnSid){heroCard({sid:turnSid},null,!historyView&&!turnKey);monitorCard(turnSid,null,!historyView&&!turnKey);}empty(turnKey?'正在读取此轮缓存':'尚无模型记录',turnKey?'如长时间无内容，说明此轮快照不可用。':'发送一条新消息后，型号与配置会自动填入。');}else if(tab==='sources')sources(s,c);else if(tab==='raw')rawTab(s,c);else overview(s,c);body.scrollTop=sameTab?scroll:0;if(focus)[...body.querySelectorAll('[data-focus]')].find(e=>e.dataset.focus===focus)?.focus({preventScroll:true});}
     }
     // 独立检测页：上半“一键检测”（立刻读取本对话此刻的全部记录，看中途有没有换模型、换成了谁），下半“原脚本检测”（v8.1.0 原样结果，只换排版）
     const posText=c=>!c?'':(c.turn?'第 '+c.turn+' 轮':'未标记轮次')+(c.attempt>1?'（第 '+c.attempt+' 次）':'')+' · 第 '+c.n+' 次调用';
     function vlogo(parent,names){const vid=names.map(n=>brand.of(n)).find(Boolean);if(!vid)return null;let ic='';try{ic=gachaUi.vendorIcon(vid,12);}catch{}if(!ic)return null;const s=el('span','vlogo',null,parent);s.innerHTML=ic;if(!ic.includes('gpVIcon'))s.setAttribute('data-full','');s.title=brand.NAME[vid]||vid;return s;}
     let legacyRawOpen=false;
-    function detectorTab(){
-      const sid=sidOf(location.href),m=sid?mon.bySid.get(sid):null,busy=force.busy&&force.sid===sid,man=sid?force.bySid.get(sid)||null:null,auto=m?.auto||null;
-      const res=man&&(!auto||man.at>=auto.at||(man.calls?.length||0)>=(auto.calls?.length||0))?man:auto||man,calls=res?.calls?.length||0,cur=res?.current,st=monState(sid);
-      // ① 监控状态：当前型号 + 结论
-      const card=el('section','mc-card mc-hero',null,body),head=el('div','mc-head',null,card);icon('pulse',head,'mc-ic');const h3=el('h3','','实时监控',head);if(prefs.monOn&&m?.busy)el('i','mc-live',null,head);
-      el('span','eyebrow',!sid?'未打开对话':res?(res.auto?'自动核对 ':'深度核对 ')+clock(res.at):prefs.monOn?'等待数据':'已关闭',head);
-      info(h3,'mon','读取页面上的对话状态（不发请求）：出现新的步骤或思考链变化时，立即补读一次 Trace；每次读到 Trace 都自动逐次调用比对型号。\n· 回复先出正文、过一会儿才出现思考链 → 疑似换模型（弹提示并立即核对）\n· 一开始就在思考不算换模型信号（只记录、补读核对，不弹提示）\n· 抽卡进行中、抽卡开出的对话里由抽卡发出的那一轮：不弹任何换模型提示\n· Trace 里前后型号不同 → 确认换模型\n· 档位 / -vertex 等后缀不同不算换模型，单独标为“档位变化”\n注意：闭源 / 开源与是否显示思考链并不绝对对应，所以只看“变化”，不看有无本身。',head);
-      if(cur){const top=el('div','mc-top',null,card),lg=vlogo(top,[cur.name,cur.internal,cur.response,cur.request,cur.pill].filter(Boolean));if(lg)lg.classList.add('mc-big');const nb=el('div','mc-name',null,top),[f1]=famTier(cur.name),[f2,t2]=famTier(cur.internal||'');el('span','mc-fam',f1||f2||cur.name,nb);tierBadge(nb,cur.eff||t2,'档位 '+(cur.eff||t2));
-        el('div','mc-sub',[(cur.partial?'正在进行':'最近一次')+' · '+clock(cur.at),posText(cur),cur.local?'本机记录':''].filter(Boolean).join(' · '),card);}
-      else if(!res)el('div','mc-sub',!sid?'打开一个对话后开始监控':prefs.monOn?'发送消息后会自动识别并持续核对；也可以点下面的“深度核对”':'实时监控已关闭，可在设置里开启',card);
+    // v1.11.80 “监控”页并入概览的“本轮实时”：步骤条 + 结论 + 信号 + 模型时间线 + 深度核对 + 原脚本检测，全部只属于当前打开的对话
+    let tlOpen=false,monFocusAt=0;
+    function monitorCard(sid,s,live){
+      if(!sid)return;
+      const m=mon.bySid.get(sid)||null,busy=force.busy&&force.sid===sid,man=force.bySid.get(sid)||null,auto=m?.auto||null;
+      const res=man&&(!auto||man.at>=auto.at||(man.calls?.length||0)>=(auto.calls?.length||0))?man:auto||man,calls=res?.calls?.length||0,st=monState(sid);
+      const card=el('section','mc-card mc-livecard',null,body),head=el('div','mc-head',null,card);icon('pulse',head,'mc-ic');
+      const running=!!live&&!!m?.busy,h3=el('h3','','本轮实时',head);if(running&&prefs.monOn)el('i','mc-live',null,head);
+      const eb=el('span','eyebrow','',head);
+      info(h3,'mon','本轮实时 = 实时监控（只看当前打开的这个对话）：读取页面上的对话状态（不发请求），出现新的步骤或思考链变化时立即补读一次 Trace；每次读到 Trace 都自动逐次调用比对型号。\n· 连续 used bash（只调用工具、没有思考）之后突然出现思考链 → 判定为路由切换、换了模型\n· 回复先出正文、过一会儿才出现思考链 → 疑似换模型（弹提示并立即核对）\n· 一开始就在思考不算换模型信号（只记录、补读核对）\n· 抽卡进行中、抽卡开出的对话里由抽卡发出的那一轮：不弹任何换模型提示\n· Trace 里前后型号不同 → 确认换模型；档位 / -vertex 等后缀不同只标为“档位变化”\n切换对话后重新开始，上一个对话的模型和调用不会算到这个对话里。',head);
+      const n=prefs.monOn?stripBlock(card,m,s,live):0;
+      eb.textContent=[n?n+' 步':'',res?(res.auto?'自动核对 ':'深度核对 ')+clock(res.at):prefs.monOn?'等待数据':'监控已关'].filter(Boolean).join(' · ');
       const v=el('div','mc-verdict',null,card);v.dataset.tone=busy?'busy':st.tone;icon(busy?'reload':st.icon,v);el('span','',busy?(force.step||'深度核对中')+'…':st.text,v);
-      // ② 信号：思考链变化、档位变化、消耗 / 速度突变
-      const sig=[];for(const f of (m?.flags||[]).slice(-6).reverse())sig.push([f.kind.startsWith('think-d')||f.kind.startsWith('think-r')?'gauge':'brain',f.text,flagDetail(f),f.status]);
+      // 信号：思考链变化（含 used bash 之后出现思考链）、档位变化、消耗 / 速度突变
+      const sig=[];for(const f of (m?.flags||[]).slice(-6).reverse())sig.push([f.kind==='tool-think'?'terminal':f.kind.startsWith('think-d')||f.kind.startsWith('think-r')?'gauge':'brain',f.text,flagDetail(f),f.status]);
       for(const t of (res?.tiers||[]).slice(-3).reverse())sig.push(['gauge','档位变化 '+t.from+' → '+t.to,[clock(t.at),posText(t)].filter(Boolean).join(' · '),'']);
       if(res?.shift)sig.push(['gauge',res.shift.kind==='drop'?'单次调用消耗骤降 ↓'+Math.round((1-res.shift.ratio)*100)+'%':'单次调用消耗骤增 ×'+(Math.round(res.shift.ratio*10)/10),'本轮中位 '+spendShort(Math.round(res.shift.cur))+' · 此前 '+spendShort(Math.round(res.shift.base))+' token'+(res.shift.same?' · 名称未变，疑似改了档位':''),'']);
       if(res?.speed)sig.push(['bolt','输出速度变化 ×'+(Math.round(res.speed.ratio*10)/10),'本轮 '+Math.round(res.speed.cur)+' · 此前 '+Math.round(res.speed.base)+' tok/s（仅作辅证）','']);
-      if(sig.length){const sc=el('section','mc-card',null,body),sh=el('div','mc-head',null,sc);icon('alert',sh,'mc-ic');el('h3','','信号',sh);el('span','eyebrow',sig.length+' 条',sh);const box=el('div','mc-flags',null,sc);for(const x of sig)flagRow(box,...x);}
-      // ③ 模型时间线：连续同一模型合为一段，段与段之间标出切换点
-      if(res?.groups?.length){const ts=el('section','mc-card',null,body),th=el('div','mc-head',null,ts);icon('layers',th,'mc-ic');el('h3','','模型时间线',th);el('span','eyebrow',res.groups.length+' 段 · '+calls+' 次调用',th);
-        const tl=el('div','tl',null,ts),gs=res.groups,shown=gs.slice(-8),off=gs.length-shown.length;if(off)el('div','tl-more','更早 '+off+' 段未显示',tl);
+      if(sig.length){const box=el('div','mc-flags',null,card);for(const x of sig)flagRow(box,...x);}
+      // 模型时间线（可展开）：连续同一模型合为一段，段与段之间标出切换点
+      if(res?.groups?.length){const d=el('details','mc-sec',null,card);d.open=tlOpen;d.ontoggle=()=>{tlOpen=d.open;};const sm=el('summary','',null,d);icon('layers',sm,'mc-ic');el('span','','模型时间线',sm);el('span','eyebrow',res.groups.length+' 段 · '+calls+' 次调用',sm);icon('chevron',sm,'mc-chev');
+        const tl=el('div','tl',null,d),gs=res.groups,shown=gs.slice(-8),off=gs.length-shown.length;if(off)el('div','tl-more','更早 '+off+' 段未显示',tl);
         shown.forEach((g,i)=>{if(i){const ch=res.changes[off+i-1];if(ch){const cr=el('div','tl-change',null,tl);if(ch.tierOnly)cr.dataset.tier='';icon(ch.tierOnly?'gauge':'swap',cr);el('span','',[clock(ch.at),posText(ch)+'起',ch.tierOnly?'档位 '+tierName(ch.from)+' → '+tierName(ch.to)+'（同一模型）':'',...ch.tags].filter(Boolean).join(' · '),cr);}}
           const r_=el('div','tl-row',null,tl),now=i===shown.length-1;if(now)r_.setAttribute('data-current','');el('i','tl-dot',null,r_);const nm=el('div','tl-name',null,r_);vlogo(nm,[g.title.name,g.names.internal,g.names.response,g.names.request,g.names.pill].filter(Boolean));const [f1]=famTier(g.title.name),[,t2]=famTier(g.names.internal||'');el('span','',f1||g.title.name,nm);if(t2)tierBadge(nm,t2);el('span','tl-count','× '+g.count,r_);
           const t=g.turns,turns=t.length?'第 '+(t.length>1?Math.min(...t)+'–'+Math.max(...t):t[0])+' 轮':'';el('div','tl-meta',[clock(g.from)+(g.to&&g.to!==g.from?' – '+clock(g.to):''),turns,g.title.src?'按'+FORCE_SRC_TEXT[g.title.src]:'',g.local?'本机记录':'',now&&g.partial?'进行中':''].filter(Boolean).join(' · '),r_);});}
-      // ④ 深度核对：补读变更点前后的调用详情
-      const act=el('section','mc-act',null,body),go=button(act,busy?'核对中…':!sid?'打开对话后可用':'深度核对','立刻读取本对话此刻的 Trace 与本机记录，补读变更点前后的调用详情，逐次核对模型',()=>{void forceDetect();},'detect-go');go.disabled=force.busy||!sid;
+      // 深度核对：补读变更点前后的调用详情
+      const act=el('div','mc-act',null,card),go=button(act,busy?'核对中…':'深度核对','立刻读取本对话此刻的 Trace 与本机记录，补读变更点前后的调用详情，逐次核对模型',()=>{void forceDetect();},'detect-go');go.disabled=force.busy;
       el('p','note',res?['依据：'+(res.events?'Trace '+res.events+' 条事件':'本机记录'),calls?calls+' 次调用':'',res.fetched?'补读 '+res.fetched+' 个详情':'',res.localTurns?'本机更早 '+res.localTurns+' 轮':''].filter(Boolean).join(' · '):'实时监控每次读到 Trace 都会自动核对；需要补读更多详情时再点“深度核对”。',act);
-      for(const n of man?.notes||[])el('p','note warning',n,act);if(man?.error)el('p','note warning','核对出错：'+man.error,act);
-      legacySection(res);
+      for(const x of man?.notes||[])el('p','note warning',x,act);if(man?.error)el('p','note warning','核对出错：'+man.error,act);
+      legacyBlock(card,res);
+      if(monFocusAt&&Date.now()-monFocusAt<4000){monFocusAt=0;requestAnimationFrame(()=>{try{body.scrollTo({top:Math.max(0,card.offsetTop-8),behavior:'smooth'});}catch{}});}
     }
-    // 原脚本 v8.1.0：收进可展开的卡片，“Key: value”拆成配置行，原文收进“原始显示”
+    // 本轮步骤条：每根柱 = 一次模型调用，高度 ∝ 消耗（Trace 的输出 + 推理 token，缺时按字数估），深色段 = 思考；颜色区分模型段，⇄ 标出切换点
+    function stripBlock(card,m,s,live){
+      if(!m)return 0;
+      const auto=m.auto,lc=live&&m.cur?.n?m.cur:null;let tc=[];
+      if(auto){const tr=auto.calls.filter(x=>x.src==='trace'),ref=s&&tr.some(x=>x.turn===s.turn&&x.attempt===(s.attempt||1))?{turn:s.turn,attempt:s.attempt||1}:tr.at(-1);if(ref)tc=tr.filter(x=>x.turn===ref.turn&&x.attempt===ref.attempt);}
+      if(!lc&&!tc.length)return 0;
+      const n=Math.max(lc?.n||0,tc.length),steps=[];
+      for(let i=0;i<n;i++){const ls=lc?.steps[i],t=tc[i],tok=t&&Number.isFinite(t.out)?t.out+(Number.isFinite(t.rsn)?t.rsn:0):null,chars=ls?ls.rc+ls.t:null;
+        steps.push({v:tok!==null?tok:chars!==null?chars/3.5:0,est:tok===null,rs:tok&&Number.isFinite(t.rsn)?t.rsn/tok:chars?ls.rc/chars:0,think:ls?ls.r>0:!!(t&&t.rsn>0),tools:ls?ls.tools:[],live:!!ls?.live||!!t?.partial,g:t?(auto.callFam||auto.callGroup)?.[t.id]:undefined,tg:t?auto.callGroup?.[t.id]:undefined,name:t?forceBest(t):null});}
+      let pg,pt;for(const x of steps){if(x.g===undefined)x.g=pg;else pg=x.g;if(x.tg===undefined)x.tg=pt;else pt=x.tg;}
+      const g0=steps.find(x=>x.g!==undefined)?.g??0,max=Math.max(1,...steps.map(x=>x.v)),shown=steps.slice(-48),strip=el('div','mc-strip',null,card);strip.setAttribute('data-noswipe','');if(shown.length<=12)strip.setAttribute('data-few','');
+      shown.forEach((x,i)=>{const pv=i?shown[i-1]:null;if(pv&&x.g!==undefined&&pv.g!==undefined&&x.g!==pv.g){const sw=el('span','mc-sw',null,strip);icon('swap',sw);sw.title='在这里换了模型';}else if(pv&&x.tg!==undefined&&pv.tg!==undefined&&x.tg!==pv.tg){const sw=el('span','mc-sw',null,strip);sw.dataset.tier='';icon('gauge',sw);sw.title='同一模型，档位变化';}
+        else if(pv&&x.think&&!pv.think&&pv.tools.length&&!shown.slice(0,i).some(y=>y.think)){const sw=el('span','mc-sw',null,strip);icon('swap',sw);sw.title='used bash 之后突然出现思考链：路由切换';}
+        const col=el('div','mc-step',null,strip);col.dataset.g=String((((x.g??g0)-g0)%4+4)%4);if(x.live)col.setAttribute('data-live','');if(x.think)col.setAttribute('data-think','');
+        const bar=el('div','bar',null,col),h=Math.max(4,Math.round(46*Math.sqrt(x.v/max)));bar.style.height=h+'px';if(x.rs>0){const r=el('i','',null,bar);r.style.height=Math.max(2,Math.round(h*Math.min(1,x.rs)))+'px';}
+        const ic=el('div','mc-step-ic',null,col);if(x.think)icon('brain',ic);else if(x.tools.length)icon('terminal',ic);else el('i','dot',null,ic);
+        col.title='第 '+(steps.length-shown.length+i+1)+' 步'+(x.name?' · '+short_(x.name):'')+(x.think?' · 有思考':'')+(x.tools.length?' · 工具 '+x.tools.join(', '):'')+(x.v?' · '+(x.est?'约 ':'')+spendShort(Math.round(x.v))+' token':'');});
+      requestAnimationFrame(()=>{strip.scrollLeft=strip.scrollWidth;});
+      return n;
+    }
+    // 原脚本 v8.1.0：收进“本轮实时”里可展开的一栏，“Key: value”拆成配置行，原文收进“原始显示”
     let legacyOpen=false;
-    function legacySection(res){
+    function legacyBlock(parent,res){
       const data=legacyDisplay.snapshot(),text=String(data.text||''),state=data.state||'等待初始化',waiting=text.startsWith(state+'：');
-      const ls=el('details','mc-card mc-legacy',null,body);ls.open=legacyOpen;ls.ontoggle=()=>{legacyOpen=ls.open;};
-      const sm=el('summary','',null,ls);icon('layers',sm,'mc-ic');el('span','grow','原脚本检测',sm);el('span','eyebrow',(data.at?'更新于 '+clock(data.at):'v8.1.0')+' · '+state,sm);icon('chevron',sm,'mc-chev');
-      el('p','note','原脚本 v8.1.0 的检测结果，只看最新一轮；与上面的实时监控互相独立，保留原脚本的 New Chat 自动刷新。',ls);
+      const ls=el('details','mc-sec mc-legacy',null,parent);ls.open=legacyOpen;ls.ontoggle=()=>{legacyOpen=ls.open;};
+      const sm=el('summary','',null,ls);icon('layers',sm,'mc-ic');el('span','','原脚本检测',sm);el('span','eyebrow',(data.at?'更新于 '+clock(data.at):'v8.1.0')+' · '+state,sm);icon('chevron',sm,'mc-chev');
+      el('p','note','原脚本 v8.1.0 的检测结果，只看当前页面的最新一轮；与上面的实时监控互相独立，保留原脚本的 New Chat 自动刷新。',ls);
       const cfg=el('div','config',null,ls),sr=el('div','config-row',null,cfg);el('span','config-label','状态',sr);const sv=el('span','config-value legacy-state',state,sr);if(waiting){const pr=el('div','config-row',null,cfg);el('span','config-label','进度',pr);el('span','config-value legacy-state',text.slice(state.length+1),pr);}sv.dataset.tone=/检测结果/.test(state)?'ok':/进行中/.test(state)?'busy':/错误/.test(state)?'bad':'';
       if(!waiting)for(const line of text.split('\n')){const mm=/^([^:：]{1,24})[:：]\s*(.+)$/.exec(line.trim());if(!mm)continue;const r=el('div','config-row',null,cfg);el('span','config-label',mm[1]==='Model'?'模型':mm[1],r);el('span','config-value',mm[2],r);}
       const raw=el('details','legacy-raw',null,ls),rs=el('summary','',null,raw);icon('chevron',rs);el('span','','原始显示',rs);raw.open=legacyRawOpen;raw.ontoggle=()=>{legacyRawOpen=raw.open;};const pre=el('pre','json',text||'等待发送内容',raw);pre.tabIndex=0;
-      const actions=el('div','log-actions',null,ls);button(actions,'复制原始显示','复制原脚本完整显示文本',()=>copy(text,'独立检测信息'));button(actions,'导出本页','导出本页显示与核对结果，不含运行令牌',()=>download({...legacyDisplay.snapshot(),oneClick:res||null},'arena-independent-detector-'+Date.now()+'.json'));
+      const actions=el('div','log-actions',null,ls);button(actions,'复制原始显示','复制原脚本完整显示文本',()=>copy(text,'独立检测信息'));button(actions,'导出检测','导出实时监控 / 深度核对 / 原脚本检测的结果，不含运行令牌',()=>download({...legacyDisplay.snapshot(),oneClick:res||null},'arena-independent-detector-'+Date.now()+'.json'));
     }
     // 概览第一行“消耗”卡片：当前对话总量 / 最近一次，Token ↔ 美金 切换（选择会记住）。
     // 美金：Arena 费用接口的会话累计计费（含其他设备的消耗）与本轮计费；没有接口数据时用本机记录的每轮 credits 合计（标 ≈）。
@@ -8278,81 +8528,132 @@ details.mc-card .section.credits{margin-top:12px}
       else{const eu=sessionSpend(sid,latest).usd;if(eu.have){if(eu.estimated)priceRefresh();v={text:'≈'+money(eu.usd),title:'本对话花费约 $'+eu.usd.toFixed(4)+'（本机记录的 '+eu.have+' 轮'+(eu.estimated?'，其中 '+eu.estimated+' 轮按 token × 单价估算':'')+'）\n其他设备上的轮次不在内 · 点击查看消耗'};}}
       briefMemo={k,v};return v;
     }
-    function spendCard(s){
-      const sid=s.sid,latest=spendLatest(sid)||s,unit=prefs.spendUnit==='usd'?'usd':'token';
-      const sec=el('section','section spend',null,body),head=el('div','section-heading',null,sec);el('h3','','消耗',head);
-      const seg=el('div','unit',null,head);seg.setAttribute('role','group');seg.setAttribute('aria-label','显示单位');
-      for(const [k,t] of [['token','Token'],['usd','美金']]){const b=button(seg,t,k==='usd'?'按美金（计费）显示':'按 Token 数显示',()=>{if(prefs.spendUnit===k)return;prefs.spendUnit=k;savePrefs();spendSerial++;paint();});b.setAttribute('aria-pressed',String(unit===k));}
-      const grid=el('div','spend-grid',null,sec);
-      const cell=(label,value,sub,title)=>{const c=el('div','spend-cell',null,grid),lb=el('div','usage-label',label,c);el('div','spend-value',value,c);if(sub){const d=el('div','spend-sub',null,c);String(sub).split(' · ').forEach((part,i)=>{if(i)d.append(' · ');el('span','',part,d);});}if(title){c.title=title;info(lb,'spend:'+label,label+'：'+title,grid);}};
-      const tot=sessionSpend(sid,latest);
-      if(unit==='token'){
-        const lt=turnTokens(latest);
-        cell('当前对话',tot.total!==null?(tot.approx?'≈ ':'')+spendTok(tot.total):tot.loading?'读取中…':'—',tot.turns?'本机记录 '+tot.turns+' 轮'+(tot.approx?' · 部分为估算':''):tot.loading?'':'本机暂无记录 · 发消息后开始统计',tot.total!==null?'共 '+fmt(tot.total)+' tokens（输入 '+fmt(tot.input)+' · 输出 '+fmt(tot.output)+'）\n按这个浏览器记录到的每轮用量求和，其他设备上的轮次不在内':'');
-        cell('最近一次',lt?(lt.approx?'≈ ':'')+spendTok(lt.total):'—',lt?'输入 '+spendShort(lt.input)+' · 输出 '+spendShort(lt.output)+(lt.reasoning?' · 推理 '+spendShort(lt.reasoning):''):'暂无用量记录',lt?'总 '+fmt(lt.total)+' tokens'+(lt.approx?'（部分调用缺少用量或超过保留上限，为估算值）':''):'');
-      }else{
-        const st=costState.get(sid),aAt=Date.parse(latest.credits?.at||'')||0,cands=[[latest.credits?.session||null,aAt],[st?.latest?.summary?.session||null,st?.latest?.at||0]].filter(x=>x[0]);
-        const newest=cands.reduce((m,x)=>Math.max(m,x[1]),0),rm=!cands.length||Date.now()-newest>600000?spendFetch(sid):spendRemote.get(sid)||null;
-        if(rm?.session)cands.push([rm.session,rm.at]);cands.sort((x,y)=>y[1]-x[1]);const sess=cands[0]?.[0]||null,wait=rm?.busy?'正在读取费用接口…':rm?.error||'';
-        const su=spendNum(sess?.chargedUsd),cr=latest.credits||null,eu=tot.usd;if(su===null&&eu.estimated)priceRefresh();
-        const how=eu.estimated?(eu.estimated===eu.have?'按 token × 单价估算':'其中 '+eu.estimated+' 轮按 token 估算'):'';
-        const why=eu.have?[eu.estimated?'没有取得 Arena 的会话计费，按本机记录的每轮相加：有计费数据的轮次直接用，其余按 token 用量 × 模型官方单价估算':'没有取得会话累计，按本机记录的每轮 credits 相加（1 美元 = 1000 credits）',...eu.prices.map(priceText),eu.estimated?'缓存读取按输入价的 10% 计'+(eu.noCache?'；部分调用没有缓存数据，按全价计，可能偏高':''):'',eu.partial?'部分轮次缺少用量记录，未计入':'',eu.noPrice?'有 '+eu.noPrice+' 轮找不到模型单价，未计入':'',eu.estimated?'单价来源：'+priceWhen():'',rm?.error?'费用接口：'+rm.error:'','其他设备上的轮次不在内'].filter(Boolean).join('\n'):'';
-        cell('当前对话',su!==null?spendMoney(su):eu.have?'≈ '+spendMoney(eu.usd):rm?.busy?'读取中…':'—',su!==null?[spendNum(sess.messages)!==null?sess.messages+' 条消息':null,spendNum(sess.actualUsd)!==null?'实际成本 '+spendMoney(sess.actualUsd):null].filter(Boolean).join(' · '):eu.have?(how?'本机 '+eu.have+' 轮 · '+how:'本机记录的 '+eu.have+' 轮合计'):eu.noPrice?'没有这个模型的单价':!prefs.showCredits?'费用读取已关闭（设置里开启“本轮消耗”）':wait||'暂无费用数据',su!==null?'Arena 费用接口的会话累计计费，包含其他设备上的消耗':why);
-        const local=(latest.calls||[]).length>0;let lc=cr,lu=spendNum(cr?.usd)??(spendNum(cr?.credits)!==null?cr.credits/CREDITS_PER_USD:null),byDom=false,le=null;
-        if(lu===null&&rm?.entries){const id=domAssistantId(sid),e=id&&rm.entries[id];const v=e?spendNum(e.usd)??(spendNum(e.credits)!==null?e.credits/CREDITS_PER_USD:null):null;if(v!==null){lu=v;lc=e;byDom=true;}}
-        if(lu===null&&local){const u=turnUsd(spendLite(latest),eu.fb);if(u&&u.usd!==null){le=u;lu=u.usd;if(u.kind==='estimate')priceRefresh();}}
-        const leSub=le?(le.kind==='estimate'?'按 token 估算'+(le.prices.length===1?' · $'+le.prices[0].in+' / $'+le.prices[0].out:''):le.kind==='record'?'Arena 计费记录':'调用追踪里的成本'):'';
-        const leWhy=le?(le.kind==='estimate'?['本轮没有取得 Arena 计费，按 token 用量 × 模型官方单价估算：',...le.prices.map(priceText),'缓存读取按输入价的 10% 计'+(le.noCache?'；本轮没有缓存数据，按全价计，可能偏高':''),le.partial?'部分调用缺少用量或单价，未计入':'','单价来源：'+priceWhen()].filter(Boolean).join('\n'):le.kind==='record'?'本轮 spend.recorded 记录里的计费金额（Arena 服务端写入）':'Trigger 追踪数据里每次模型调用的成本（ai.totalCost）相加'):'';
-        cell('最近一次',lu!==null?(le?.kind==='estimate'?'≈ ':'')+spendMoney(lu):'—',lu!==null?(le?leSub:[spendNum(lc?.credits)!==null?Math.round(lc.credits).toLocaleString('zh-CN')+' credits':null,spendNum(lc?.actualUsd)!==null?'实际 '+spendMoney(lc.actualUsd):null].filter(Boolean).join(' · ')):!prefs.showCredits?'费用读取已关闭':local?'等待费用接口（流结束后几秒读取）':wait||(rm?.entries?'费用接口里没找到最后一条回复':'本机暂无这个对话的记录'),lu!==null?(le?leWhy:byDom?'按页面最后一条回复的消息 id 在 Arena 费用接口里查到的计费':'本轮计费（Arena 费用接口）'):'');
-      }
+    // ---------- v1.11.80 消耗：实时估算 + 每轮结束校准 ----------
+    // 进行中的一轮：按页面上已经出现的步骤实时累加（每一步 = 一次模型调用，大多是 used bash）；Trace 里已完成的调用直接用实际用量。
+    // 每一步的基准来自本机学到的同一模型（厂商 + 型号 + 档位）的历史样本：每轮结束读到实际用量 / 计费就记一条（抽卡那种单次调用是最干净的样本），
+    // 单次调用的轮次和多步轮次分开统计（多步轮次上下文更长，每步更贵）；没有样本时先按官方单价 × 典型用量粗估。
+    // 每轮结束后拿实际值和结束前最后一次估算比，记下偏差——样本越多，估算越稳定。
+    const CALIB_KEY='amp.native.calib.v1',calibMem={v:null},estMemo=new Map(),KIND_Q={credits:4,record:3,trace:2,estimate:1};
+    const calibLoad=()=>{if(calibMem.v)return calibMem.v;let c=null;try{c=JSON.parse(localStorage.getItem(CALIB_KEY)||'null');}catch{}calibMem.v=c&&c.turns&&typeof c.turns==='object'?c:{v:1,turns:{}};return calibMem.v;};
+    const calibSave=()=>{try{const c=calibLoad(),ks=Object.keys(c.turns);if(ks.length>400)ks.sort((a,b)=>(c.turns[a].at||0)-(c.turns[b].at||0)).slice(0,ks.length-400).forEach(k=>delete c.turns[k]);ampStore.set(CALIB_KEY,JSON.stringify(c));}catch{}};
+    try{window.addEventListener('storage',e=>{if(e.key===CALIB_KEY)calibMem.v=null;});}catch{}
+    const calibKey=n=>{const mp=modelParts(n);return mp.family?(mp.vid||'?')+'|'+mp.family+'|'+(mp.tier||''):'';};
+    const calibName=s=>{if(!s)return '';const sc=servingCalls(s);return (s.internalNames||[])[0]||sc.map(c=>c.internal).filter(Boolean).at(-1)||sc.map(c=>c.request||c.model).filter(n=>n&&n!=='未提供').at(-1)||'';};
+    function calibLearn(s){
+      if(!s||s.partial||!Array.isArray(s.calls)||!s.calls.length||s.failover?.pending)return;
+      const serving=servingCalls(s);if(!serving.length||serving.some(c=>c.partial))return;
+      const name=calibName(s),mk=calibKey(name);if(!mk)return;
+      const tok=turnTokens(s),u=turnUsd(spendLite(s),name),usd=u&&u.usd!==null?u.usd:null;if(!tok&&usd===null)return;
+      const c=calibLoad(),old=c.turns[s.key],q=usd!==null?KIND_Q[u.kind]||1:0;if(old&&old.q>q)return;
+      const rec={m:mk,n:serving.length,t:tok&&!tok.approx?tok.total:tok?.total??null,u:usd,q,at:old?.at||Date.now()};
+      // 这一轮结束前最后一次实时估算 vs 实际：同一个对话、估算时的用户消息就是这一轮的（这一轮第一次调用在它之后）
+      const est=estMemo.get(s.sid),c0=Date.parse(serving[0]?.at||'');
+      if(est&&est.userAt&&Number.isFinite(c0)&&c0>=est.userAt-5000&&est.at>=c0){if(rec.u&&est.usd)rec.eu=+(est.usd/rec.u).toFixed(3);if(rec.t&&est.tok)rec.et=+(est.tok/rec.t).toFixed(3);}
+      else if(old){if(old.eu)rec.eu=old.eu;if(old.et)rec.et=old.et;}
+      if(old&&['m','n','t','u','q','eu','et'].every(k=>old[k]===rec[k]))return;
+      c.turns[s.key]=rec;calibSave();spendSerial++;
     }
-    // ---------- 概览（卡片式）：① 身份 ② 本轮实时 ③ 消耗 ④ 技术细节（合并原“更多型号信息 / 推理配置 / 报告用量 / 本轮消耗”） ----------
+    const calMed=a=>{const v=a.filter(x=>Number.isFinite(x)).sort((x,y)=>x-y);if(!v.length)return null;const k=v.length>>1;return v.length%2?v[k]:(v[k-1]+v[k])/2;};
+    function calibStats(name){
+      const mk=calibKey(name),all=mk?Object.values(calibLoad().turns).filter(r=>r&&r.m===mk).sort((a,b)=>b.at-a.at).slice(0,40):[];
+      const one=all.filter(r=>r.n===1),multi=all.filter(r=>r.n>1),per=(list,k)=>calMed(list.map(r=>Number.isFinite(r[k])?r[k]/r.n:NaN));
+      const err=k=>{const v=all.map(r=>r[k]).filter(Number.isFinite).slice(0,12);return v.length>=2?calMed(v.map(x=>Math.abs(x-1))):null;};
+      return {mk,samples:all.length,one:one.length,multi:multi.length,usd1:per(one,'u'),usdN:per(multi,'u'),tok1:per(one,'t'),tokN:per(multi,'t'),errU:err('eu'),errT:err('et')};
+    }
+    // 某一步（第 step 次调用）的基准用量：第一步按单次调用样本，之后按多步轮次样本；缺哪类就用另一类换算；都没有就按单价 × 典型用量
+    function perCallGuess(name,st,step){
+      const tok=step<=1?(st.tok1??(st.tokN!==null?st.tokN*0.8:null)):(st.tokN??(st.tok1!==null?st.tok1*1.3:null));
+      let usd=step<=1?(st.usd1??(st.usdN!==null?st.usdN*0.8:null)):(st.usdN??(st.usd1!==null?st.usd1*1.3:null));
+      const T=tok??24000;if(usd===null){const p=priceOf(name);if(p)usd=usdOf(p,T,Math.round(T*0.03),Math.round(T*0.75),0);}
+      return {tok:T,usd,guess:tok===null};
+    }
+    // 进行中这一轮的实时估算（没有在进行就返回 null）
+    function liveEst(sid){
+      const m=sid?mon.bySid.get(sid):null;if(!prefs.liveEst||!m||!m.busy||!m.cur?.n||sidOf(location.href)!==sid)return null;
+      const r=selectedRun();let d=r&&r.sid===sid&&r.data&&r.data.revision===r.revision?r.data:null;
+      // Trace 里读到的还是上一轮（第一次调用早于这一轮的用户消息）：不算这一轮的实际用量
+      const c0=d?Date.parse(servingCalls(d)[0]?.at||''):NaN;if(d&&m.userAt&&Number.isFinite(c0)&&c0<m.userAt-5000)d=null;
+      const name=monCurrentName(sid)||calibName(d)||convModel(sid)||'',st=calibStats(name),steps=m.cur.n;
+      const done=(d?servingCalls(d):[]).filter(c=>!c.partial&&number(c.tokens?.total)!==null).slice(0,steps);
+      let tok=0,usd=0,usdOk=true;
+      done.forEach((c,i)=>{tok+=c.tokens.total;const p=priceOf(c.internal||c.request||name);if(p)usd+=usdOf(p,number(c.tokens.input),number(c.tokens.output),number(c.tokens.cacheRead),number(c.tokens.cacheWrite));else{const g=perCallGuess(name,st,i+1);if(g.usd===null)usdOk=false;else usd+=g.usd;}});
+      for(let i=done.length+1;i<=steps;i++){const g=perCallGuess(name,st,i);tok+=g.tok;if(g.usd===null)usdOk=false;else usd+=g.usd;}
+      const out={tok:Math.round(tok),usd:usdOk?usd:null,steps,done:done.length,samples:st.samples,st,name,userAt:m.userAt||null,at:Date.now()};
+      estMemo.delete(sid);estMemo.set(sid,out);while(estMemo.size>12)estMemo.delete(estMemo.keys().next().value);
+      return out;
+    }
+    // 概览卡片里的消耗数据：turn = 这一轮（默认最新一轮），conv = 当前对话合计；usd / tok 两种单位
+    function spendData(sid,s,unit){
+      const latest=s?.calls?s:spendLatest(sid),tot=sessionSpend(sid,latest),out={turn:{usd:null,tok:null},conv:{usd:null,tok:null,wait:''},tot};
+      const lt=latest?turnTokens(latest):null;
+      if(lt)out.turn.tok={v:lt.total,approx:lt.approx,sub:'输入 '+spendShort(lt.input)+' · 输出 '+spendShort(lt.output)+(lt.reasoning?' · 推理 '+spendShort(lt.reasoning):''),title:'总 '+fmt(lt.total)+' tokens'+(lt.approx?'（部分调用缺少用量或超过保留上限，为估算值）':'')};
+      if(tot.total!==null)out.conv.tok={v:tot.total,approx:tot.approx,turns:tot.turns,title:'共 '+fmt(tot.total)+' tokens（输入 '+fmt(tot.input)+' · 输出 '+fmt(tot.output)+'）\n按这个浏览器记录到的每轮用量求和，其他设备上的轮次不在内'};
+      if(unit==='token'||!prefs.showCredits&&!tot.usd.have)return out; // Token 模式不去读费用接口
+      const st=costState.get(sid),aAt=Date.parse(latest?.credits?.at||'')||0,cands=[[latest?.credits?.session||null,aAt],[st?.latest?.summary?.session||null,st?.latest?.at||0]].filter(x=>x[0]);
+      const newest=cands.reduce((m,x)=>Math.max(m,x[1]),0),rm=!cands.length||Date.now()-newest>600000?spendFetch(sid):spendRemote.get(sid)||null;
+      if(rm?.session)cands.push([rm.session,rm.at]);cands.sort((x,y)=>y[1]-x[1]);const sess=cands[0]?.[0]||null;out.conv.wait=rm?.busy?'正在读取费用接口…':rm?.error||'';
+      const su=spendNum(sess?.chargedUsd),eu=tot.usd;if(su===null&&eu.estimated)priceRefresh();
+      if(su!==null)out.conv.usd={v:su,approx:false,turns:spendNum(sess.messages)!==null?null:tot.turns,title:'Arena 费用接口的会话累计计费，包含其他设备上的消耗'+(spendNum(sess.messages)!==null?' · '+sess.messages+' 条消息':'')+(spendNum(sess.actualUsd)!==null?' · 实际成本 '+spendMoney(sess.actualUsd):'')};
+      else if(eu.have)out.conv.usd={v:eu.usd,approx:!!eu.estimated,turns:eu.have,title:[eu.estimated?'没有取得 Arena 的会话计费，按本机记录的每轮相加：有计费数据的轮次直接用，其余按 token 用量 × 模型官方单价估算':'没有取得会话累计，按本机记录的每轮 credits 相加（1 美元 = 1000 credits）',...eu.prices.map(priceText),eu.estimated?'缓存读取按输入价的 10% 计'+(eu.noCache?'；部分调用没有缓存数据，按全价计，可能偏高':''):'',eu.partial?'部分轮次缺少用量记录，未计入':'',eu.noPrice?'有 '+eu.noPrice+' 轮找不到模型单价，未计入':'',eu.estimated?'单价来源：'+priceWhen():'',rm?.error?'费用接口：'+rm.error:'','其他设备上的轮次不在内'].filter(Boolean).join('\n')};
+      if(latest){const cr=latest.credits||null;let lu=spendNum(cr?.usd)??(spendNum(cr?.credits)!==null?cr.credits/CREDITS_PER_USD:null),kind=lu!==null?'credits':'',le=null;
+        if(lu===null&&rm?.entries&&liveKey()===latest.key){const id=domAssistantId(sid),e=id&&rm.entries[id];const v=e?spendNum(e.usd)??(spendNum(e.credits)!==null?e.credits/CREDITS_PER_USD:null):null;if(v!==null){lu=v;kind='entry';}}
+        if(lu===null&&(latest.calls||[]).length){const u=turnUsd(spendLite(latest),eu.fb);if(u&&u.usd!==null){le=u;lu=u.usd;kind=u.kind;if(u.kind==='estimate')priceRefresh();}}
+        if(lu!==null)out.turn.usd={v:lu,approx:kind==='estimate',sub:kind==='credits'?(spendNum(cr?.credits)!==null?Math.round(cr.credits).toLocaleString('zh-CN')+' credits':'Arena 计费')+(spendNum(cr?.actualUsd)!==null?' · 实际 '+spendMoney(cr.actualUsd):''):kind==='entry'?'Arena 费用接口':kind==='record'?'Arena 计费记录':kind==='trace'?'调用追踪里的成本':'按 token × 单价估算'+(le?.prices?.length===1?' · $'+le.prices[0].in+' / $'+le.prices[0].out:''),
+          title:kind==='credits'?'本轮计费（Arena 费用接口）':kind==='entry'?'按页面最后一条回复的消息 id 在 Arena 费用接口里查到的计费':kind==='record'?'本轮 spend.recorded 记录里的计费金额（Arena 服务端写入）':kind==='trace'?'Trigger 追踪数据里每次模型调用的成本（ai.totalCost）相加':['本轮没有取得 Arena 计费，按 token 用量 × 模型官方单价估算：',...(le?.prices||[]).map(priceText),'缓存读取按输入价的 10% 计'+(le?.noCache?'；本轮没有缓存数据，按全价计，可能偏高':''),le?.partial?'部分调用缺少用量或单价，未计入':'','单价来源：'+priceWhen()].filter(Boolean).join('\n')};}
+      return out;
+    }
+    // 卡片里的消耗块：大数字 = 最近一次（进行中时是实时估算），小字 = 当前对话合计
+    function spendBlock(card,s,sid,live,unit,d,est){
+      const box=el('div','mc-spend',null,card),usdMode=unit==='usd',fmtV=v=>usdMode?spendMoney(v):spendTok(Math.round(v))+' tok';
+      const lab=el('div','mc-spend-lab',null,box),hist=!!(historyView||turnKey)&&s?.turn!==undefined;
+      el('span','',est?'本轮 · 进行中':hist?turnLabel(s):'最近一次',lab);
+      let big=null,approx=false,sub='',title='';
+      if(est){const v=usdMode?est.usd:est.tok;if(v!==null){big=v;approx=true;}
+        const e=usdMode?est.st.errU:est.st.errT;sub='第 '+est.steps+' 步'+(est.done?' · '+est.done+' 步已是实际用量':'')+' · '+(est.samples?'按本机 '+est.samples+' 轮样本'+(e!==null?' · 近期偏差约 ±'+Math.round(e*100)+'%':''):'还没有样本，先按单价粗估');
+        title='进行中：按页面上已经出现的 '+est.steps+' 步实时累加（每步 = 一次模型调用，大多是 used bash）。\nTrace 里已完成的调用直接用实际用量，其余每步按本机学到的“'+(est.name?short_(est.name):'当前模型')+'”基准估算'+(est.samples?'（'+est.st.one+' 轮单次调用 + '+est.st.multi+' 轮多步样本）':'（还没有样本，按官方单价 × 典型用量粗估）')+'。\n这一轮结束后自动用实际用量 / 计费校准，并记下这次估算的偏差。';
+        const tag=el('span','mc-est','估算',lab);tag.title=title;}
+      else{const t=usdMode?d.turn.usd:d.turn.tok;if(t){big=t.v;approx=!!t.approx;sub=t.sub||'';title=t.title||'';}
+        else if(usdMode&&!prefs.showCredits)sub='费用读取已关闭（设置里开启“读取每轮 credits 消耗”）';
+        const rec=s?.key?calibLoad().turns[s.key]:null,er=rec&&(usdMode?rec.eu:rec.et);if(er&&!hist){const tag=el('span','mc-est ok','已校准',lab);tag.title='这一轮结束前的实时估算是实际值的 '+Math.round(er*100)+'%（偏差 '+(er>=1?'+':'')+Math.round((er-1)*100)+'%），已记入样本';}}
+      const bv=el('div','mc-spend-big',big===null?'—':(approx?'≈ ':'')+fmtV(big),box);if(title)bv.title=title;if(est)bv.setAttribute('data-live','');
+      if(sub)el('div','mc-spend-note',sub,box);
+      const cv=usdMode?d.conv.usd:d.conv.tok,extra=est?(usdMode?est.usd:est.tok):null,sm=el('div','mc-spend-sub',null,box);sm.append('本对话共 ');
+      el('b','',cv||extra?((cv?.approx||extra?'≈ ':'')+fmtV((cv?.v||0)+(extra||0))):'—',sm);const nT=cv?.turns||d.tot.turns;if(nT)sm.append(' · '+nT+' 轮');if(usdMode&&!cv&&d.conv.wait)sm.append(' · '+d.conv.wait);
+      sm.title=(cv?.title||'本机还没有这个对话的用量记录')+(extra?'\n（含进行中这一轮的实时估算）':'');
+    }
+    // 每一轮的快照保存时顺带学习（只收完整、非部分的记录；同一轮有更可靠的计费数据时替换）
+    {const prevSnap=onSnapshot;onSnapshot=s=>{try{prevSnap?.(s);}catch{}try{calibLearn(s);}catch{}};}
+    // ---------- 概览（卡片式）：① 身份 + 消耗 ② 本轮实时（含实时监控 / 深度核对 / 原脚本检测） ③ 技术细节 ----------
     function tierBadge(parent,tier,title){if(!tier)return null;const lv=TIER_LV[tier]??0,b=el('span','mc-tier',null,parent);b.dataset.lv=String(lv);el('span','',tier,b);b.title=title||'档位 '+tier;return b;}
     function chipRow(parent){const row_=el('div','mc-chips',null,parent);return (ic,text,tone,title,fn)=>{const b=el(fn?'button':'span','mc-chip',null,row_);if(fn){b.type='button';b.onclick=fn;}if(tone)b.dataset.tone=tone;icon(ic,b);el('span','',text,b);if(title)b.title=title;return b;};}
     function openTech(){moreOpen=true;render();requestAnimationFrame(()=>{const t=body.querySelector('.mc-tech');if(t)body.scrollTo({top:Math.max(0,t.offsetTop-8),behavior:'smooth'});});}
+    // v1.11.80 概览第一张卡片：logo · 名称 · 档位 + 右上角 $ 按钮（点一下在 美金 ↔ Token 之间切换，选择会记住）；
+    // 下面是消耗：大数字 = 最近一次（进行中时是实时估算），小字 = 当前对话合计；原来单独的“消耗”卡片并入这里
     function heroCard(s,c,live){
-      const sid=s.sid,m=mon.bySid.get(sid),best=c.internal||c.response||c.request||c.model,[fam,sfx]=famTier(best),vid=brand.of(best)||brand.of(c.model||'');
-      const tier=c.effort?.value||sfx||'';
+      const sid=s?.sid||sidOf(location.href);if(!sid&&!c)return;
+      const m=sid?mon.bySid.get(sid):null,best=c?c.internal||c.response||c.request||c.model:'',[fam,sfx]=best?famTier(best):['',''],vid=best?brand.of(best)||brand.of(c.model||''):'';
+      const tier=c?.effort?.value||sfx||'',unit=prefs.spendUnit==='token'?'token':'usd',d=sid?spendData(sid,s,unit):null,est=sid&&live?liveEst(sid):null;
+      if(!c&&!est&&!(d&&(d.conv.usd||d.conv.tok)))return;
       const card=el('section','mc-card mc-hero',null,body),top=el('div','mc-top',null,card);
-      const lg=vlogo(top,[best,c.model,c.request,c.response].filter(Boolean));if(lg)lg.classList.add('mc-big');
-      const nb=el('div','mc-name',null,top);el('span','mc-fam',fam||best,nb);tierBadge(nb,tier,(c.effort?.value?'显式档位参数':'内部名称后缀')+'：'+tier);
-      iconButton(top,'copy','复制型号',()=>copy(best));
-      el('div','mc-sub',[vid?brand.NAME[vid]||vid:null,turnLabel(s),s.count+' 次调用'+(s.prior?'（此前 '+s.prior+' 次）':'')].filter(Boolean).join(' · '),card);
+      if(c){const lg=vlogo(top,[best,c.model,c.request,c.response].filter(Boolean));if(lg)lg.classList.add('mc-big');}
+      const nb=el('div','mc-name',null,top);el('span','mc-fam',c?fam||best:est?'识别中…':'本对话',nb);if(c)tierBadge(nb,tier,(c.effort?.value?'显式档位参数':'内部名称后缀')+'：'+tier);
+      if(c){nb.title=best;el('span','mc-meta',[vid?brand.NAME[vid]||vid:null,turnLabel(s),s.count+' 次调用'+(s.prior?'（此前 '+s.prior+' 次）':'')].filter(Boolean).join(' · '),nb);}
+      const ub=button(top,unit==='usd'?'$':'T',unit==='usd'?'消耗按美金显示 · 点一下切换为 Token':'消耗按 Token 显示 · 点一下切换为美金',()=>{prefs.spendUnit=unit==='usd'?'token':'usd';savePrefs();spendSerial++;render();},'mc-unit');ub.dataset.unit=unit;
+      if(d)spendBlock(card,s,sid,live,unit,d,est);
+      if(!c)return;
       const chip=chipRow(card);
       const rs=c.reasoning?.status==='conflict'?null:number(c.reasoning?.value),lc=live&&m?.cur?.n?m.cur:null,think=lc?lc.think>0:rs!==null?rs>0:null;
       if(think!==null){const b=chip('brain',think?(rs?'思考 '+spendShort(rs):'有思考链'):'无思考链',think?'think':'',think?'有可见思考链'+(rs?' · 推理 '+fmt(rs)+' tokens':''):'没有思考链（闭源模型在 Arena 一般不显示）');b.dataset.lv=String(thinkLevel(rs)??(think?2:0));}
-      const st=monState(sid);chip(st.icon,st.short,st.tone,st.text,()=>{tab='detector';render();});
+      const st=monState(sid);chip(st.icon,st.short,st.tone,st.text+' · 点一下看“本轮实时”',focusMon);
       const ac=m?.auto?.calls.find(x=>x.id===c.id);if(ac?.tps)chip('bolt',ac.tps+' tok/s','','输出速度：输出 token ÷ 调用耗时（'+fmt(ac.out)+' tokens / '+((ac.end-ac.at)/1000).toFixed(1)+' 秒）');
       if(s.routing)chip('route','改派','warn',(s.routing.from||'原模型')+' → '+(s.routing.to||'其他模型')+(s.routing.cause?' · '+s.routing.cause:''),openTech);
       if(s.outcome)chip('alert',s.outcome==='failed'?'本轮失败':'空回复','warn',s.outcome==='failed'?'Arena 记录本轮失败':'本轮没有产出回复',openTech);
       const src=el('button','mc-srcs',null,card);src.type='button';src.title='名称来源是否一致（点开看完整名称）';src.onclick=openTech;
-      for(const [k,t] of [['request','请求'],['response','响应'],['internal','内部']]){const v=c[k],d=el('span','mc-src',null,src);d.dataset.st=!v?'none':forceEq(v,best)||forceEq(famTier(v)[0],fam)?'ok':'diff';el('i','',null,d);el('span','',t+(v&&d.dataset.st==='diff'?' '+short_(v):''),d);d.title=t+'：'+(v||'未提供');}
+      for(const [k,t] of [['request','请求'],['response','响应'],['internal','内部']]){const v=c[k],dd=el('span','mc-src',null,src);dd.dataset.st=!v?'none':forceEq(v,best)||forceEq(famTier(v)[0],fam)?'ok':'diff';el('i','',null,dd);el('span','',t+(v&&dd.dataset.st==='diff'?' '+short_(v):''),dd);dd.title=t+'：'+(v||'未提供');}
+      callBar(card,s,c);
     }
-    // 本轮步骤条：每根柱 = 一次模型调用，高度 ∝ 消耗（Trace 的输出 + 推理 token，缺时按字数估），深色段 = 思考；颜色区分模型段，⇄ 标出切换点
-    function liveCard(sid,s,live){
-      const m=sid?mon.bySid.get(sid):null;if(!m||!prefs.monOn)return;
-      const auto=m.auto,lc=live&&m.cur?.n?m.cur:null;let tc=[];
-      if(auto){const tr=auto.calls.filter(x=>x.src==='trace'),ref=s&&tr.some(x=>x.turn===s.turn&&x.attempt===(s.attempt||1))?{turn:s.turn,attempt:s.attempt||1}:tr.at(-1);if(ref)tc=tr.filter(x=>x.turn===ref.turn&&x.attempt===ref.attempt);}
-      if(!lc&&!tc.length)return;
-      const card=el('section','mc-card mc-livecard',null,body),head=el('div','mc-head',null,card);icon('pulse',head,'mc-ic');
-      el('h3','',live&&m.busy?'本轮实时':'本轮步骤',head);if(live&&m.busy)el('i','mc-live',null,head);
-      const n=Math.max(lc?.n||0,tc.length);el('span','eyebrow',n+' 步'+(auto?' · 核对 '+clock(auto.at):''),head);
-      const steps=[];
-      for(let i=0;i<n;i++){const ls=lc?.steps[i],t=tc[i],tok=t&&Number.isFinite(t.out)?t.out+(Number.isFinite(t.rsn)?t.rsn:0):null,chars=ls?ls.rc+ls.t:null;
-        steps.push({v:tok!==null?tok:chars!==null?chars/3.5:0,est:tok===null,rs:tok&&Number.isFinite(t.rsn)?t.rsn/tok:chars?ls.rc/chars:0,think:ls?ls.r>0:!!(t&&t.rsn>0),tools:ls?ls.tools:[],live:!!ls?.live||!!t?.partial,g:t?(auto.callFam||auto.callGroup)?.[t.id]:undefined,tg:t?auto.callGroup?.[t.id]:undefined,name:t?forceBest(t):null});}
-      let pg,pt;for(const x of steps){if(x.g===undefined)x.g=pg;else pg=x.g;if(x.tg===undefined)x.tg=pt;else pt=x.tg;}
-      const g0=steps.find(x=>x.g!==undefined)?.g??0,max=Math.max(1,...steps.map(x=>x.v)),shown=steps.slice(-48),strip=el('div','mc-strip',null,card);strip.setAttribute('data-noswipe','');if(shown.length<=12)strip.setAttribute('data-few','');
-      shown.forEach((x,i)=>{const pv=i?shown[i-1]:null;if(pv&&x.g!==undefined&&pv.g!==undefined&&x.g!==pv.g){const sw=el('span','mc-sw',null,strip);icon('swap',sw);sw.title='在这里换了模型';}else if(pv&&x.tg!==undefined&&pv.tg!==undefined&&x.tg!==pv.tg){const sw=el('span','mc-sw',null,strip);sw.dataset.tier='';icon('gauge',sw);sw.title='同一模型，档位变化';}
-        const col=el('div','mc-step',null,strip);col.dataset.g=String((((x.g??g0)-g0)%4+4)%4);if(x.live)col.setAttribute('data-live','');if(x.think)col.setAttribute('data-think','');
-        const bar=el('div','bar',null,col),h=Math.max(4,Math.round(46*Math.sqrt(x.v/max)));bar.style.height=h+'px';if(x.rs>0){const r=el('i','',null,bar);r.style.height=Math.max(2,Math.round(h*Math.min(1,x.rs)))+'px';}
-        const ic=el('div','mc-step-ic',null,col);if(x.think)icon('brain',ic);else if(x.tools.length)icon('terminal',ic);else el('i','dot',null,ic);
-        col.title='第 '+(steps.length-shown.length+i+1)+' 步'+(x.name?' · '+short_(x.name):'')+(x.think?' · 有思考':'')+(x.tools.length?' · 工具 '+x.tools.join(', '):'')+(x.v?' · '+(x.est?'约 ':'')+spendShort(Math.round(x.v))+' token':'');});
-      requestAnimationFrame(()=>{strip.scrollLeft=strip.scrollWidth;});
-      const st=monState(sid),v=el('div','mc-verdict',null,card);v.dataset.tone=st.tone;icon(st.icon,v);el('span','',st.text,v);
-      const fl=lc?m.flags.filter(f=>f.msg===lc.id).slice(-3).reverse():[];
-      if(fl.length){const box=el('div','mc-flags',null,card);for(const f of fl)flagRow(box,f.kind.startsWith('think-d')||f.kind.startsWith('think-r')?'gauge':'brain',f.text,flagDetail(f),f.status);}
-    }
-    const flagDetail=f=>f.status==='confirmed'?'已确认：'+short_(f.from)+' → '+short_(f.to):f.status==='cleared'?'已排除：核对仍是 '+short_(f.same)+'（可能只是档位或思考设置变化）':f.detail;
+    function focusMon(){const t=body.querySelector('.mc-livecard');if(t)try{body.scrollTo({top:Math.max(0,t.offsetTop-8),behavior:'smooth'});}catch{}}
+    const flagDetail=f=>f.status==='confirmed'&&f.certain&&!f.to?f.detail+(f.from?' · 原来是 '+short_(f.from):''):f.status==='confirmed'?'已确认：'+short_(f.from)+' → '+short_(f.to):f.status==='cleared'?'已排除：核对仍是 '+short_(f.same)+'（可能只是档位或思考设置变化）':f.detail;
     function flagRow(box,ic,t,d,st){const r=el('div','mc-flag',null,box);r.dataset.st=st;icon(ic,r);const tx=el('div','grow',null,r);el('div','mc-flag-t',t,tx);if(d)el('div','mc-flag-d',d,tx);el('span','mc-flag-s',{suspect:'核对中',confirmed:'已确认',cleared:'已排除'}[st]||'',r);return r;}
     // 本次调用的 token 构成：缓存读取 / 输入 / 输出 / 推理（推理已含在输出里）
     function callBar(parent,s,c){
@@ -8386,8 +8687,7 @@ details.mc-card .section.credits{margin-top:12px}
     }
     function overview(s,c){
       const live=!historyView&&!turnKey&&liveKey()===s.key;
-      heroCard(s,c,live);liveCard(s.sid,s,live);
-      spendCard(s);const sp=body.querySelector('.section.spend');if(sp)callBar(sp,s,c);
+      heroCard(s,c,live);monitorCard(s.sid,s,live);
       techCard(s,c);
     }
     // 本轮消耗：credits 来自页面费用接口；余额变化来自 /api/billing/balance 前后对比（账号级，可能含其他标签页的消耗）
@@ -8452,27 +8752,6 @@ details.mc-card .section.credits{margin-top:12px}
       if(prefs.showCredits){const r=selectedRun(),hist=!!historyView||!!turnKey,cr=hist?s?.credits:(costState.get(sid)?.credits||s?.credits),text=creditsText(cr);if(text){const sp=el('span','');sp.append(hist?'该轮 ':r?.data&&r.data.revision!==r.revision&&!costState.get(sid)?.credits?'上次 ':'本轮 ');el('strong','',text,sp);sp.title='GET /api/chat/{id}/cost'+(cr.source?' · '+({message:'按本轮消息 id 命中',new:'按新出现的计费条目推断',session:'按会话累计差值推断'}[cr.source]||cr.source):' · 仅余额差值')+(cr.usd!==null&&cr.usd!==undefined?' · 计费 $'+(+cr.usd).toFixed(4):'')+(cr.balance?' · 余额 '+cr.balance.before+' → '+cr.balance.after:'');items.push(sp);}}
       const key=items.map(x=>x.textContent+'|'+x.className+'|'+x.title).join('\n');if(key!==status.dataset.key){status.dataset.key=key;status.replaceChildren(...items);}status.hidden=!items.length||!['overview','sources','raw'].includes(tab);
     }
-    function huntTab(){
-      const g=gacha.state(),s=gacha.settings(),active=gacha.running();
-      const h=el('div','section-heading',null,body),hh3=el('h3','','老虎机抽卡',h);el('span','eyebrow',g?({running:'进行中',stopping:'正在停止',paused:'已停止',stopped:'已停止',hit:'已命中',done:'已完成'}[g.status]||g.status):'未开始',h);
-      info(hh3,'hunt','点击发送按钮左侧的厂商名称打开抽卡卡片。\n每抽：新对话 → 发送 → 识别模型 → 改名 → 黑名单归档；未识别时在同一对话重发。\n单标签页运行 · 9.23.2 引擎。',h);
-      const cfg=el('div','section',null,body);
-      const gs=g?.settings??s;row(cfg,'目标厂商',gs.targetModel||'不限',false);
-      row(cfg,'张数',String(gs.maxAttempts));row(cfg,'间隔',(gs.intervalMs/1000)+' 秒');row(cfg,'提示词',gs.prompt,false);
-      row(cfg,'归档黑名单',gs.archiveOn?((gs.archiveKeywords||[]).join('、')||'—'):'关闭',false);row(cfg,'路由 Thinking 停止',gs.stopOnThinking?'开启':'关闭',false);
-      const ctl=el('div','section',null,body);ctl.style.cssText='display:flex;gap:8px;flex-wrap:wrap';
-      button(ctl,'打开抽卡面板','打开发送按钮旁的抽卡面板',()=>window.dispatchEvent(new CustomEvent('amp-native-gacha-open')),'clear');
-      if(active)button(ctl,'停止','停止抽卡',()=>{gacha.stop();render();},'clear');
-      if(g&&!active)button(ctl,'导出','导出本次抽卡记录（不含令牌）',()=>download(g,'arena-gacha-'+Date.now()+'.json'),'clear');
-      if(!g)return;
-      const st=el('div','section',null,body);el('h3','section-heading','状态',st);
-      row(st,'进度',g.completed+' / '+g.settings.maxAttempts);
-      if(g.phase)row(st,'阶段',g.phase,false);if(g.reason)row(st,'原因',g.reason,false);
-      const list=el('div','section',null,body);el('h3','section-heading','每一抽',list);
-      for(const a of g.attempts.slice().reverse().slice(0,50))row(list,'#'+a.no+' '+new Date(a.at).toLocaleTimeString('zh-CN',{hour12:false}),(a.model||'—')+(a.tier?' · '+a.tier:'')+' · '+({hit:'命中',keep:'保留',archive:a.archived?'已归档':'待归档',other:'保留',skipped:'跳过',error:'中断',cancelled:'取消',abandoned:'中断'}[a.verdict]||'进行中')+(a.resends?' · 重发 '+a.resends:'')+(a.renamed?' · 已改名':'')+(a.note?'\n'+a.note:''));
-      const lg=el('details','model-more',null,body),sm=el('summary','',null,lg);icon('chevron',sm);el('span','','运行日志',sm);
-      for(const e of g.log.slice(-80).reverse())row(lg,new Date(e.at).toLocaleTimeString('zh-CN',{hour12:false}),e.text,false);
-    }
     function settingsTab(){
       const toggle=(parent,title,hint,value,fn)=>{const r=el('div','setting',null,parent),g=el('div','grow',null,r),tt=el('span','setting-title',title,g);if(hint)info(tt,'set:'+title,hint,r);const b=el('button','switch','',r);b.type='button';b.setAttribute('role','switch');b.setAttribute('aria-checked',String(!!value));b.setAttribute('aria-label',title);b.dataset.focus=title;b.onclick=()=>{fn(!value);savePrefs();bodyStamp=[];render();};return b;};
       const sec=el('section','section',null,body);el('h3','section-heading','显示',sec);
@@ -8486,6 +8765,9 @@ details.mc-card .section.credits{margin-top:12px}
       toggle(sec,'玻璃侧栏（手机）','默认开启：左侧对话列表抽屉变窄，背景改成半透明磨砂玻璃、遮罩调淡，能看到后面的页面。关闭恢复 Arena 原样。',prefs.glassDrawer,v=>{prefs.glassDrawer=v;document.documentElement.toggleAttribute('data-amp-glass',v);});
       toggle(sec,'显示“已重置”的推断限流','默认关闭：如“新会话 10/10 · 已重置”只是按上限推断的数值，不是必要信息。',prefs.showQuotaReset,v=>{prefs.showQuotaReset=v;});
       toggle(sec,'对话名显示本地编号 #N','默认关闭：左侧对话名只显示模型名，避免与加载进度、厂商图标挤在一起。',prefs.showSeq,v=>{prefs.showSeq=v;for(const m of marks.values()){m.span.removeAttribute('data-amp-local-title');m.span.removeAttribute('data-amp-short');}localTitles();});
+      toggle(sec,'电脑端圆角输入框（同手机端）','默认开启：电脑上的输入框也改成手机端那样的圆角长条——左边 +，右边厂商图标和发送；模式切换（Battle / Agent / Side by Side / Direct）挪到左侧栏 logo 右边。左侧栏收起时模式按钮照常留在输入框里。',prefs.deskGem,v=>{prefs.deskGem=v;document.documentElement.toggleAttribute('data-amp-dgem',deskGemOn());if(!v)document.documentElement.removeAttribute('data-amp-mode-moved');syncMode();});
+      toggle(sec,'长对话先显示最新内容','默认开启：打开 / 刷新很长的对话时，只先排版最底下几条（最新的），上面的消息先占位，往上翻到附近才渲染出来（显示过的不再收回）。页面出来更快，不用等整段对话从上到下排完。',prefs.lazyLog,v=>{prefs.lazyLog=v;savePrefs();try{errReload.lazyMark();}catch{}});
+      toggle(sec,'丢失的消息提示补齐','默认开启：发出去、服务器也收到了，刷新后页面里却没有这条消息（这一轮还在进行，Arena 先显示旧对话、接着续 bash 输出）时，提示要不要补齐；点“补齐显示”把这条消息按原样式插回最新一轮，正在进行的内容接在它下面。只改显示、不重发；真正的消息出来后自动撤掉。',prefs.backfill,v=>{prefs.backfill=v;});
       toggle(sec,'消息旁显示发送时间','来自消息 id 内的 UUIDv7 时间戳；无法解析时用本机记录的提交时间。',prefs.showSent,v=>{prefs.showSent=v;if(!v)clearSent();});
       toggle(sec,'显示限流与额度状态','新会话限流来自 create-chat 响应头；额度来自 /api/billing/balance。',prefs.showQuota,v=>{prefs.showQuota=v;if(v)void refreshBalance(true);});
       toggle(sec,'读取每轮 credits 消耗','流结束后读取页面自带的费用接口 GET /api/chat/{id}/cost（同源，与页面“N credits”同源数据），并记录提交前后的余额变化。',prefs.showCredits,v=>{prefs.showCredits=v;});
@@ -8499,7 +8781,8 @@ details.mc-card .section.credits{margin-top:12px}
       toggle(sec,'页面底部信息栏','固定在页面最底部：美金额度、Pulse、credits、限流、当前模型、抽卡进度与更新时间。',prefs.showBar,v=>{prefs.showBar=v;bar?.sync();if(v)void refreshPulse(true);});
       toggle(sec,'为信息栏预留页面空间','把 Arena 的整屏容器高度减去信息栏高度，避免遮挡输入框；遇到布局异常时可关闭。',prefs.barOffset,v=>{prefs.barOffset=v;bar?.sync();});
       const ms=el('section','section',null,body);el('h3','section-heading','实时监控',ms);
-      toggle(ms,'实时监控换模型','默认开启：读取页面上的对话状态（不发请求），出现新的步骤或思考链变化时立即补读一次 Trace 核对型号：首步和疑点最短 2.5 秒，普通步骤 5 秒起，长回复逐步放慢到 16 秒，每轮最多 90 次，遇到限流自动暂停。每次读到 Trace 都自动逐次调用比对（不额外请求），换模型会在概览和“监控”页标出。',prefs.monOn,v=>{prefs.monOn=v;savePrefs();mon.serial++;});
+      toggle(ms,'实时监控换模型','默认开启：读取页面上的对话状态（不发请求），出现新的步骤或思考链变化时立即补读一次 Trace 核对型号：首步和疑点最短 2.5 秒，普通步骤 5 秒起，长回复逐步放慢到 16 秒，每轮最多 90 次，遇到限流自动暂停。每次读到 Trace 都自动逐次调用比对（不额外请求），换模型会在概览的“本轮实时”里标出。\n连续 used bash（只调用工具、没有思考）之后突然出现思考链，直接判定为路由切换、换了模型。',prefs.monOn,v=>{prefs.monOn=v;savePrefs();mon.serial++;});
+      toggle(ms,'按步骤实时估算消耗','默认开启：这一轮进行中，按页面上已经出现的步骤（每步 = 一次模型调用，大多是 used bash）实时累加 token / 美金；Trace 里已完成的调用直接用实际用量。每步的基准是本机学到的同一模型（型号 + 档位）的历史样本——抽卡的单次调用就是很干净的样本；每轮结束读到实际用量 / 计费后自动校准、记下估算偏差，用得越多越准。显示在概览卡片的大数字和底部信息栏“本轮”。',prefs.liveEst,v=>{prefs.liveEst=v;savePrefs();spendSerial++;});
       toggle(ms,'疑似换模型时弹出提醒','默认开启：回复先出正文、过一会儿才出现思考链（中途开始思考）这类强信号出现时，顶部弹出“疑似换模型”并立即核对；一开始就在思考不算。抽卡进行中、以及抽卡开出的对话里由抽卡发出的那一轮一律不弹。核对确认后仍由“模型变更提醒”通知，不会重复弹。',prefs.monAlert,v=>{prefs.monAlert=v;savePrefs();});
       toggle(ms,'疑似换模型时自动停止生成','默认关闭：出现强信号时立即停止生成，避免替补模型继续消耗额度。“正文之后才出现思考链”已由抽卡设置里的“路由到 Thinking 时停止”（默认开启）处理，这里额外覆盖“前几步只调用工具、之后才开始思考”等情况（一开始就在思考不算，不会停）。启发式判断，可能误停，确有需要再开启。',prefs.monStop,v=>{prefs.monStop=v;savePrefs();});
       const cloud=el('section','section',null,body);el('h3','section-heading','云端标题',cloud);
@@ -8535,7 +8818,7 @@ details.mc-card .section.credits{margin-top:12px}
       if(need.length)void catalog.sentAt(need).then(()=>{for(const id of need)sentPending.delete(id);paint();});
       if(changed)log('debug','发送时间','标注 '+changed+' 条消息');
     }
-    ui={host,entry,attach,render,view,spendBrief,show(t){if(typeof t==='string'&&tabs.some(x=>x[0]===t)){tab=t;historyView=null;turnKey=null;}if(compact)expanded=true;else pref.open=true;persist();render();},toggle(){if(compact)expanded=!expanded;else pref.open=!pref.open;persist();render();},destroy(){clearTimeout(toastTimer);try{clearHeader();}catch{}for(const [a,m]of marks)restoreMark(a,m);marks.clear();clearSent();if(aliasSheet)document.adoptedStyleSheets=document.adoptedStyleSheets.filter(s=>s!==aliasSheet);aliasStyle?.remove();applySidebar(null);entry.remove();host.remove();gripHost.remove();foldHost.remove();reloadHost.remove();pull.destroy();glassStyle.remove();document.documentElement.removeAttribute('data-amp-glass');gemStyle.remove();avatarHost.remove();modeHost.remove();drawerMo.disconnect();document.documentElement.removeAttribute('data-amp-gem');document.documentElement.removeAttribute('data-amp-mode-open');}};render();
+    ui={host,entry,attach,render,view,spendBrief,liveEst:()=>{try{return liveEst(sidOf(location.href));}catch{return null;}},show(t){if(t==='detector'||t==='hunt'){t='overview';monFocusAt=Date.now();bodyStamp=[];}if(typeof t==='string'&&tabs.some(x=>x[0]===t)){tab=t;historyView=null;turnKey=null;}if(compact)expanded=true;else pref.open=true;persist();render();},toggle(){if(compact)expanded=!expanded;else pref.open=!pref.open;persist();render();},destroy(){clearTimeout(toastTimer);try{clearHeader();}catch{}for(const [a,m]of marks)restoreMark(a,m);marks.clear();clearSent();if(aliasSheet)document.adoptedStyleSheets=document.adoptedStyleSheets.filter(s=>s!==aliasSheet);aliasStyle?.remove();applySidebar(null);entry.remove();host.remove();gripHost.remove();foldHost.remove();reloadHost.remove();pull.destroy();glassStyle.remove();document.documentElement.removeAttribute('data-amp-glass');gemStyle.remove();deskGemStyle.remove();avatarHost.remove();modeHost.remove();drawerMo.disconnect();document.documentElement.removeAttribute('data-amp-gem');document.documentElement.removeAttribute('data-amp-dgem');document.documentElement.removeAttribute('data-amp-mode-moved');document.documentElement.removeAttribute('data-amp-mode-open');}};render();
   }
   // v1.11.73 顶部标题此刻显示的厂商 / 型号 / 档位（老虎机直接用它，保证两边同时、一致）
   let hdrShown=null;
