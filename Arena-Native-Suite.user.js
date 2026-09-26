@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.84
+// @version      1.11.85
 // @description  【测试版】Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.84' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.85' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 // v1.11.78 “-public”也是部署标记（grok-4.7-xhigh-public）：和 -vertex 一样不显示，档位才能识别出来（xhigh）
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '').replace(/-public(?=$|[\s·])/ig, '') : n;
@@ -43,6 +43,120 @@ const ampStore = (() => {
   }
   function usage() { let n = 0, ours = 0; try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i), v = localStorage.getItem(k) || ''; n += k.length + v.length; if (/^amp\./.test(k)) ours += k.length + v.length; } } catch {} return { total: n * 2, ours: ours * 2 }; }
   return { set, usage, get failed() { return failed; } };
+})();
+
+// ====================================================================================
+// v1.11.85 需要处理的对话：跨窗口提醒
+// 回复中途被路由到 thinking 自动停下、确认换了模型、出现 “Something went wrong”：记到 localStorage（amp.native.attn.v1），
+// 同一浏览器里所有 Arena 窗口靠 storage 事件实时同步——侧栏里那张卡片变色（路由 = 琥珀色、出错 = 红色，右上角小标签），
+// 页面顶部出现提示卡（打开对话 / 确认）。一直留着，直到点「确认」（所有窗口一起消失）或在那个对话里重新发送 / 重新生成。
+// sideNow：侧栏节点变化时、画出来之前要同步做的事（本地标题、提醒颜色），由抽卡模块的观察器在微任务里调用。
+// ====================================================================================
+const sideNow = (() => { const fns = new Map(); const run = () => { for (const f of fns.values()) { try { f(); } catch {} } }; run.set = (k, f) => { fns.set(k, f); }; return run; })();
+const attn = (() => {
+  const KEY = 'amp.native.attn.v1', TTL = 24 * 3600e3, MAX = 40;
+  const KIND = {
+    route: { tag: '路由', head: '模型路由 · 已自动停止', ic: '⚠', c: '#e38a1e' },
+    error: { tag: '出错', head: '对话出错 · 需要处理', ic: '⛔', c: '#dc3545' },
+  };
+  const okSid = s => typeof s === 'string' && /^[\w-]{8,128}$/.test(s);
+  const read = () => { let o = null; try { o = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch {} const out = {}, now = Date.now(); if (o && typeof o === 'object' && !Array.isArray(o)) for (const [k, v] of Object.entries(o)) if (okSid(k) && v && KIND[v.kind] && Number.isFinite(v.at) && now - v.at < TTL && v.at <= now + 60000) out[k] = v; return out; };
+  let map = read(), host = null, box = null, open = true, lastPath = '';
+  const fresh = new Set();
+  const write = () => { try { const e = Object.entries(map).sort((a, b) => b[1].at - a[1].at).slice(0, MAX); map = Object.fromEntries(e); if (e.length) localStorage.setItem(KEY, JSON.stringify(map)); else localStorage.removeItem(KEY); } catch {} };
+  const here = () => (location.pathname.match(/^\/agent\/([\w-]{8,128})/) || [])[1] || '';
+  const sidOfHref = a => ((a?.getAttribute('href') || '').match(/^\/agent\/([\w-]{8,128})\/?(?:[?#].*)?$/) || [])[1] || '';
+  const cards = sid => okSid(sid) ? [...document.querySelectorAll('a[href="/agent/' + sid + '"]')].filter(a => a.closest('aside,nav,[data-sidebar]')) : [];
+  const nameOf = sid => { const a = cards(sid)[0]; if (!a) return ''; const t = a.querySelector('[data-amp-short]')?.getAttribute('data-amp-short') || a.querySelector('span.truncate,div.truncate')?.textContent || ''; return t.replace(/\s+/g, ' ').trim().slice(0, 90); };
+  const hm = at => { const d = new Date(at), p = n => String(n).padStart(2, '0'), t = p(d.getHours()) + ':' + p(d.getMinutes()); return new Date().toDateString() === d.toDateString() ? t : (d.getMonth() + 1) + '-' + d.getDate() + ' ' + t; };
+  const isDark = () => { const c = document.documentElement.classList; if (c.contains('dark')) return true; if (c.contains('light')) return false; try { return matchMedia('(prefers-color-scheme: dark)').matches; } catch { return false; } };
+  const pulse = sid => { fresh.add(sid); setTimeout(() => fresh.delete(sid), 4500); };
+  function raise(sid, kind, text) {
+    if (!okSid(sid) || !KIND[kind]) return false;
+    map = read(); const old = map[sid], now = Date.now(), t = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+    if (old && old.kind === 'error' && kind === 'route') return false; // 已经是“出错”，不降级成“路由”
+    if (old && old.kind === kind && now - old.at < 90000) { if (t && old.text !== t) { old.text = t; write(); render(); } return false; } // 同一件事 90 秒内只更新文字，不重复弹
+    map[sid] = { kind, at: now, text: t, name: nameOf(sid) || old?.name || '' };
+    open = true; pulse(sid); write(); render();
+    try { console.info('[Arena Native] 需要处理：' + KIND[kind].head + ' · ' + sid + (t ? ' · ' + t : '')); } catch {}
+    return true;
+  }
+  function clear(sid) { map = read(); if (!map[sid]) return false; delete map[sid]; write(); render(); return true; }
+  function css() {
+    if (document.getElementById('amp-attn-css') || !document.head) return;
+    const st = document.createElement('style'); st.id = 'amp-attn-css';
+    st.textContent = 'html a[data-amp-attn]{background:color-mix(in srgb,var(--amp-attn-c) 16%,transparent)!important;box-shadow:inset 3px 0 0 var(--amp-attn-c)!important;outline:1.5px solid color-mix(in srgb,var(--amp-attn-c) 70%,transparent)!important;outline-offset:-1.5px}'
+      + 'html a[data-amp-attn="route"],html [data-amp-attn-li="路由"]{--amp-attn-c:#e38a1e}html a[data-amp-attn="error"],html [data-amp-attn-li="出错"]{--amp-attn-c:#dc3545}'
+      + 'html a[data-amp-attn][data-amp-attn-new]{animation:ampAttnPulse 1.1s ease-in-out 4}@keyframes ampAttnPulse{50%{background:color-mix(in srgb,var(--amp-attn-c) 36%,transparent)}}'
+      + '[data-amp-attn-li]{position:relative}[data-amp-attn-li]::after{content:attr(data-amp-attn-li);position:absolute;right:6px;top:2px;font:600 9px/13px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;padding:0 5px;border-radius:7px;color:#fff;background:var(--amp-attn-c);pointer-events:none;z-index:3;letter-spacing:.02em}'
+      + '@media (prefers-reduced-motion:reduce){html a[data-amp-attn][data-amp-attn-new]{animation:none}}';
+    document.head.append(st);
+  }
+  // 侧栏卡片：有提醒的变色（React 重建出来的新节点在同一帧补上），没有的去掉
+  function paint() {
+    const keys = Object.keys(map);
+    if (keys.length) css();
+    for (const a of document.querySelectorAll('a[data-amp-attn]')) { const s = sidOfHref(a); if (!s || !map[s]) { a.removeAttribute('data-amp-attn'); a.removeAttribute('data-amp-attn-new'); } }
+    for (const li of document.querySelectorAll('[data-amp-attn-li]')) { const a = li.matches('a') ? li : li.querySelector('a[href^="/agent/"]'), s = sidOfHref(a); if (!s || !map[s]) li.removeAttribute('data-amp-attn-li'); }
+    for (const sid of keys) {
+      const v = map[sid], k = KIND[v.kind];
+      for (const a of cards(sid)) {
+        if (a.getAttribute('data-amp-attn') !== v.kind) a.setAttribute('data-amp-attn', v.kind);
+        const li = a.closest('li') || a.parentElement; if (li && li.getAttribute('data-amp-attn-li') !== k.tag) li.setAttribute('data-amp-attn-li', k.tag);
+        if (fresh.has(sid) && !a.hasAttribute('data-amp-attn-new')) { a.setAttribute('data-amp-attn-new', ''); setTimeout(() => a.removeAttribute('data-amp-attn-new'), 4500); }
+      }
+    }
+  }
+  const STYLE = ':host{all:initial}.stack{display:flex;flex-direction:column;gap:8px;align-items:center;font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,"PingFang SC","Microsoft YaHei",sans-serif}'
+    + '.card{pointer-events:auto;box-sizing:border-box;width:min(440px,calc(100vw - 24px));background:#fff;color:#1f2430;border:1px solid #e2e6ed;border-left:4px solid var(--c);border-radius:12px;box-shadow:0 8px 28px #0000002e;padding:9px 10px 9px 12px;animation:in .22s ease-out}'
+    + '.hd{display:flex;align-items:center;gap:6px}.hd b{font-size:12.5px;color:var(--c);flex:1;min-width:0}.tm{font-size:11px;color:#8a93a3;font-variant-numeric:tabular-nums}.x{border:0;background:transparent;color:#8a93a3;cursor:pointer;font-size:15px;line-height:1;padding:2px 6px;border-radius:6px}.x:hover{background:#f0f2f6}'
+    + '.nm{margin-top:3px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tx{margin-top:1px;font-size:12px;color:#4a5263}'
+    + '.ac{display:flex;justify-content:flex-end;gap:6px;margin-top:7px}.ac button{height:26px;padding:0 11px;border-radius:7px;border:1px solid #d9dee7;background:#fff;color:#1f2430;font:inherit;font-size:12px;cursor:pointer}.ac button:hover{background:#f3f5f8}.ac .ok{background:var(--c);border-color:var(--c);color:#fff;font-weight:600}.ac .ok:hover{filter:brightness(.95);background:var(--c)}'
+    + '.more{pointer-events:auto;font:inherit;font-size:12px;color:#4a5263;background:#fffffff0;border:1px solid #e2e6ed;border-radius:10px;padding:4px 10px;cursor:pointer}'
+    + '.pill{pointer-events:auto;display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 12px;border-radius:14px;border:1px solid color-mix(in srgb,var(--c) 45%,#e2e6ed);background:#fff;color:var(--c);font:inherit;font-size:12.5px;font-weight:650;box-shadow:0 4px 16px #00000024;cursor:pointer;animation:in .2s ease-out}'
+    + '.dark .card,.dark .pill,.dark .more{background:#2c2b28;color:#ecebe7;border-color:#3f3d39}.dark .card{border-left-color:var(--c)}.dark .pill{color:var(--c)}.dark .tx,.dark .more{color:#c9c5bc}.dark .ac button{background:#34332f;border-color:#4a4843;color:#ecebe7}.dark .ac button:hover{background:#3d3c37}.dark .ac .ok{background:var(--c);border-color:var(--c);color:#fff}.dark .x:hover{background:#363531}'
+    + '@keyframes in{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}@media (prefers-reduced-motion:reduce){.card,.pill{animation:none}}';
+  function ensure() {
+    if (host?.isConnected) return true; if (!document.body) return false;
+    host = document.createElement('div'); host.id = 'amp-attn'; host.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:2147483646;pointer-events:none';
+    const root = host.attachShadow({ mode: 'open' }); root.innerHTML = '<style>' + STYLE + '</style><div class="stack" role="region" aria-label="需要处理的对话"></div>';
+    box = root.querySelector('.stack'); document.body.append(host); return true;
+  }
+  const mk = (tag, cls, text, parent) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; if (parent) parent.append(e); return e; };
+  const go = sid => { const a = cards(sid)[0]; if (a) a.click(); else location.assign('/agent/' + sid); };
+  function render() {
+    try { paint(); } catch {}
+    const list = Object.entries(map).sort((a, b) => b[1].at - a[1].at);
+    if (!list.length) { if (host) { host.remove(); host = null; box = null; } document.documentElement.style.removeProperty('--amp-attn-h'); return; }
+    if (!ensure()) return;
+    box.textContent = ''; box.classList.toggle('dark', isDark());
+    const worst = list.some(([, v]) => v.kind === 'error') ? KIND.error : KIND.route;
+    if (!open) {
+      const b = mk('button', 'pill', worst.ic + ' ' + list.length + ' 个对话需要处理', box); b.type = 'button'; b.style.setProperty('--c', worst.c); b.title = '展开'; b.onclick = () => { open = true; render(); };
+    } else {
+      const cur = here();
+      for (const [sid, v] of list.slice(0, 3)) {
+        const k = KIND[v.kind], c = mk('div', 'card', null, box); c.style.setProperty('--c', k.c); c.setAttribute('role', 'alert'); c.dataset.sid = sid; c.dataset.kind = v.kind;
+        const hd = mk('div', 'hd', null, c); mk('span', '', k.ic, hd); mk('b', '', k.head, hd); mk('span', 'tm', hm(v.at), hd);
+        const x = mk('button', 'x', '–', hd); x.type = 'button'; x.title = '收起（不算确认，卡片颜色保留）'; x.setAttribute('aria-label', '收起'); x.onclick = () => { open = false; render(); };
+        mk('div', 'nm', nameOf(sid) || v.name || ('对话 ' + sid.slice(0, 8)), c);
+        if (v.text) mk('div', 'tx', v.text, c);
+        const ac = mk('div', 'ac', null, c);
+        if (sid !== cur) { const g = mk('button', 'go', '打开对话', ac); g.type = 'button'; g.onclick = () => go(sid); }
+        const ok = mk('button', 'ok', '确认', ac); ok.type = 'button'; ok.title = '我知道了：所有窗口里这条提醒一起消失'; ok.onclick = () => clear(sid);
+      }
+      if (list.length > 3) { const m = mk('button', 'more', '还有 ' + (list.length - 3) + ' 个对话需要处理（侧栏里变色的卡片）', box); m.type = 'button'; m.onclick = () => { open = false; render(); }; }
+    }
+    requestAnimationFrame(() => { if (host?.isConnected) document.documentElement.style.setProperty('--amp-attn-h', (Math.ceil(host.getBoundingClientRect().height) + 8) + 'px'); });
+  }
+  addEventListener('storage', e => { if (e.key !== null && e.key !== KEY) return; const before = map; map = read(); for (const [k, v] of Object.entries(map)) if (!before[k] || before[k].at !== v.at) { pulse(k); open = true; } render(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) return; const before = JSON.stringify(map); map = read(); if (JSON.stringify(map) !== before) render(); });
+  // 切换对话（SPA）后更新“打开对话”按钮；新打开的窗口把已有的提醒显示出来
+  setInterval(() => { if (location.pathname === lastPath) return; lastPath = location.pathname; if (Object.keys(map).length) render(); }, 1000);
+  const boot = () => { if (!document.body) { setTimeout(boot, 300); return; } map = read(); lastPath = location.pathname; if (Object.keys(map).length) render(); };
+  boot();
+  sideNow.set('attn', () => { if (Object.keys(map).length || document.querySelector('[data-amp-attn-li]')) paint(); });
+  return { raise, clear, all: () => ({ ...(map = read()) }), paint: () => { try { paint(); } catch {} }, render };
 })();
 
 // UI bridge: original detector source remains unchanged between the markers below.
@@ -3502,7 +3616,7 @@ const continueWork = (() => {
     return n;
   }
   let scheduled = false, qRaf = 0;
-  const auto = () => { if (quietNow()) { if (!qRaf) qRaf = requestAnimationFrame(() => { qRaf = 0; quiet(); }); return; } if (scheduled) return; scheduled = true; setTimeout(() => { scheduled = false; if (enabled()) tick(); else { quiet(); inspect(); } }, 250); };
+  const auto = () => { if (document.documentElement.hasAttribute('data-amp-sbdrag')) return; if (quietNow()) { if (!qRaf) qRaf = requestAnimationFrame(() => { qRaf = 0; quiet(); }); return; } if (scheduled) return; scheduled = true; setTimeout(() => { scheduled = false; if (enabled()) tick(); else { quiet(); inspect(); } }, 250); };
   function start() {
     if (!document.documentElement) return;
     try { const st = document.createElement('style'); st.textContent = '[data-amp-cw-quiet]{display:none!important}'; (document.head || document.documentElement).append(st); } catch {}
@@ -3866,7 +3980,9 @@ const gacha = (() => {
       if (!settings().stopOnThinking || !/^\/agent\/[0-9a-f-]{36}/i.test(location.pathname)) return;
       const v = page.view(); if (!v.routed || !v.generating) return;
       const key = location.pathname + '|' + v.routed; if (key === routedStopped) return;
-      if (page.clickStop()) { routedStopped = key; if (run?.status === 'running') log('回复中途被路由到 thinking，已停止生成', 'warn'); console.info('[Arena Native] 回复中途被路由到 thinking，已停止生成'); }
+      if (page.clickStop()) { routedStopped = key; if (run?.status === 'running') log('回复中途被路由到 thinking，已停止生成', 'warn'); console.info('[Arena Native] 回复中途被路由到 thinking，已停止生成');
+        // v1.11.85 所有窗口都看得到：侧栏里这张卡片变色 + 顶部提示，直到确认或重新发送（抽卡进行中由抽卡流程自己处理，不提醒）
+        if (run?.status !== 'running') { try { attn.raise((location.pathname.match(/^\/agent\/([0-9a-f-]{36})/i) || [])[1], 'route', '回复中途被路由到 thinking，已自动停止生成'); } catch {} } }
     } catch {}
   }, 600);
   // ---------------- 首包看门狗（实验，默认关闭）----------------
@@ -4363,6 +4479,8 @@ const errReload = (() => {
     const st = chatStatus(); if (st === 'submitted' || st === 'streaming') return;
     if (gachaBusy() || limited()) return;
     stale = true; // 这一次出错只处理一次；提示消失后再出现才会重新处理
+    // v1.11.85 所有窗口都看得到：侧栏里这张卡片变红 + 顶部提示，直到点「确认」或在这个对话里重新发送
+    try { const how = draft() ? '输入框里有未发送的内容，没有自动刷新' : budget(sid).ok ? '已自动刷新页面，请确认回复是否完整' : '近 10 分钟已多次自动刷新，暂停自动刷新'; attn.raise(sid, 'error', '出现 “Something went wrong”：' + how); } catch {}
     if (draft()) { show('检测到 “Something went wrong”。输入框里有未发送的内容，没有自动刷新', [['刷新', () => reloadNow(sid, false)]], true); errBar = true; return; }
     const b = budget(sid);
     if (!b.ok) { show('近 10 分钟已自动刷新 ' + b.n + ' 次，暂停自动刷新；需要时手动刷新', [['刷新', () => reloadNow(sid, false)]], true); errBar = true; return; }
@@ -4855,7 +4973,7 @@ const brand = (() => {
   ];
   const of = t => { t = String(t || ''); if (!t) return ''; for (const [id, re] of LIST) if (re.test(t)) return id; return ''; };
   // Filled by the Lite catalog once it is ready: sid → cached names; rev changes when the cache changes.
-  const hint = { get: () => '', rev: () => 0 };
+  const hint = { get: () => '', rev: () => 0, title: () => '' };
   const NAME = { openai: 'GPT', anthropic: 'Claude', google: 'Gemini', xai: 'Grok', moonshot: 'Kimi', deepseek: 'DeepSeek', qwen: 'Qwen', zhipu: 'GLM', xiaomi: 'MiMo', bytedance: 'Doubao', minimax: 'MiniMax', mistral: 'Mistral', meta: 'Llama' };
   // 版本号：取名字里第一个数字 + 紧随的次版本（claude-opus-5.5 → 5.05、claude-fable-5-1 → 5.01、gpt-6 → 6）；日期等长数字忽略。
   const version = t => { const k = String(t || '').toLowerCase().replace(/^#\d+\s*/, '').replace(/\s*·\s*\d+\s*$/, '').replace(/(\d)([a-z])/g, '$1-$2').replace(/([a-z])(\d)/g, '$1-$2').split(/[^a-z0-9]+/).filter(Boolean); const i = k.findIndex(x => /^\d{1,2}$/.test(x)); if (i < 0) return null; const minor = /^\d{1,2}$/.test(k[i + 1] || '') ? +k[i + 1] : 0; return +k[i] + minor / 100; };
@@ -5214,7 +5332,7 @@ const routeAlert = (() => {
   let host = null, box = null;
   function ensure() {
     if (host?.isConnected) return; if (!document.body) return;
-    host = document.createElement('div'); host.id = 'amp-route-alert'; host.style.cssText = 'position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:2147483647;pointer-events:none';
+    host = document.createElement('div'); host.id = 'amp-route-alert'; host.style.cssText = 'position:fixed;top:calc(14px + var(--amp-attn-h, 0px));left:50%;transform:translateX(-50%);z-index:2147483647;pointer-events:none';
     const root = host.attachShadow({ mode: 'open' });
     root.innerHTML = '<style>:host{all:initial}.stack{display:flex;flex-direction:column;gap:8px;align-items:center;font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,"PingFang SC","Microsoft YaHei",sans-serif}'
       + '.card{pointer-events:auto;min-width:280px;max-width:min(520px,92vw);background:#fff;color:#1f2430;border:1px solid #e2e6ed;border-left:4px solid var(--amp-acc,#2f6fed);border-radius:12px;box-shadow:0 8px 28px #0000002a;padding:10px 12px;display:grid;grid-template-columns:1fr auto;gap:2px 10px;animation:in .22s ease-out}'
@@ -5314,6 +5432,17 @@ const gachaUi = (() => {
   // Non-destructive: only CSS `order` on each list item and a data attribute. React-owned nodes are never moved.
   const sidebar = (() => {
     let stamp = '', touched = new Set(), lastRows = [], flatP = null, flatM = null, flatSet = new Set();
+    // v1.11.85 稳定排序（先沿用旧的，再慢慢校对）：
+    //   look = 上一次真正排好的样子（sid → 位置 p / 金色 / 命中），同时存进 localStorage，刷新页面后先按它摆；
+    //   新算出来的顺序要稳定 SETTLE 毫秒才换过去，换的时候卡片从原位置滑过去（FLIP），不瞬移；React 重建节点时同一帧恢复原样；
+    //   分页加载出来的旧对话（接在列表最后的新卡片）先放在最后，加载停下 QUIET 毫秒后再一次归位。
+    const LOOK_KEY = 'amp.native.sidelook.v1', SETTLE = 1200, QUIET = 2500;
+    let look = new Map(), lookFlat = false, lookCfg = null, appliedSig = '', savedSig = '', pendSig = '', pendAt = 0, tailAt = 0, recheckT = 0, lookSaveT = 0, flipT = 0, lastKw = [], lastLinks = [];
+    const tail = new Set(), posMem = new Map(), labMem = new WeakMap(), flipSet = new Set(), logoSeen = new Set(), pinSeen = new Set();
+    try { const c = JSON.parse(localStorage.getItem(LOOK_KEY) || 'null'); if (c && Array.isArray(c.rows) && Date.now() - (Number(c.at) || 0) < 30 * 86400e3) { for (const x of c.rows.slice(0, 1500)) if (Array.isArray(x) && /^[0-9a-f-]{36}$/i.test(x[0]) && Number.isFinite(x[1])) { look.set(x[0], { p: x[1], vip: !!(x[2] & 1), hit: !!(x[2] & 2) }); logoSeen.add(x[0]); if (x[2] & 3) pinSeen.add(x[0]); } lookFlat = !!c.flat; lookCfg = typeof c.cfg === 'string' ? c.cfg : null; } } catch {}
+    const lookSave = () => { clearTimeout(lookSaveT); lookSaveT = setTimeout(() => { try { const rows = [...look].sort((x, y) => x[1].p - y[1].p).slice(0, 800).map(([sid, v]) => [sid, v.p, (v.vip ? 1 : 0) | (v.hit ? 2 : 0)]); ampStore.set(LOOK_KEY, JSON.stringify({ at: Date.now(), flat: lookFlat, cfg: lookCfg, rows })); } catch {} }, 1500); };
+    const reduced = () => { try { return matchMedia('(prefers-reduced-motion: reduce)').matches; } catch { return false; } };
+    const recheck = ms => { clearTimeout(recheckT); recheckT = setTimeout(() => { recheckT = 0; try { if (!document.hidden) sync(lastKw); } catch {} }, Math.max(60, ms)); };
     // GPT 同一代里的强弱：Astra > Sol > Terra > Luna（与 Arena 模型菜单的顺序一致）；没有这些词的排在它们后面。
     // v1.11.76 系列比档位优先：astra-low 也排在 luna-max 前面；金色只给 Astra 的 high / xhigh / max。
     // GPT 不用排行榜的系列名次（新型号常未上榜，短名/全名混用时名次还会不一致），版本号相同就按这个比，再比档位。
@@ -5340,7 +5469,9 @@ const gachaUi = (() => {
     let ctSet = new Set();
     const ctPut = (el, text, isNew) => { if (el.getAttribute('data-amp-ctime') !== text) el.setAttribute('data-amp-ctime', text); el.toggleAttribute('data-amp-cnew', !!isNew); };
     const ctOff = el => { el.removeAttribute('data-amp-ctime'); el.removeAttribute('data-amp-cnew'); };
-    const titleOf = a => noteBase(titleOf0(a)), titleOf0 = a => { const sp = a.querySelector('[data-amp-local-title]'); if (sp) return sp.getAttribute('data-amp-local-title');
+    const titleOf = (a, sid) => noteBase(titleOf0(a, sid)), titleOf0 = (a, sid) => { const sp = a.querySelector('[data-amp-local-title]'); if (sp) return sp.getAttribute('data-amp-local-title');
+      // v1.11.85 本地标题还没挂上（React 刚重建卡片、页面刚打开）时直接问本地标题的来源（识别记录 / 抽卡 / 备注），不先按 Arena 原标题排一次再跳回来
+      if (sid) { try { const h = brand.hint.title(sid); if (h) return h; } catch {} }
       const tt = a.querySelector('span.truncate,div.truncate'); if (tt && !tt.querySelector('svg,button,[data-amp-vlogo],.sr-only')) return (tt.textContent || '').trim();
       let out = ''; const w = document.createTreeWalker(a, NodeFilter.SHOW_TEXT, { acceptNode: n => n.parentElement?.closest('[data-amp-vlogo],svg,button,.sr-only') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT });
       while (w.nextNode()) out += w.currentNode.nodeValue; return out.trim(); };
@@ -5358,99 +5489,197 @@ const gachaUi = (() => {
       const boxes = icons.map(icon => { let box = icon; while (box.parentElement && box.parentElement !== a && box.parentElement.children.length === 1 && !box.parentElement.contains(title)) box = box.parentElement; box.setAttribute('data-amp-logo-hidden', ''); return box; });
       if (!holder) {
         holder = document.createElement('span'); holder.setAttribute('data-amp-vlogo', vid); if (BADGE[vid]) holder.setAttribute('data-full', ''); holder.innerHTML = vendorIcon(vid, 12);
-        if (a.hasAttribute('data-amp-logo-seen')) holder.setAttribute('data-noanim', ''); // 只有第一次出现时做入场动画
+        // 只有第一次出现时做入场动画；v1.11.85 按对话记（React 重建出来的新节点、刷新页面后都不再重播）
+        const sid0 = ((a.getAttribute('href') || '').match(/[0-9a-f-]{36}/i) || [''])[0];
+        if (a.hasAttribute('data-amp-logo-seen') || (sid0 && logoSeen.has(sid0))) holder.setAttribute('data-noanim', '');
         const hidden = a.querySelector('[data-amp-logo-hidden]');
         if (boxes.length) boxes[0].before(holder); else if (hidden) hidden.before(holder); else if (title) title.before(holder); else a.prepend(holder);
       }
-      a.setAttribute('data-amp-logo', vid); a.setAttribute('data-amp-logo-seen', '');
+      a.setAttribute('data-amp-logo', vid); a.setAttribute('data-amp-logo-seen', ''); { const s0 = ((a.getAttribute('href') || '').match(/[0-9a-f-]{36}/i) || [''])[0]; if (s0) logoSeen.add(s0); }
     }
     function sync(keywords) {
+      lastKw = keywords || [];
       const sortOn = gacha.settings().sortSidebar;
       if (sortOn) void ranking.refresh();
       const kw = (keywords || []).map(k => k.toLowerCase());
       const links = [...document.querySelectorAll('a[href^="/agent/"]')].filter(a => a.closest('aside,nav,[data-sidebar]') && /^\/agent\/[0-9a-f-]{8,}/i.test(a.getAttribute('href')));
       progress.mark(links);
       const sidOfA = a => (a.getAttribute('href').match(/[0-9a-f-]{36}/i) || [''])[0], ats = new Map(links.map(a => [a, entryAt(a, sidOfA(a))]));
-      const key = sortOn + '|' + kw.join(',') + '|' + ranking.rev + '|' + vip.rev + '|' + brand.hint.rev() + '|' + links.map(a => a.getAttribute('href') + '=' + titleOf(a) + '@' + (ats.get(a) || '')).join(',');
-      if (key === stamp) { for (const r of lastRows) { if (!r.a.isConnected) continue; if (r.ct) { ctCss(); const el = ctEl(r.a); if (el && el.getAttribute('data-amp-ctime') !== r.ct) { ctPut(el, r.ct, r.cnew); ctSet.add(el); } } const n = r.a.getElementsByTagName('svg').length + r.a.getElementsByTagName('img').length; if (n === r.ic && (!r.vid || r.a.querySelector('[data-amp-vlogo]'))) continue; logo(r.a, r.vid); r.ic = r.a.getElementsByTagName('svg').length + r.a.getElementsByTagName('img').length; } return; } stamp = key; lastRows = [];
-      const groups = new Map();
+      const key = sortOn + '|' + kw.join(',') + '|' + ranking.rev + '|' + vip.rev + '|' + brand.hint.rev() + '|' + links.map(a => a.getAttribute('href') + '=' + titleOf(a, sidOfA(a)) + '@' + (ats.get(a) || '')).join(',');
+      // v1.11.85 React 重建了卡片（数据一样、节点全新）时 key 不变：以前走这里的快速分支只照顾旧节点，新卡片既不排序也没有 logo / 金色，
+      // 要等别的东西变了才整体重排（看起来就是卡片先乱一下再跳回去）。现在节点换了就走完整流程；还有没落定的新顺序时也走完整流程。
+      const sameEls = links.length === lastLinks.length && links.every((a, i) => a === lastLinks[i]);
+      if (key === stamp && sameEls && !pendSig && !tail.size) { for (const r of lastRows) { if (!r.a.isConnected) continue; if (r.ct) { ctCss(); const el = ctEl(r.a); if (el && el.getAttribute('data-amp-ctime') !== r.ct) { ctPut(el, r.ct, r.cnew); ctSet.add(el); } } const n = r.a.getElementsByTagName('svg').length + r.a.getElementsByTagName('img').length; if (n === r.ic && (!r.vid || r.a.querySelector('[data-amp-vlogo]'))) continue; logo(r.a, r.vid); r.ic = r.a.getElementsByTagName('svg').length + r.a.getElementsByTagName('img').length; } try { attn.paint(); } catch {} return; }
+      stamp = key; lastLinks = links; lastRows = [];
+      const groups = new Map(); let nat = 0;
       for (const a of links) {
         const item = a.closest('li') || a, list = item.parentElement; if (!list) continue; if (!groups.has(list)) groups.set(list, []);
-        const title = titleOf(a).toLowerCase(), sid = (a.getAttribute('href').match(/[0-9a-f-]{36}/i) || [''])[0];
+        const sid = sidOfA(a), title = titleOf(a, sid).toLowerCase();
         // 金色传说置顶：命中目标厂商且档位为 max / xhigh / high（取代以前 dxzui / clzui 的金色置顶）
-        // v1.11.76 GPT 先比系列再比档位：Astra 最强 → Sol → Terra → Luna。金色只给 Astra（标题里没有这些系列词的旧型号照旧按档位）——
-        // 以前 luna-max 因为档位是 max 被镀金置顶，排到了 astra-medium / astra-low 前面
+        // v1.11.76 GPT 先比系列再比档位：Astra 最强 → Sol → Terra → Luna。金色只给 Astra（标题里没有这些系列词的旧型号照旧按档位）
         const vid = brand.forSid(sid, title) || brand.of(vip.get(sid)), gpt = sortOn && vid === 'openai', gf = gpt ? gptFam(title) : 0;
         const hitNow = sortOn && kw.length > 0 && kw.some(k => title.includes(k)), isVip = hitNow && /(^|[-\s·(])(max|xhigh|high)(?=$|[-\s·)])/i.test(title) && !(gpt && gf > 1 && gf < 9);
-        groups.get(list).push({ a, item, at: ats.get(a) || null, vip: isVip, hit: hitNow, sc: sortOn ? ranking.score(title) : 0, gf, fam: sortOn && !gpt ? ranking.family(title) : 0, tier: sortOn ? ranking.tier(title) : 0, ver: brand.version(title), vid, nt: sortOn ? title.replace(/\s*·\s*\d+\s*$/, '') : '' });
+        groups.get(list).push({ a, item, sid, nat: nat++, at: ats.get(a) || null, vip: isVip, hit: hitNow, sc: sortOn ? ranking.score(title) : 0, gf, fam: sortOn && !gpt ? ranking.family(title) : 0, tier: sortOn ? ranking.tier(title) : 0, ver: brand.version(title), vid, nt: sortOn ? title.replace(/\s*·\s*\d+\s*$/, '') : '' });
       }
-      const next = new Set();
       // 金色只给同厂商里版本号最高的那一代（有 5.5 时 5 的 high/max 不再是金色；gpt 有 6 时 5.6 不是金色）
       { const topVer = new Map(); for (const rows of groups.values()) for (const r of rows) if (r.hit && r.ver != null) { const g = r.vid || ''; if (!(topVer.get(g) >= r.ver)) topVer.set(g, r.ver); }
         for (const rows of groups.values()) for (const r of rows) if (r.vip && !(r.ver != null && r.ver === topVer.get(r.vid || ''))) r.vip = false; }
       // 选了目标模型（或有 VIP）时：把所有日期分组（Today / Yesterday / Older）里命中的卡片统一置顶。
       // 仍然不移动 React 节点：把分组容器设为 display:contents，所有卡片成为同一个 flex 容器的子项，再用 order 排。
-      const lists = [...groups.keys()], anyPin = [...groups.values()].some(rows => rows.some(r => r.vip || r.hit));
-      let P = null, flatPinned = null;
-      if (lists.length > 1 && anyPin) { P = lists[0].parentElement; while (P && !lists.every(l => P.contains(l))) P = P.parentElement; if (P && !P.closest('aside,nav,[data-sidebar]')) P = null; }
+      const lists = [...groups.keys()], rowsAll = [...groups.values()].flat(), anyPin = rowsAll.some(r => r.vip || r.hit), present = new Set(rowsAll.map(r => r.sid));
+      let Pc = null;
+      if (lists.length > 1) { Pc = lists[0].parentElement; while (Pc && !lists.every(l => Pc.contains(l))) Pc = Pc.parentElement; if (Pc && !Pc.closest('aside,nav,[data-sidebar]')) Pc = null; }
+      const cfg = sortOn + '|' + kw.join(',');
+      // Strength shading: the strongest pinned card gets 50% of the selected card's colour depth, the rest fade evenly.
+      const tint = (arr, v) => { const n = arr.length, k = arr.indexOf(v); return k < 0 ? '' : (50 * (n - k) / n).toFixed(1) + '%'; };
+      // 同厂商先比版本号（opus-5.5 > fable-5.1，未上榜的新版本也能排前），版本相同再按排行榜（fable/opus、档位）。
+      // 比较器必须可传递，否则同一输入在不同轮次可能排出不同顺序 → 卡片来回交换（频闪）。
+      const cmpD = (x, y) => (y.vip - x.vip) || (y.hit - x.hit) || (sortOn ? (x.gs - y.gs) || (x.g < y.g ? -1 : x.g > y.g ? 1 : 0) || ((y.ver ?? -1) - (x.ver ?? -1)) || (x.gf - y.gf) || (x.fam - y.fam) || (y.tier - x.tier) || (x.sc - y.sc) || (x.nt < y.nt ? 1 : x.nt > y.nt ? -1 : 0) : 0) || (x.i - y.i);
+      const cmpH = (x, y) => (y.vip - x.vip) || (y.hit - x.hit) || (x.rk - y.rk) || (x.i - y.i);
+      // 算出一种摆法（不动 DOM）：flat = 是否平铺，F(r) = 这张卡片按什么金色 / 命中来摆，cmp = 卡片之间怎么比
+      const plan = (flat, F, cmp) => {
+        const V = new Map(); for (const [l, rows] of groups) V.set(l, rows.map(r => Object.assign({}, r, F(r), { r })));
+        const all = [...V.values()].flat(), out = { flat: !!flat, P: flat ? Pc : null, items: new Map(), labs: [], tv: new Map(), fl: new Map(), seq: [] };
+        for (const v of all) out.fl.set(v.r, v);
+        if (flat) {
+          all.forEach((v, i) => v.i = i);
+          const best = new Map(); for (const v of all) { const g = v.vid || '~' + v.i; best.set(g, Math.min(best.get(g) ?? Infinity, v.sc)); }
+          for (const v of all) { v.g = v.vid || '~' + v.i; v.gs = best.get(v.g); }
+          let seg = 0, firstBase = null;
+          for (const c of Pc.children) {
+            const base = 100000 + (seg++) * 10000, L = lists.filter(l => c === l || c.contains(l));
+            if (!L.length) { out.labs.push([c, base, '']); continue; }
+            if (firstBase === null) firstBase = base;
+            for (const l of L) { let n = l; while (n !== c) { for (const sib of n.parentElement.children) if (sib !== n && !lists.some(x => sib === x || sib.contains(x))) out.labs.push([sib, base, 'lab']); n = n.parentElement; } }
+            for (const l of L) V.get(l).filter(v => !(v.vip || v.hit)).sort(cmp).forEach((v, k) => out.items.set(v.r, base + 1 + k));
+          }
+          // 平铺时（多个日期分组合成一列）按整列的最终顺序算深浅，否则每个分组各自从最深开始，跨分组时忽深忽浅
+          const pinned = all.filter(v => v.vip || v.hit).sort(cmp); pinned.forEach((v, k) => out.items.set(v.r, (firstBase ?? 100000) - 5000 + k));
+          const hits = pinned.filter(v => v.hit && !v.vip), vips = pinned.filter(v => v.vip);
+          for (const v of all) out.tv.set(v.r, v.vip ? tint(vips, v) : v.hit ? tint(hits, v) : '');
+          out.seq = all.slice().sort((x, y) => out.items.get(x.r) - out.items.get(y.r)).map(v => v.r);
+        } else {
+          for (const [list, rows] of V) {
+            const sortable = /flex|grid/.test(getComputedStyle(list).display);
+            rows.forEach((v, i) => v.i = i);
+            const pinned = rows.some(v => v.vip) || sortOn;
+            const best = new Map(); for (const v of rows) { const g = v.vid || '~' + v.i; best.set(g, Math.min(best.get(g) ?? Infinity, v.sc)); }
+            for (const v of rows) { v.g = v.vid || '~' + v.i; v.gs = best.get(v.g); }
+            const sorted = rows.slice().sort(cmp), hits = sorted.filter(v => v.hit && !v.vip), vips = sorted.filter(v => v.vip);
+            sorted.forEach((v, rank) => { out.items.set(v.r, sortable && pinned ? rank : ''); out.tv.set(v.r, v.vip ? tint(vips, v) : v.hit ? tint(hits, v) : ''); });
+            out.seq.push(...(sortable && pinned ? sorted : rows).map(v => v.r));
+          }
+        }
+        return out;
+      };
+      const D = plan(!!(Pc && anyPin), () => ({}), cmpD), now = Date.now();
+      const sig = cfg + '|' + (D.flat ? 'F' : 'G') + '|' + D.seq.map(r => { const f = D.fl.get(r); return r.sid + (f.vip ? '*' : f.hit ? '+' : ''); }).join(',');
+      // 分页加载出来的旧对话：没见过、而且接在所有见过的卡片后面（Arena 新建的对话出现在最上面，旧对话一页页接在最后）
+      for (const x of [...tail]) if (!present.has(x) || look.has(x)) tail.delete(x);
+      if (look.size) { let maxK = -1; for (const r of rowsAll) if (look.has(r.sid)) maxK = Math.max(maxK, r.nat); if (maxK >= 0) for (const r of rowsAll) if (!look.has(r.sid) && !tail.has(r.sid) && r.nat > maxK) { tail.add(r.sid); tailAt = now; } }
+      // 记住这一次的摆法（all=false：分页还在加载，只记见过的卡片，新来的旧对话继续放最后）
+      const remember = (pl, all) => {
+        const nl = new Map(); let i = 0;
+        for (const r of pl.seq) { if (!all && tail.has(r.sid)) continue; const f = pl.fl.get(r); nl.set(r.sid, { p: i++, vip: !!f.vip, hit: !!f.hit }); }
+        for (const [x, v] of look) if (!nl.has(x) && !present.has(x)) nl.set(x, v);
+        if (nl.size > 2000) for (const [x] of [...nl].filter(([x]) => !present.has(x)).sort((u, w) => w[1].p - u[1].p).slice(0, nl.size - 2000)) nl.delete(x);
+        look = nl; lookFlat = pl.flat; lookCfg = cfg; pendSig = '';
+        if (all) { tail.clear(); appliedSig = sig; }
+        if (!all || sig !== savedSig) { savedSig = all ? sig : ''; lookSave(); }
+      };
+      // 见过的卡片在新结果里的先后顺序、金色 / 命中、平铺与否都和上次一样？（只是多了新卡片）
+      let knownSame = D.flat === lookFlat;
+      if (knownSame) { let lastP = -Infinity; for (const r of D.seq) { const L = look.get(r.sid); if (!L) continue; const f = D.fl.get(r); if (L.vip !== !!f.vip || L.hit !== !!f.hit || L.p < lastP) { knownSame = false; break; } lastP = L.p; } }
+      const tailReady = tail.size > 0 && !olderBusy() && now - tailAt >= QUIET;
+      let adopt = false;
+      if (!look.size || cfg !== lookCfg) adopt = true;                        // 第一次 / 改了设置（排序开关、目标模型）：直接换
+      else if (knownSame) { pendSig = ''; adopt = !tail.size || tailReady; }  // 只是多了卡片：新对话直接插到该在的位置；分页加载的等加载停下
+      else {
+        if (sig !== pendSig) { pendSig = sig; pendAt = now; }
+        if (now - pendAt >= SETTLE) { if (!tail.size || tailReady) adopt = true; else remember(D, false); } // 新顺序稳定够久：换过去（分页还在加载时先只换见过的卡片）
+      }
+      if (adopt) remember(D, true);
+      let fin = D;
+      if (!adopt) {
+        // 沿用：见过的卡片按上次的位置 / 金色 / 命中摆；新对话插在（新结果里）它前面那张卡片后面；分页加载的旧对话先放最后、先不置顶
+        let lastP = -1, bump = 0, tk = 0;
+        for (const r of D.seq) { const L = look.get(r.sid); if (tail.has(r.sid)) r.rk = 1e9 + tk++; else if (L) { r.rk = L.p; lastP = L.p; bump = 0; } else r.rk = lastP + (bump += 1e-3); }
+        fin = plan(!!(Pc && lookFlat), r => { if (tail.has(r.sid)) return { vip: false, hit: false }; const L = look.get(r.sid); return L ? { vip: L.vip, hit: L.hit } : {}; }, cmpH);
+        recheck(pendSig ? pendAt + SETTLE - now + 40 : Math.max(tailAt + QUIET - now, 700) + 40);
+      }
+      apply(fin, lists, Pc, groups.get(lists[0]) || []);
+      try { attn.paint(); } catch {}
+    }
+    // 把一种摆法落到页面上：平铺结构 → order → 金色 / 命中 / logo / 深浅 → 时间小字 → FLIP（挪了位置的卡片滑过去）
+    function apply(pn, lists, Pc, firstRows) {
+      const root = Pc || lists[0] || null;
+      // 正在滑动的卡片：先记下它此刻看得见的位置，再清掉动画，从这里接着滑（连续两次调整时不跳）
+      let vis = null;
+      if (flipSet.size && root) { vis = new Map(); const rt0 = root.getBoundingClientRect().top - root.scrollTop; for (const el of flipSet) if (el.isConnected) vis.set(el, el.getBoundingClientRect().top - rt0); for (const el of flipSet) { el.style.removeProperty('transition'); el.style.removeProperty('transform'); } flipSet.clear(); clearTimeout(flipT); }
+      const P = pn.P;
       if (P !== flatP) unflat();
       if (P) {
         flatP = P;
+        // v1.11.85 平铺用的样式先确认在：脚本启动时 <head> 还没有，那次插入会落空，以前要等分页检查（每 0.7 秒）才补上，
+        // 刷新后头一下先按分组摆、再整列跳成平铺
+        if (document.head && !document.getElementById('amp-flat-css')) { const st = document.createElement('style'); st.id = 'amp-flat-css'; st.textContent = '[data-amp-flat]{display:contents!important}[data-amp-flatp]{display:flex!important;flex-direction:column!important;row-gap:0!important;gap:0!important}'; document.head.append(st); }
         if (!P.hasAttribute('data-amp-flatp')) {
           // 进入平铺前量一下原来的缩进/间距，平铺后补回去，看起来和分组时一样
           const pr = P.getBoundingClientRect(), cs = getComputedStyle(P), pl = pr.left + parseFloat(cs.paddingLeft || 0) + parseFloat(cs.borderLeftWidth || 0), prr = pr.right - parseFloat(cs.paddingRight || 0) - parseFloat(cs.borderRightWidth || 0);
-          const li0 = groups.get(lists[0])[0]?.item, li1 = groups.get(lists[0])[1]?.item, r0 = li0?.getBoundingClientRect(), r1 = li1?.getBoundingClientRect();
+          const li0 = firstRows[0]?.item, li1 = firstRows[1]?.item, r0 = li0?.getBoundingClientRect(), r1 = li1?.getBoundingClientRect();
           flatM = { l: r0 ? Math.max(0, r0.left - pl) : 0, r: r0 ? Math.max(0, prr - r0.right) : 0, gap: r0 && r1 ? Math.max(0, Math.min(12, r1.top - r0.bottom)) : 0, lab: null };
           for (const l of lists) { let n = l; while (n && n !== P) { n.setAttribute('data-amp-flat', ''); n = n.parentElement; } }
           P.setAttribute('data-amp-flatp', '');
         } else for (const l of lists) { let n = l; while (n && n !== P) { if (!n.hasAttribute('data-amp-flat')) n.setAttribute('data-amp-flat', ''); n = n.parentElement; } }
-        const setO = (el, o, kind) => { el.style.order = String(o); if (kind === 'li') { el.style.marginLeft = flatM.l + 'px'; el.style.marginRight = flatM.r + 'px'; el.style.marginTop = flatM.gap + 'px'; } else if (kind === 'lab') { el.style.marginLeft = flatM.l + 'px'; el.style.marginRight = flatM.r + 'px'; el.style.marginTop = '10px'; } flatSet.add(el); };
-        const all = [...groups.values()].flat(); all.forEach((r, i) => r.i = i);
-        const best = new Map(); for (const r of all) { const g = r.vid || '~' + r.i; best.set(g, Math.min(best.get(g) ?? Infinity, r.sc)); }
-        for (const r of all) { r.g = r.vid || '~' + r.i; r.gs = best.get(r.g); }
-        const cmp = (x, y) => (y.vip - x.vip) || (y.hit - x.hit) || (sortOn ? (x.gs - y.gs) || (x.g < y.g ? -1 : x.g > y.g ? 1 : 0) || ((y.ver ?? -1) - (x.ver ?? -1)) || (x.gf - y.gf) || (x.fam - y.fam) || (y.tier - x.tier) || (x.sc - y.sc) || (x.nt < y.nt ? 1 : x.nt > y.nt ? -1 : 0) : 0) || (x.i - y.i);
-        let seg = 0, firstBase = null;
-        for (const c of P.children) {
-          const base = 100000 + (seg++) * 10000, L = lists.filter(l => c === l || c.contains(l));
-          if (!L.length) { setO(c, base); continue; }
-          if (firstBase === null) firstBase = base;
-          for (const l of L) { let n = l; while (n !== c) { for (const sib of n.parentElement.children) if (sib !== n && !lists.some(x => sib === x || sib.contains(x))) setO(sib, base, 'lab'); n = n.parentElement; } }
-          for (const l of L) groups.get(l).filter(r => !(r.vip || r.hit)).sort(cmp).forEach((r, k) => setO(r.item, base + 1 + k, 'li'));
-        }
-        flatPinned = all.filter(r => r.vip || r.hit).sort(cmp); flatPinned.forEach((r, k) => setO(r.item, (firstBase ?? 100000) - 5000 + k, 'li'));
       }
-      for (const [list, rows] of groups) {
-        const sortable = !P && /flex|grid/.test(getComputedStyle(list).display);
-        if (!P) rows.forEach((r, i) => r.i = i);
-        const pinned = rows.some(r => r.vip) || sortOn;
-        // 同厂商先比版本号（opus-5.5 > fable-5.1，未上榜的新版本也能排前），版本相同再按排行榜（fable/opus、档位）。
-        // 比较器必须可传递，否则同一输入在不同轮次可能排出不同顺序 → 卡片来回交换（频闪）。
-        const best = new Map(); for (const r of rows) { const g = r.vid || '~' + r.i; best.set(g, Math.min(best.get(g) ?? Infinity, r.sc)); }
-        if (!P) for (const r of rows) { r.g = r.vid || '~' + r.i; r.gs = best.get(r.g); }
-        const sorted = rows.slice().sort((x, y) => (y.vip - x.vip) || (y.hit - x.hit) || (sortOn ? (x.gs - y.gs) || (x.g < y.g ? -1 : x.g > y.g ? 1 : 0) || ((y.ver ?? -1) - (x.ver ?? -1)) || (x.gf - y.gf) || (x.fam - y.fam) || (y.tier - x.tier) || (x.sc - y.sc) || (x.nt < y.nt ? 1 : x.nt > y.nt ? -1 : 0) : 0) || (x.i - y.i));
-        // Strength shading: the strongest pinned card gets 50% of the selected card's colour depth, the rest fade evenly.
-        // 平铺时（多个日期分组合成一列）按整列的最终顺序算深浅，否则每个分组各自从最深开始，跨分组时忽深忽浅
-        const pool = flatPinned || sorted, hits = pool.filter(r => r.hit && !r.vip), vips = pool.filter(r => r.vip);
-        const tint = (arr, r) => { const n = arr.length, k = arr.indexOf(r); return k < 0 ? '' : (50 * (n - k) / n).toFixed(1) + '%'; };
-        sorted.forEach((r, rank) => {
-          if (P) {} else if (sortable && pinned) r.item.style.order = String(rank); else r.item.style.removeProperty('order');
-          const tv = r.vip ? tint(vips, r) : r.hit ? tint(hits, r) : ''; if (tv) r.a.style.setProperty('--amp-tint', tv); else r.a.style.removeProperty('--amp-tint');
-          r.a.toggleAttribute('data-amp-target-hit', r.hit && !r.vip); r.a.toggleAttribute('data-amp-vip', r.vip);
-          // Every conversation whose vendor is known (title keyword or local cache) shows that vendor's logo.
-          logo(r.a, r.vid); if (r.vid) r.a.setAttribute('data-amp-brand', r.vid); else r.a.removeAttribute('data-amp-brand');
-          next.add(r.item); next.add(r.a); lastRows.push(r);
-        });
+      const setO = (el, o, kind) => { const v = String(o); if (el.style.order !== v) el.style.order = v; if (kind === 'li') { el.style.marginLeft = flatM.l + 'px'; el.style.marginRight = flatM.r + 'px'; el.style.marginTop = flatM.gap + 'px'; } else if (kind === 'lab') { el.style.marginLeft = flatM.l + 'px'; el.style.marginRight = flatM.r + 'px'; el.style.marginTop = '10px'; } flatSet.add(el); };
+      if (P) { for (const [el, o, kind] of pn.labs) setO(el, o, kind); for (const [r, o] of pn.items) setO(r.item, o, 'li'); }
+      else for (const [r, o] of pn.items) { if (o === '') { if (r.item.style.order) r.item.style.removeProperty('order'); } else if (r.item.style.order !== String(o)) r.item.style.order = String(o); }
+      const next = new Set();
+      for (const r of pn.seq) {
+        const f = pn.fl.get(r), isVip = !!f.vip, isHit = !!f.hit, tv = pn.tv.get(r) || '';
+        r.vip = isVip; r.hit = isHit;
+        if (tv) { if (r.a.style.getPropertyValue('--amp-tint') !== tv) r.a.style.setProperty('--amp-tint', tv); } else r.a.style.removeProperty('--amp-tint');
+        // 金色 / 命中的入场动画只在这张卡片第一次变成金色 / 命中时播一次（React 重建节点、刷新页面都不再重播）
+        if ((isVip || isHit) && r.sid && !pinSeen.has(r.sid)) { pinSeen.add(r.sid); const a = r.a; a.setAttribute('data-amp-pinin', ''); setTimeout(() => a.removeAttribute('data-amp-pinin'), 700); }
+        if (r.a.hasAttribute('data-amp-target-hit') !== (isHit && !isVip)) r.a.toggleAttribute('data-amp-target-hit', isHit && !isVip);
+        if (r.a.hasAttribute('data-amp-vip') !== isVip) r.a.toggleAttribute('data-amp-vip', isVip);
+        // Every conversation whose vendor is known (title keyword or local cache) shows that vendor's logo.
+        logo(r.a, r.vid); if (r.vid) { if (r.a.getAttribute('data-amp-brand') !== r.vid) r.a.setAttribute('data-amp-brand', r.vid); } else r.a.removeAttribute('data-amp-brand');
+        next.add(r.item); next.add(r.a); lastRows.push(r);
       }
       for (const el of touched) if (!next.has(el) && el.isConnected) clear(el);
       touched = next;
       // v1.11.78 目标模型卡片的时间小字（最新的一张加深）
-      { ctCss(); const rows = [...groups.values()].flat(), pins = rows.filter(r => (r.vip || r.hit) && r.at), newest = pins.length > 1 ? Math.max(...pins.map(r => r.at)) : null, nextCt = new Set();
+      { ctCss(); const rows = pn.seq, pins = rows.filter(r => (r.vip || r.hit) && r.at), newest = pins.length > 1 ? Math.max(...pins.map(r => r.at)) : null, nextCt = new Set();
         for (const r of rows) { r.ct = ''; r.cnew = false; if (!((r.vip || r.hit) && r.at)) continue; const el = ctEl(r.a); if (!el) continue; r.ct = ctFmt(r.at); r.cnew = r.at === newest; ctPut(el, r.ct, r.cnew); nextCt.add(el); }
         for (const el of ctSet) if (!nextCt.has(el)) ctOff(el); ctSet = nextCt; }
+      if (!root || !pn.seq.length) return;
+      // FLIP：和上一次画出来的位置比，挪了位置的卡片从原来的地方滑过去（只动看得见的；系统开了“减少动态效果”就直接到位）
+      const rt = root.getBoundingClientRect().top - root.scrollTop, vh = innerHeight || 800, moves = [];
+      const track = (el, key) => {
+        const b = el.getBoundingClientRect(); if (!b.height) return;
+        const rel = b.top - rt, first = vis && vis.has(el) ? vis.get(el) : key ? posMem.get(key) : labMem.get(el);
+        if (key) { posMem.delete(key); posMem.set(key, rel); } else labMem.set(el, rel);
+        if (first == null) return; const d = first - rel;
+        if (Math.abs(d) < 1) return;
+        const t0 = b.top + d; if ((b.bottom < 0 || b.top > vh) && (t0 + b.height < 0 || t0 > vh)) return;
+        moves.push([el, d]);
+      };
+      for (const r of pn.seq) track(r.item, r.sid);
+      if (P) for (const [el] of pn.labs) track(el, null);
+      if (posMem.size > 4000) { let n = posMem.size - 3000; for (const k of posMem.keys()) { if (n-- <= 0) break; posMem.delete(k); } }
+      if (!moves.length || reduced()) return;
+      for (const [el, d] of moves) { el.style.transition = 'none'; el.style.transform = 'translateY(' + d.toFixed(1) + 'px)'; flipSet.add(el); }
+      void root.offsetHeight;
+      for (const [el] of moves) { el.style.transition = 'transform .3s cubic-bezier(.2,.8,.2,1)'; el.style.transform = ''; }
+      flipT = setTimeout(() => { for (const el of flipSet) { el.style.removeProperty('transition'); el.style.removeProperty('transform'); } flipSet.clear(); }, 380);
     }
     // 旧对话后台逐页加载：把侧栏底部的“加载更多”转圈临时贴在可视区底部（sticky），触发 Arena 自己的无限滚动拉下一页；
     // 每页加载完先取消，隔一会儿再贴，逐页慢慢拉，不滚动、不抢焦点，不影响其他操作。
     const older = { at: 0, n: 0, pages: 0, el: null };
+    // v1.11.85 分页加载进行中（贴着转圈 / 刚放开不久）：这期间新出现在最后的旧对话先不归位
+    const olderBusy = () => !!older.el || (older.pages > 0 && older.pages < 60 && Date.now() - older.at < 2600);
     function olderStep() {
       if (!document.getElementById('amp-older-css') && document.head) { const st = document.createElement('style'); st.id = 'amp-older-css'; st.textContent = '[data-amp-older]{position:sticky!important;bottom:0!important;z-index:2;opacity:.5;pointer-events:none}[data-amp-flat]{display:contents!important}[data-amp-flatp]{display:flex!important;flex-direction:column!important;row-gap:0!important;gap:0!important}'; document.head.append(st); }
       const sortOn = (() => { try { return gacha.settings().sortSidebar; } catch { return false; } })();
@@ -5467,7 +5696,7 @@ const gachaUi = (() => {
       sp.setAttribute('data-amp-older', ''); older.el = sp; older.n = n; older.at = Date.now();
     }
     setInterval(() => { try { olderStep(); } catch {} }, 700);
-    return { sync, reset: () => { unflat(); for (const el of touched) if (el.isConnected) clear(el); touched = new Set(); for (const el of ctSet) ctOff(el); ctSet = new Set(); stamp = ''; lastRows = []; } };
+    return { sync, reset: () => { unflat(); for (const el of touched) if (el.isConnected) clear(el); touched = new Set(); for (const el of ctSet) ctOff(el); ctSet = new Set(); stamp = ''; lastRows = []; lastLinks = []; appliedSig = ''; pendSig = ''; tail.clear(); } };
   })();
   const ICON_PATH = {"openai": "M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z", "anthropic": "M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z", "google": "M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81", "xai": "M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"};
   // Vendors outside the five targets get a coloured monogram badge (logo only; not selectable as a target).
@@ -5684,7 +5913,7 @@ const gachaUi = (() => {
       /* hover: grow quickly with a small overshoot, shrink back slowly on leave */
       + 'a[data-amp-target-hit],a[data-amp-vip],a[data-amp-current]{transform:scale(var(--amp-mag,1))}html[data-amp-mag-on] a[data-amp-target-hit],html[data-amp-mag-on] a[data-amp-vip],html[data-amp-mag-on] a[data-amp-current]{transition:transform .14s ease-out,background-color .3s ease,color .25s ease,box-shadow .3s ease}'
       + 'a[data-amp-target-hit]:active,a[data-amp-vip]:active,a[data-amp-current]:active{transform:scale(.985);transition-duration:.08s}'
-      + '@keyframes ampPinIn{from{opacity:0;transform:translateX(-8px) scale(.98)}to{opacity:1;transform:none}}a[data-amp-target-hit],a[data-amp-vip]{animation:ampPinIn .38s cubic-bezier(.22,.9,.3,1) backwards}'
+      + '@keyframes ampPinIn{from{opacity:0;transform:translateX(-8px) scale(.98)}to{opacity:1;transform:none}}a[data-amp-target-hit][data-amp-pinin],a[data-amp-vip][data-amp-pinin]{animation:ampPinIn .38s cubic-bezier(.22,.9,.3,1) backwards}'
       /* current conversation: the left bar grows into a solid fill following the load progress */
       + 'a[data-amp-current]{box-shadow:inset 3px 0 0 var(--amp-cur,var(--amp-acc,#2f6fed))!important;overflow:hidden}a[data-amp-current][data-amp-vip]{--amp-cur:#c9950c}'
       + 'a[data-amp-current]::before{content:"";position:absolute;left:0;top:0;bottom:0;width:max(3px,var(--amp-fill,0%));background:var(--amp-cur,var(--amp-acc,#2f6fed));z-index:-1;border-radius:inherit;transition:width .35s cubic-bezier(.22,.9,.3,1);pointer-events:none}'
@@ -5928,7 +6157,7 @@ const gachaUi = (() => {
     // 性能：流式输出（[role=log] 内）和脚本自己写入的节点不触发；只有侧栏变化时只同步侧栏，不重建抽卡按钮
     const OWN = '[data-amp-native-gacha],[data-amp-vlogo],[data-amp-hname],[data-amp-htier],[data-amp-hlogo],[data-amp-slot],#amp-lite-dock';
     const ownNode = n => n.nodeType === 1 && !!(n.matches(OWN) || n.hasAttribute('data-amp-local-title'));
-    let needComp = false, needSide = false;
+    let needComp = false, needSide = false, sideHit = false;
     const syncSide = () => { try { const st = gacha.state(), cfg = gacha.running() && st ? st.settings : gacha.settings(); sidebar.sync(cfg.targetKeywords); } catch {} };
     // v1.11.78 卡片时间：Arena 更新了某个对话的时间但卡片位置没变（DOM 不变、不触发观察器）时，每 20 秒对一次
     setInterval(() => { if (!document.hidden && document.querySelector('[data-amp-ctime]')) syncSide(); }, 20000);
@@ -5937,9 +6166,11 @@ const gachaUi = (() => {
         const t = rec.target, e = t.nodeType === 1 ? t : t.parentElement; if (!e) continue;
         if (e.closest('[role="log"]') || e.closest(OWN)) continue;
         if (rec.addedNodes.length + rec.removedNodes.length && [...rec.addedNodes, ...rec.removedNodes].every(ownNode)) continue;
-        if (e.closest('aside,nav,[data-sidebar]')) needSide = true; else needComp = true;
+        if (e.closest('aside,nav,[data-sidebar]')) { needSide = true; sideHit = true; } else needComp = true;
         if (needComp) break;
       }
+      // v1.11.85 侧栏节点变了（React 重建卡片）：本地标题、提醒颜色在这一帧画出来之前补上（微任务里同步做），不先闪一下 Arena 原标题
+      if (sideHit) { sideHit = false; try { sideNow(); } catch {} }
       if (scheduled || !(needComp || needSide)) return; scheduled = true;
       requestAnimationFrame(() => { scheduled = false; const c = needComp, sd = needSide; needComp = needSide = false; if (c) install(); else if (sd) syncSide(); });
     }).observe(document.body, { childList: true, subtree: true });
@@ -5996,7 +6227,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.84', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.85', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -6924,12 +7155,14 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     if(!session){if(/^\/(api|ai-proxy|agent)\//.test(u.pathname)&&!/\/(events|spans)\b|telemetry|analytics|metrics|logs?\b|ping|heartbeat|presence/i.test(u.pathname))notePost(u.pathname,kind,sid);return;}
     notePost(u.pathname,kind,sid);
     const continuation=kind&&kind!=='message'||/regenerate/i.test(j.trigger||j.payload?.trigger||'');
-    if(continuation){if(!/^(stop|cancel|abort|interrupt)/i.test(kind||'')){try{errReload.follow.arm();errReload.noteSend(sidOf(location.href)||sid,null);}catch{}try{pulseTurnStart(sid||null,Date.now(),true);}catch{}}if(sid&&!/^(stop|cancel|abort|interrupt)/i.test(kind||'')){const l=contSeen.get(sid)||[];l.push({at:Date.now(),kind:/regenerate/i.test(j.trigger||j.payload?.trigger||'')?'regenerate':kind||'continue'});contSeen.delete(sid);contSeen.set(sid,l.slice(-40));while(contSeen.size>20)contSeen.delete(contSeen.keys().next().value);}for(const r of runs.values())if(r.sid===sid){r.tries=0;r.finalReads=0;r.liveReads=0;r.phase='工作流继续';later(r);}return;}
+    if(continuation){if(/regenerate/i.test(j.trigger||j.payload?.trigger||'')){try{const cs=sidOf(location.href)||sid;if(cs)attn.clear(cs);}catch{}}if(!/^(stop|cancel|abort|interrupt)/i.test(kind||'')){try{errReload.follow.arm();errReload.noteSend(sidOf(location.href)||sid,null);}catch{}try{pulseTurnStart(sid||null,Date.now(),true);}catch{}}if(sid&&!/^(stop|cancel|abort|interrupt)/i.test(kind||'')){const l=contSeen.get(sid)||[];l.push({at:Date.now(),kind:/regenerate/i.test(j.trigger||j.payload?.trigger||'')?'regenerate':kind||'continue'});contSeen.delete(sid);contSeen.set(sid,l.slice(-40));while(contSeen.size>20)contSeen.delete(contSeen.keys().next().value);}for(const r of runs.values())if(r.sid===sid){r.tries=0;r.finalReads=0;r.liveReads=0;r.phase='工作流继续';later(r);}return;}
     const preview=promptPreview(j), entry={revision:++revision,at:Date.now(),configs:configs(j,'页面请求','$'),prompt:preview,full:promptFull(j),balance:balance&&Date.now()-balance.at<180000?{remaining:balance.remaining,at:balance.at}:null};
     const pm=j.payload?.message,mid=j.message?.id??(pm&&typeof pm==='object'&&pm.role!=='assistant'?pm.id:undefined);if(typeof mid==='string'&&/^[\w-]{8,64}$/.test(mid)){try{onSent?.(mid,entry.at);}catch{}}
     // 发送后自动跟随最新；记下这条消息（刷新后若页面里找不到，提示“服务器已收到、不用重发”）
     entry.mid=typeof mid==='string'?mid:null;try{errReload.follow.arm();const ps=sidOf(location.href)||sid;if(ps)errReload.noteSend(ps,entry.mid?{mid:entry.mid,text:preview,full:entry.full,at:entry.at}:null);}catch{}
     try{pulseTurnStart(sid||null,entry.at);}catch{}try{noteSent(sid||null,entry.at);}catch{}
+    // v1.11.85 在这个对话里重新发送 = 已经处理了：所有窗口里的“需要处理”提醒一起消失
+    try{const cs=sid||sidOf(location.href);if(cs)attn.clear(cs);}catch{}
     if(sid){submissions.set(sid,entry);void costBaseline(sid,entry);}else pendingNew=entry;
     // 记下提交前已见过的标记数与 span：后端若不写新的轮次标记（如撤回后重发），仍能靠“新出现的 span”识别本轮
     for(const r of runs.values())if(r.sid===sid){clearTimeout(r.timer);r.abort?.abort();if(r.data)save(r.data);r.revision=entry.revision;r.requestConfigs=entry.configs;r.prompt=preview;r.submittedAt=entry.at;r.baseline={markers:r.markers,spans:new Set(r.seen),since:r.newest||null};r.tries=0;r.finalReads=0;r.liveReads=0;r.cache.clear();r.missing=new Map();r.rawSpans=new Map();r.rawTrace=[];r.credits=null;if(r.probe)delete r.probe.cost;r.phase='等待新一轮';later(r,1800);}
@@ -7799,12 +8032,15 @@ details.mc-card .section.credits{margin-top:12px}
   // 抽卡模块原有的“路由到 Thinking 时停止”（默认开）已处理“正文之后出现思考链”，自动停止不重复点击
   function monGuardOn(){try{return (JSON.parse(localStorage.getItem('amp.native.gacha.settings.v1')||'{}')||{}).stopOnThinking!==false;}catch{return true;}}
   function monCurrentName(sid){const m=mon.bySid.get(sid);return m?.auto?.current?.name||catalog.entries.get(sid)?.name?.name||null;}
+  const attnKeys=new Set();
   function monFlag(sid,f,busy){
     log(f.level==='strong'?'warn':'info','实时监控',f.text+(f.detail?'（'+f.detail+'）':''),null,{sid});
     if(f.level!=='weak')monKick(sid,'anomaly');
+    // v1.11.85 确认换了模型：所有窗口里这张卡片变色 + 顶部提示，直到确认或重新发送（抽卡中的轮次不提醒）
+    if(f.certain&&!attnKeys.has(f.key)&&!gacha.quietTurn(sid)){attnKeys.add(f.key);if(attnKeys.size>300)attnKeys.clear();try{attn.raise(sid,'route','确认换了模型（路由切换）'+(f.from?'：原来是 '+short_(f.from):'')+(f.detail?' · '+f.detail:''));}catch{}}
     if(f.certain&&prefs.monAlert&&!mon.alerts.has(f.key)&&(mon.alerts.add(f.key),!gacha.quietTurn(sid))){try{routeAlert.show('换模型 · 路由切换',f.from||null,'出现思考链的新模型',f.detail,'drop');}catch{}}
     if(f.level==='strong'&&prefs.monAlert&&!mon.alerts.has(f.key)&&(mon.alerts.add(f.key),!gacha.quietTurn(sid))){const cur=monCurrentName(sid);try{routeAlert.show('疑似换模型 · 正在核对',null,f.text,(cur?'当前识别 '+short_(cur)+' · ':'')+f.detail,'drop');}catch{}}
-    if(f.level==='strong'&&prefs.monStop&&busy&&pageGenerating()&&!(f.kind==='think-mid'&&mon.bySid.get(sid)?.cur?.midText&&monGuardOn())){const b=document.querySelector('button[aria-label="Stop generating"],button[aria-label="Stop response"],button[aria-label="停止生成"]');if(b&&!b.disabled){b.click();log('warn','实时监控','已按设置自动停止生成',null,{sid});}}
+    if(f.level==='strong'&&prefs.monStop&&busy&&pageGenerating()&&!(f.kind==='think-mid'&&mon.bySid.get(sid)?.cur?.midText&&monGuardOn())){const b=document.querySelector('button[aria-label="Stop generating"],button[aria-label="Stop response"],button[aria-label="停止生成"]');if(b&&!b.disabled){b.click();log('warn','实时监控','已按设置自动停止生成',null,{sid});try{if(!gacha.quietTurn(sid))attn.raise(sid,'route','疑似换模型，已按设置自动停止生成：'+f.text);}catch{}}}
   }
   // 事件驱动读取：首步 / 疑点最短 2.5 秒，普通新步骤 5 秒起、长回复逐步放慢到 16 秒；每轮最多 90 次，遵守限流冷却
   function monKick(sid,why){
@@ -7880,10 +8116,12 @@ details.mc-card .section.credits{margin-top:12px}
   // 同一模型家族（忽略档位 / -thinking 等后缀）：档位变化单独提示，不算换模型
   const MON_TX=/-(none|minimal|low|medium|high|xhigh|max|thinking)$/,famKey=n=>n?brand.canon(n).replace(MON_TX,''):'',famEq=(a,b)=>!!a&&!!b&&(forceEq(a,b)||famKey(a)===famKey(b));
   const monFamSame=(a,b)=>famEq(a.internal||forceBest(a),b.internal||forceBest(b)),tierName=n=>brand.tierOf(n)||'默认';
+  // v1.11.85 拖动按帧合并：一帧只处理最后一个位置（以前每个 pointermove 都改宽度、量尺寸，一帧里重复排版好几次，拖起来一顿一顿）
   function dragger(handle,hooks){
-    handle.addEventListener('pointerdown',e=>{if(e.button!==0)return;e.preventDefault();const start=hooks.start(e);if(!start)return;try{handle.setPointerCapture(e.pointerId);}catch{}handle.dataset.active='';const shield=el('div','drag-shield',null,handle.getRootNode());let moved=false;
-      const move=ev=>{if(Math.abs(ev.clientX-start.x)>2)moved=true;if(moved)hooks.move(ev,start);},up=ev=>{handle.removeEventListener('pointermove',move);handle.removeEventListener('pointerup',up);handle.removeEventListener('pointercancel',up);delete handle.dataset.active;shield.remove();if(moved)hooks.end(ev,start);else hooks.tap?.(ev);};
-      handle.addEventListener('pointermove',move);handle.addEventListener('pointerup',up);handle.addEventListener('pointercancel',up);});
+    handle.addEventListener('pointerdown',e=>{if(e.button!==0)return;e.preventDefault();const start=hooks.start(e);if(!start)return;try{handle.setPointerCapture(e.pointerId);}catch{}handle.dataset.active='';const shield=el('div','drag-shield',null,handle.getRootNode());let moved=false,last=null,raf=0,done=false;
+      const flush=()=>{raf=0;if(last){const ev=last;last=null;hooks.move(ev,start);}};
+      const move=ev=>{if(!moved&&Math.abs(ev.clientX-start.x)>2){moved=true;try{hooks.begin?.(ev,start);}catch{}}if(!moved)return;last=ev;if(!raf)raf=requestAnimationFrame(flush);},up=ev=>{if(done)return;done=true;handle.removeEventListener('pointermove',move);handle.removeEventListener('pointerup',up);handle.removeEventListener('pointercancel',up);handle.removeEventListener('lostpointercapture',up);if(raf){cancelAnimationFrame(raf);raf=0;}if(moved&&last)flush();delete handle.dataset.active;shield.remove();if(moved)hooks.end(ev,start);else if(ev.type==='pointerup')hooks.tap?.(ev);};
+      handle.addEventListener('pointermove',move);handle.addEventListener('pointerup',up);handle.addEventListener('pointercancel',up);handle.addEventListener('lostpointercapture',up);});
     handle.addEventListener('dblclick',e=>{e.preventDefault();hooks.reset();});
   }
   // 把没有拖动的单击转发给被遮住的元素（Arena 侧栏边缘自带的折叠按钮）
@@ -8239,8 +8477,19 @@ details.mc-card .section.credits{margin-top:12px}
     const panel=el('section','panel',null,root),resizer=el('div','resizer',null,panel);resizer.title='拖动调整宽度，双击恢复';const sheetGrip=el('div','sheet-grip',null,panel);el('i','',null,sheetGrip);sheetGrip.title='上下拖动调整高度（对话像输入法弹出时一样被顶上去，不会被盖住），停在哪都可以：顶到最上面全屏，拉到最底收起；轻点切换全屏';
     dragger(resizer,{start:e=>({x:e.clientX,width:host.getBoundingClientRect().width}),move:(e,s)=>{const w=clamp(s.width+(s.x-e.clientX),280,Math.max(280,Math.min(720,innerWidth-480)),prefs.width);host.style.setProperty('--amp-width',w+'px');prefs.width=w;},end:()=>{savePrefs();paint();},reset:()=>{prefs.width=340;host.style.setProperty('--amp-width','340px');savePrefs();paint();}});
     const grip=el('div','grip',null,gripRoot);grip.hidden=true;grip.title='拖动调整 Arena 会话栏宽度，双击恢复';
-    dragger(grip,{start:e=>{const sb=findSidebar();if(!sb?.panel)return null;return {x:e.clientX,width:sidebarWidth(sb)};},move:(e,s)=>{const w=clamp(s.width+(e.clientX-s.x),200,Math.max(200,Math.min(560,innerWidth-640)),s.width);prefs.sidebarWidth=w;applySidebar(w);placeGrip();},end:()=>{savePrefs();log('debug','侧栏','Arena 会话栏宽度 '+prefs.sidebarWidth+'px');paint();},reset:()=>{prefs.sidebarWidth=null;applySidebar(null);savePrefs();placeGrip();},tap:e=>forwardTap(grip,e)});
-    function placeGrip(){const sb=innerWidth>=768?applySidebar(prefs.sidebarWidth):null,panelEl=sb?.panel;if(!panelEl||sb.peer&&sb.peer.dataset.state&&sb.peer.dataset.state!=='expanded'){grip.hidden=true;return;}const rect=panelEl.getBoundingClientRect();if(rect.width<120||rect.height<100){grip.hidden=true;return;}grip.hidden=false;grip.style.left=(rect.right-3)+'px';grip.style.top=rect.top+'px';grip.style.height=rect.height+'px';}
+    // v1.11.85 拖侧栏宽度更跟手：开始时找一次侧栏、量一次；拖动中每帧只改 --sidebar-width（关掉 Arena 侧栏自带的 200ms 宽度过渡，不再追着指针慢慢动），
+    // 拖动条自己用 transform 跟着指针（不量尺寸、不触发排版）；页面排版太慢时宽度隔几帧改一次，拖动条照样每帧跟手。松手后再量一次摆正。
+    let sbDrag=null;
+    const sbSet=d=>{const v=d.w+'px';d.at=performance.now();if(d.sb.wrapper.isConnected&&d.sb.wrapper.style.getPropertyValue('--sidebar-width')!==v){d.sb.wrapper.style.setProperty('--sidebar-width',v);const t0=d.at;requestAnimationFrame(()=>{const c=performance.now()-t0;d.avg=d.avg?d.avg*.7+c*.3:c;});}};
+    const sbDragCss=()=>{if(document.getElementById('amp-sbdrag-css')||!document.head)return;const st=document.createElement('style');st.id='amp-sbdrag-css';st.textContent='html[data-amp-sbdrag] [data-side][data-state],html[data-amp-sbdrag] [data-side][data-state]>*,html[data-amp-sbdrag] [data-side][data-state]~*,html[data-amp-sbdrag] [data-slot^="sidebar"],html[data-amp-sbdrag] [data-sidebar="sidebar"]{transition:none!important}';document.head.append(st);};
+    dragger(grip,{
+      start:e=>{const sb=findSidebar();if(!sb?.panel)return null;if(!sidebarOriginal.has(sb.wrapper))sidebarOriginal.set(sb.wrapper,sb.wrapper.style.getPropertyValue('--sidebar-width'));return {x:e.clientX,width:sidebarWidth(sb),sb};},
+      begin:(e,s)=>{sbDrag={sb:s.sb,w:s.width,at:0,avg:0,trail:0};sbDragCss();document.documentElement.setAttribute('data-amp-sbdrag',String(Date.now()));grip.style.willChange='transform';},
+      move:(e,s)=>{const d=sbDrag;if(!d)return;const w=clamp(s.width+(e.clientX-s.x),200,Math.max(200,Math.min(560,innerWidth-640)),s.width);if(w===d.w)return;d.w=w;prefs.sidebarWidth=w;grip.style.transform='translateX('+(w-s.width)+'px)';
+        const t=performance.now(),gap=d.avg>28?Math.min(120,d.avg*1.5):0;if(t-d.at>=gap){if(d.trail){clearTimeout(d.trail);d.trail=0;}sbSet(d);}else if(!d.trail)d.trail=setTimeout(()=>{d.trail=0;if(sbDrag===d)sbSet(d);},gap-(t-d.at));},
+      end:()=>{const d=sbDrag;sbDrag=null;if(d?.trail)clearTimeout(d.trail);document.documentElement.removeAttribute('data-amp-sbdrag');grip.style.transform='';grip.style.willChange='';if(d)prefs.sidebarWidth=d.w;applySidebar(prefs.sidebarWidth);placeGrip();savePrefs();log('debug','侧栏','Arena 会话栏宽度 '+prefs.sidebarWidth+'px');paint();},
+      reset:()=>{prefs.sidebarWidth=null;applySidebar(null);savePrefs();placeGrip();},tap:e=>forwardTap(grip,e)});
+    function placeGrip(){if(sbDrag)return;const sb=innerWidth>=768?applySidebar(prefs.sidebarWidth):null,panelEl=sb?.panel;if(!panelEl||sb.peer&&sb.peer.dataset.state&&sb.peer.dataset.state!=='expanded'){grip.hidden=true;return;}const rect=panelEl.getBoundingClientRect();if(rect.width<120||rect.height<100){grip.hidden=true;return;}grip.hidden=false;grip.style.left=(rect.right-3)+'px';grip.style.top=rect.top+'px';grip.style.height=rect.height+'px';}
     const compactBar=el('div','compact-bar',null,panel),compactTop=el('div','compact-top',null,compactBar),compactName=el('span','compact-name mono','模型信息',compactTop);
     {const eb=button(compactTop,'','导出当前页的记录',()=>void exportView(),'sheet-btn');icon('download',eb);}
     const compactToggle=button(compactTop,'','收起模型信息',()=>{expanded=false;render();},'sheet-btn');icon('close',compactToggle);
@@ -8403,6 +8652,10 @@ details.mc-card .section.credits{margin-top:12px}
       }
       if(count)log('debug','本地标题','更新 '+count+' 个会话标题的本地显示');
     }
+    // v1.11.85 侧栏卡片被 React 重建时，在画出来之前就把本地标题挂回去（以前要等下一轮 attach，最多 0.5 秒里先露出 Arena 原标题）
+    sideNow.set('lt',()=>{if(!stopped)localTitles();});
+    // v1.11.85 侧栏排序直接问本地标题（和 localTitles 同一套规则）：卡片刚被 React 重建、本地标题还没挂上时也按同一个名字排，不先乱再跳回
+    brand.hint.title=sid=>{try{if(!catalog.persistent)return '';if(gacha.ownsTitle(sid)){const p=gacha.pendingTitle(sid);if(!p)return '';try{if(gachaSlot.view(sid))return '';}catch{}return noteBase(p);}const record=catalog.entries.get(sid);if(!record?.title||record.temporary)return '';return noteBase(withVendor(sid,record,prefs.showSeq?record.title:(record.name?.name||String(record.title).replace(/^#\d+\s*/,''))||record.title)||'');}catch{return '';}};
     // ---------------- v1.11.83 卡片按钮：Rename → 备注（Arena 自带的重命名停用），Archive → 归档 ----------------
     // 两种摆法都认：卡片上直接的图标按钮（aria-label / title / 文字是 Rename / Archive），或卡片“更多”菜单里的菜单项（Radix，挂在 body 下）。
     // 菜单一出现就在同一帧里换字（MutationObserver，画出来之前），不会先闪一下英文。点「备注」：拦下 Arena 自己的重命名、关掉菜单，
@@ -8638,7 +8891,8 @@ details.mc-card .section.credits{margin-top:12px}
       float((ok?m.right:vw)-56-(entry.offsetWidth||32),(ok?Math.max(0,m.top):0)+12);
     }
     function attach(){
-      if(stopped||!document.body)return;const cooling=Date.now()<cooldown;if(cooling!==lastCooling){lastCooling=cooling;paint();}const main=document.querySelector('main'),ready=document.readyState==='complete'||!!document.querySelector('next-route-announcer'); // v1.11.73 React 水合完成即可（Next.js 在提交后插入 next-route-announcer），不再等 load（手机上常晚好几秒）
+      // v1.11.85 拖侧栏宽度时先不摆放（松手后马上补一次）
+      if(stopped||!document.body||sbDragging())return;const cooling=Date.now()<cooldown;if(cooling!==lastCooling){lastCooling=cooling;paint();}const main=document.querySelector('main'),ready=document.readyState==='complete'||!!document.querySelector('next-route-announcer'); // v1.11.73 React 水合完成即可（Next.js 在提交后插入 next-route-announcer），不再等 load（手机上常晚好几秒）
       entry.hidden=!/^\/agent(?:\/|$)/.test(location.pathname);
       const gem0=gemOn(),anchor=ready?themeAnchor(gem0):null;placeEntry(anchor,gem0);
       {const g=gemOn();document.documentElement.toggleAttribute('data-amp-gem',g);document.documentElement.toggleAttribute('data-amp-dgem',deskGemOn());document.documentElement.toggleAttribute('data-amp-modehide',modeSideOn());document.documentElement.toggleAttribute('data-amp-wsr',prefs.wsRight!==false);document.documentElement.toggleAttribute('data-amp-wspre',g&&prefs.wsEdge!==false);document.documentElement.toggleAttribute('data-amp-docpre',!!prefs.hideDocIcon);if(g&&anchor){if(anchor.nextSibling!==avatarHost)anchor.after(avatarHost);avatarHost.hidden=false;paintAvatar();loadMe();}else if(avatarHost.isConnected)avatarHost.remove();syncMode();wsSync();if(!drawerMoOn&&document.body){drawerMoOn=true;drawerMo.observe(document.body,{childList:true});}}
@@ -9246,7 +9500,9 @@ details.mc-card .section.credits{margin-top:12px}
   let hdrShown=null;
   const mountAll=()=>{mount();mountBar();gachaUi.mount();};
   if(document.body)mountAll();else{const observer=new MutationObserver(()=>{if(document.body){observer.disconnect();mountAll();}});observer.observe(document.documentElement||document,{childList:true,subtree:true});}
-  const routeTimer=setInterval(()=>{if(location.pathname!==lastRoute){lastRoute=location.pathname;paint();}ui?.attach();bar?.sync();},500);
+  // v1.11.85 正在拖侧栏宽度（标记里是开始时间；超过 60 秒当作没清掉的残留，直接去掉）
+  function sbDragging(){const v=document.documentElement.getAttribute('data-amp-sbdrag');if(v===null)return false;if(Date.now()-(+v||0)<60000)return true;document.documentElement.removeAttribute('data-amp-sbdrag');return false;}
+  const routeTimer=setInterval(()=>{if(location.pathname!==lastRoute){lastRoute=location.pathname;paint();}if(!sbDragging()){ui?.attach();bar?.sync();}},500);
   // v1.11.73 启动 / 切换对话时不再干等 500ms 轮询：DOM 一有变化就在下一帧挂载（最多 100ms 一次），页面一次成形，不再一块块跳
   let fastUntil=Date.now()+20000,fastT=0,fastLast=0,fastPath=location.pathname;
   const fastRun=()=>{fastT=0;fastLast=performance.now();try{ui?.attach();}catch{}try{bar?.sync();}catch{}};
@@ -9281,7 +9537,7 @@ details.mc-card .section.credits{margin-top:12px}
   }
   window.addEventListener('amp:account',()=>accountReset('登录账号变化'));
   try{if(localStorage.getItem('amp.account.dirty')){localStorage.removeItem('amp.account.dirty');setTimeout(()=>accountReset('切换后首次加载'),800);}}catch{}
-  window.__AMP_LITE__.mon={state:sid=>mon.bySid.get(sid||sidOf(location.href))||null,verdict:sid=>monState(sid||sidOf(location.href)),tick:monTick,kick:monKick};window.__AMP_LITE__.gacha={start:()=>gacha.start(),stop:gacha.stop,state:gacha.state,peek:gacha.peek,settings:gacha.settings,followModel:gacha.followModel,quietTurn:gacha.quietTurn};window.__AMP_LITE__.usd=()=>usd?{...usd}:null;window.__AMP_LITE__.usdNow=()=>{const u=usdNow();return u?{...u}:null;};window.__AMP_LITE__.pulseTurn=sid=>{const t=pulseTurnFor(sid||sidOf(location.href),NaN);return t?{...t}:null;};window.__AMP_LITE__.pulseRatio=()=>ui?.pulseRatio?.()||null;window.__AMP_LITE__.pulse=()=>pulse?{...pulse}:null;window.__AMP_LITE__.notes={all:()=>JSON.parse(JSON.stringify(Object.fromEntries(notes))),title:sid=>noteTitle(sid||sidOf(location.href)),set:(sid,t)=>noteSet(sid,t),sent:(sid,at)=>noteSent(sid,at),tick:()=>noteTick(true),edit:sid=>ui?.noteEdit?.(sid)};
+  window.__AMP_LITE__.mon={state:sid=>mon.bySid.get(sid||sidOf(location.href))||null,verdict:sid=>monState(sid||sidOf(location.href)),tick:monTick,kick:monKick};window.__AMP_LITE__.attn={all:()=>attn.all(),raise:(s,k,t)=>attn.raise(s,k,t),clear:s=>attn.clear(s)};window.__AMP_LITE__.gacha={start:()=>gacha.start(),stop:gacha.stop,state:gacha.state,peek:gacha.peek,settings:gacha.settings,followModel:gacha.followModel,quietTurn:gacha.quietTurn};window.__AMP_LITE__.usd=()=>usd?{...usd}:null;window.__AMP_LITE__.usdNow=()=>{const u=usdNow();return u?{...u}:null;};window.__AMP_LITE__.pulseTurn=sid=>{const t=pulseTurnFor(sid||sidOf(location.href),NaN);return t?{...t}:null;};window.__AMP_LITE__.pulseRatio=()=>ui?.pulseRatio?.()||null;window.__AMP_LITE__.pulse=()=>pulse?{...pulse}:null;window.__AMP_LITE__.notes={all:()=>JSON.parse(JSON.stringify(Object.fromEntries(notes))),title:sid=>noteTitle(sid||sidOf(location.href)),set:(sid,t)=>noteSet(sid,t),sent:(sid,at)=>noteSent(sid,at),tick:()=>noteTick(true),edit:sid=>ui?.noteEdit?.(sid)};
   log('debug','初始化','v'+VERSION+' 已就绪');
   // 存储自检：写入/读回一个测试键，失败时在日志里给出明确提示（保存无效的常见原因：存储已满、隐私模式、站点数据被清理）。
   try{const t='amp.selftest',v=String(Date.now()),ok=ampStore.set(t,v)&&localStorage.getItem(t)===v;try{localStorage.removeItem(t);}catch{}const u=ampStore.usage();log(ok?'debug':'info','存储',(ok?'本地存储正常':'本地存储不可写，设置将无法保存')+' · 已用约 '+Math.round(u.total/1024)+' KB（本脚本 '+Math.round(u.ours/1024)+' KB）');}catch{}
