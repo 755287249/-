@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         油猴脚本-额度大的用额度小的没必要用-Arena Native Suite
 // @namespace    local.amp.native
-// @version      1.11.83
+// @version      1.11.84
 // @description  【测试版】Arena 原生
 // @match        https://arena.ai/*
 // @run-at       document-start
@@ -15,7 +15,7 @@
 'use strict';
 // Only one copy may run; installing this next to the original Lite script would double-hook fetch.
 if (window.__AMP_NATIVE_SUITE__) return;
-try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.83' }); } catch {}
+try { Object.defineProperty(window, '__AMP_NATIVE_SUITE__', { value: '1.11.84' }); } catch {}
 // Claude 内部型号几乎都带 -vertex（渠道标记），默认不写进对话名/显示名
 // v1.11.78 “-public”也是部署标记（grok-4.7-xhigh-public）：和 -vertex 一样不显示，档位才能识别出来（xhigh）
 const noVertex = n => typeof n === 'string' ? n.replace(/-vertex(?=$|[-_\s·])/ig, '').replace(/-public(?=$|[\s·])/ig, '') : n;
@@ -5996,7 +5996,7 @@ const gachaUi = (() => {
 
 (function () {
   'use strict';
-  const VERSION = 'native-1.11.83', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
+  const VERSION = 'native-1.11.84', KEY = 'amp.lite.v2', DB_VERSION = 3, LEVELS = ['none','minimal','low','medium','high','xhigh','max'];
   // 每轮最多详读的模型调用数 / 内存保留完整原始数据的轮数 / 每轮持久化精简原始数据的上限
   const TURN_CALL_LIMIT = 16, RAW_KEEP = 3, RAW_PERSIST_BYTES = 262144;
   // 原始数据总预算可选档位（MB）、发送时间缓存条数、额度刷新最小间隔
@@ -6017,7 +6017,7 @@ const gachaUi = (() => {
     if (typeof token !== 'string' || token.length > 16384 || token.split('.').length !== 3) throw Error('运行令牌格式不符');
     let p; try { let s=token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'); s+='='.repeat((4-s.length%4)%4); p=JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(s),c=>c.charCodeAt(0)))); } catch { throw Error('运行令牌无法解码'); }
     if (p?.pub !== true || p.iss !== 'https://id.trigger.dev' || ![p.aud].flat().includes('https://api.trigger.dev')) throw Error('不是公开运行令牌');
-    if (!Number.isFinite(p.exp) || p.exp*1000 <= now+5000) throw Error('运行令牌已过期');
+    if (!Number.isFinite(p.exp) || p.exp*1000 <= now+5000) throw Object.assign(Error('运行令牌已过期'),{expired:true});
     const scopes=Array.isArray(p.scopes)?p.scopes:[], runs=scopes.filter(s=>typeof s==='string'&&s.startsWith('read:runs:'));
     const sessions=scopes.filter(s=>typeof s==='string'&&s.startsWith('read:sessions:')).map(s=>s.slice(14));
     const sid=expectedSid || (sessions.length===1?sessions[0]:null);
@@ -6476,7 +6476,9 @@ const gachaUi = (() => {
   const usdShape=u=>u&&typeof u==='object'&&finiteNum(u.allowanceUsd)&&finiteNum(u.balanceRemainingUsd)&&number(u.at)!==null?u:null;
   let usd=usdShape(load(KEY+'.usd',null));
   function noteUsd(r,p){
-    if(!r?.data||p.limited)return;
+    // v1.11.84 不再因为“本轮调用超过详读上限”（limited：超过 16 次调用或 4 条计费记录）就不记：Agent 模式一轮十几个 bash 步骤很常见，
+    // 以前这种轮次左下角美金永远不更新；最新一条计费记录总在 records 里（cost.slice(-4)），照样读得到
+    if(!r?.data)return;
     const costs=p.records.filter(e=>e.kind==='cost'),last=costs[costs.length-1];if(!last)return;
     const d=r.cache.get(last.id);if(!d?.available||d.partial||!d.usd)return;
     const u=d.usd;if(!finiteNum(u.allowanceUsd)||u.allowanceUsd<0||!finiteNum(u.balanceRemainingUsd))return;
@@ -6495,9 +6497,10 @@ const gachaUi = (() => {
   let pulseFit=load(PULSE_FIT,null);
   const pulseOkAt=()=>pulse&&Number.isInteger(pulse.pulse)?(pulse.okAt||(pulse.status==='ready'?pulse.checkedAt:0)||0):0;
   const pulseLimited=()=>pulse?.status==='rate-limited'&&Date.now()-(pulse.checkedAt||0)<600000;
-  // Pulse 数值本身的时间：服务端给的 refreshedAt（只认读取前 30 分钟以内的，更早的当作别的意思），没有就用读到它的时间
-  const pulseHasR=()=>{const t=pulseOkAt(),r=pulse?.refreshedAt;return !!t&&Number.isFinite(r)&&r<=t+120000&&r>=t-1800000;};
-  const pulseVT=()=>{const t=pulseOkAt();return t&&pulseHasR()?Math.min(t,pulse.refreshedAt):t;};
+  // Pulse 数值本身的时间 = 读到它的时间。v1.11.84：refreshedAt 是“下次额度重置的时间”（Arena 自己的代码把它当 resetAtUnixMs，
+  // Pulse 为 0 时到点再读），不是数值算出来的时间，不再拿它当数值时间
+  const pulseHasR=()=>false;
+  const pulseVT=()=>pulseOkAt();
   const usdRecAt=()=>usd?Math.min(usd.spanAt||usd.at,usd.at):0; // 计费记录的时间（不会晚于读到它的时间，防本机时钟偏慢）
   function pulseDue(){if(pulseLimited())return false;let hot=Date.now()<pulseHotUntil;if(!hot)try{hot=!!mon.bySid.get(sidOf(location.href))?.busy;}catch{}return !pulse||Date.now()-(pulse.checkedAt||0)>=(hot?PULSE_HOT:PULSE_IDLE);}
   async function refreshPulse(force=false){
@@ -6617,7 +6620,7 @@ button:hover{background:var(--raised);color:var(--fg)}button:focus-visible{outli
 svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var(--line);background:var(--bg);border-radius:12px;padding:4px 8px;box-shadow:0 1px 4px #0001}
 :host([data-collapsed]) .bar{display:none}:host([data-collapsed]) .pill{display:inline-flex;gap:6px}
 .detail{display:none;flex:none;margin-left:6px;height:18px;padding:0 8px;border-radius:9px;border:1px solid var(--line);color:var(--fg);font-size:11px}:host([data-mini]) .detail{display:inline-flex}:host([data-mini]) .bar{padding-right:6px}:host([data-mini]) .tools{display:none}:host([data-mini]) .bar{cursor:default}:host([data-mini]) .it[data-key=usd]{cursor:pointer}:host([data-mini]) .it{border-left:0;padding:0 8px}:host([data-mini]) .it:first-child{padding-left:0}:host([data-mini]) .meter{width:44px}
-.items>button.rf{flex:none;height:20px;min-width:20px;padding:0 4px;margin:0 4px 0 -5px}.items>button.rf svg{transition:transform .3s}.items>button.rf[data-spin] svg{animation:rfspin .8s linear infinite}@keyframes rfspin{to{transform:rotate(360deg)}}
+.items>button.rf{flex:none;height:20px;min-width:20px;padding:0 4px;margin:0 4px 0 -5px}.items>button.rf svg{transition:transform .3s}.items>button.rf[data-spin] svg{animation:rfspin .8s linear infinite}.items>button.rf[data-res=ok]{color:#16a34a}.items>button.rf[data-res=fail]{color:#dc2626}@keyframes rfspin{to{transform:rotate(360deg)}}
 .tools .ver{font-variant-numeric:tabular-nums;letter-spacing:.01em;opacity:.85}`;
     let sheet;try{sheet=new CSSStyleSheet();sheet.replaceSync(barCss);root.adoptedStyleSheets=[sheet];}catch{el('style','',barCss,root);}
     const wrap=el('div','bar',null,root),items=el('div','items',null,wrap),tools=el('div','tools',null,wrap);
@@ -6645,9 +6648,12 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     document.addEventListener('pointerdown',e=>{if(tip.hasAttribute('data-show')&&!e.composedPath().includes(host))tip.removeAttribute('data-show');},true);
     const pill=el('button','pill','',root);pill.title='展开底部信息栏';pill.onclick=()=>{prefs.barCollapsed=false;savePrefs();sync();};
     // v1.11.80 “立即刷新额度”挪到左边、紧挨着金额；右下角原来的“模型信息”按钮改成显示版本号（点一下看“关于”里的更新）
-    const refreshBtn=el('button','rf','');refreshBtn.title='立即刷新：Pulse、额度，并重读本对话的 Trace（美金计费记录）';refreshBtn.setAttribute('aria-label',refreshBtn.title);
+    const refreshBtn=el('button','rf','');refreshBtn.title='立即刷新：重读本对话的 Trace 取最新美金计费记录（令牌过期会自动换新）、Pulse 与额度';refreshBtn.setAttribute('aria-label',refreshBtn.title);
     refreshBtn.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>';
-    refreshBtn.onclick=e=>{e.stopPropagation();refreshBtn.setAttribute('data-spin','');setTimeout(()=>refreshBtn.removeAttribute('data-spin'),900);void refreshBalance(true);pulseReqAt=0;void refreshPulse(true);try{const r=selectedRun();if(r&&r.token&&!r.busy&&Date.now()>=cooldown){r.tries=0;r.finalReads=0;later(r,0,true);}}catch{}paint();};
+    // v1.11.84 ↻ 真正刷新（见 refreshAll）：转圈直到读完（最多 20 秒），结果写进按钮提示——绿色 = 有更新，红色 = 没读到；也记进日志
+    let rfResT=0;
+    refreshBtn.onclick=e=>{e.stopPropagation();if(refreshBtn.hasAttribute('data-spin'))return;const t0=Date.now();refreshBtn.setAttribute('data-spin','');refreshBtn.removeAttribute('data-res');clearTimeout(rfResT);
+      refreshAll().then(res=>{if(!res)return;refreshBtn.title=res.text+'\n点击再次刷新';refreshBtn.setAttribute('aria-label',res.text);refreshBtn.setAttribute('data-res',res.level);rfResT=setTimeout(()=>refreshBtn.removeAttribute('data-res'),6000);}).catch(()=>{}).finally(()=>{setTimeout(()=>{refreshBtn.removeAttribute('data-spin');paint();},Math.max(0,600-(Date.now()-t0)));});};
     const verBtn=el('button','ver','v'+String(VERSION).replace(/^native-/,''),tools);verBtn.title='Arena Native Suite 当前版本 · 点击查看版本与更新';verBtn.onclick=()=>ui?.show('about');
     const hideBtn=el('button','','',tools);hideBtn.title='收起底部信息栏';hideBtn.setAttribute('aria-label',hideBtn.title);
     hideBtn.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>';hideBtn.onclick=()=>{prefs.barCollapsed=true;savePrefs();sync();};
@@ -6667,7 +6673,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       const un=usdNow();
       if(un){const byP=un.src==='pulse',pct=un.allowanceUsd>0?un.balanceRemainingUsd/un.allowanceUsd*100:null,state=un.overLimit||un.balanceRemainingUsd<0?'low':pct===null?'':pct>=50?'good':pct>=20?'warn':'low';
         out.push(item('usd',state,[['meter',pct===null?0:Math.max(0,Math.min(100,pct))],['t','美金 '],['b',(byP?'≈':'')+fmtUsd(un.balanceRemainingUsd)],['t',' / '+fmtUsd(un.allowanceUsd)],['p',pct!==null?' · '+Math.round(pct)+'%':''],['t',un.overLimit?' · 已超限':'']],
-          (byP?'剩余按 Pulse '+un.pulse+'% × 总额度推算（Pulse 读取于 '+clock(un.pulseAt)+'，精度 1%）\n最近一条计费记录：剩余 '+exactUsd(un.recRemaining)+'（'+ago(un.recAt)+'）\n':'')+'美元额度（来自 Trace spend.recorded，最新一轮最后一条已结算记录）\n剩余 '+exactUsd(usd.balanceRemainingUsd)+'\n总额度 '+exactUsd(usd.allowanceUsd)+(usd.chargedUserTotalUsd!==null?'\n窗口内已计费 '+exactUsd(usd.chargedUserTotalUsd):'')+(usd.allowanceTier?'\n档位 '+usd.allowanceTier:'')+(usd.allowanceSource?'\n来源 '+usd.allowanceSource:'')+(usd.windowStartAtMs?'\n窗口开始 '+new Date(usd.windowStartAtMs).toLocaleString('zh-CN',{hour12:false}):'')+(usd.chargedUsd!==null?'\n该条计费 '+exactUsd(usd.chargedUsd):'')+'\n记录于 '+new Date(usd.at).toLocaleString('zh-CN',{hour12:false})+'（'+ago(usd.at)+'）\n计费记录在读到新一轮时才更新；Pulse 是服务端实时值，比记录新时按它推算'+(un.mismatch?'\nPulse '+un.pulse+'% 与计费记录对不上，暂不按 Pulse 推算':''),null));
+          (byP?'剩余按 Pulse '+un.pulse+'% × 总额度推算（Pulse 读取于 '+clock(un.pulseAt)+'，精度 1%）\n最近一条计费记录：剩余 '+exactUsd(un.recRemaining)+'（'+ago(un.recAt)+'）\n':'')+'美元额度（来自 Trace spend.recorded，最新一轮最后一条已结算记录）\n剩余 '+exactUsd(usd.balanceRemainingUsd)+'\n总额度 '+exactUsd(usd.allowanceUsd)+(usd.chargedUserTotalUsd!==null?'\n窗口内已计费 '+exactUsd(usd.chargedUserTotalUsd):'')+(usd.allowanceTier?'\n档位 '+usd.allowanceTier:'')+(usd.allowanceSource?'\n来源 '+usd.allowanceSource:'')+(usd.windowStartAtMs?'\n窗口开始 '+new Date(usd.windowStartAtMs).toLocaleString('zh-CN',{hour12:false}):'')+(usd.chargedUsd!==null?'\n该条计费 '+exactUsd(usd.chargedUsd):'')+'\n记录于 '+new Date(usd.at).toLocaleString('zh-CN',{hour12:false})+'（'+ago(usd.at)+'）\n计费记录在读到新一轮时才更新；Pulse 是服务端实时值，比记录新时按它推算'+(pulse?.refreshedAt>now?'\n额度重置于 '+new Date(pulse.refreshedAt).toLocaleString('zh-CN',{hour12:false}):'')+'\n点右边 ↻ 立即重读'+(un.mismatch?'\nPulse '+un.pulse+'% 与计费记录对不上，暂不按 Pulse 推算':''),null));
       }else out.push(item('usd','',[['t','美金 '],['b','—'],['t',' / —']],'尚无美元额度快照（剩余 / 总额度）：完成一轮对话后，从该轮 Trace 的计费记录读取；切换到没有记录的账号时也会先显示 —',null));
       if(!mini){let sb=null;try{sb=ui?.spendBrief?.()||null;}catch{}if(sb)out.push(item('spend','',[['t','本对话 '],['b',sb.text]],sb.title,()=>ui?.show('overview')));}
       // v1.11.82 Pulse（GET /api/me/pulse，0–100 的整数）= 剩余额度百分比的实时值：已经并进美金一项（百分比就是它）时不再单独显示；
@@ -6675,9 +6681,10 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       const pulseSame=!!un&&un.pulse!==undefined&&!un.mismatch&&pulse?.status==='ready';
       if(pulse&&!mini&&!pulseSame){const ok=typeof pulse.pulse==='number',state=!ok?'':pulse.pulse>=50?'good':pulse.pulse>=20?'warn':'low';
         out.push(item('pulse',pulse.status==='ready'?state:'',[['t','脉冲额度 '],['b',ok?pulse.pulse+'%':'—'],['t',pulse.status!=='ready'?' · '+({'signed-out':'未登录',forbidden:'无权限','rate-limited':'限流',timeout:'超时','network-error':'网络错误','server-error':'服务错误',invalid:'格式异常'}[pulse.status]||pulse.status):'']],
-          '脉冲额度（Arena Pulse，GET /api/me/pulse）· 剩余额度百分比的服务端实时值'+(un?.mismatch?'；与美金计费记录对不上，分开显示':un?'':'；还没有美金额度记录（完成一轮后显示“剩余 / 总额度”）')+' · 空闲 5 分钟读一次，进行中每分钟一次，点击立即刷新'+(pulse.refreshedAt?'\n服务端刷新于 '+new Date(pulse.refreshedAt).toLocaleString('zh-CN',{hour12:false}):'')+'\n读取于 '+clock(pulse.checkedAt),()=>void refreshPulse(true)));
+          '脉冲额度（Arena Pulse，GET /api/me/pulse）· 剩余额度百分比的服务端实时值'+(un?.mismatch?'；与美金计费记录对不上，分开显示':un?'':'；还没有美金额度记录（完成一轮后显示“剩余 / 总额度”）')+' · 空闲 5 分钟读一次，进行中每分钟一次，点击立即刷新'+(pulse.refreshedAt?'\n额度重置于 '+new Date(pulse.refreshedAt).toLocaleString('zh-CN',{hour12:false}):'')+'\n读取于 '+clock(pulse.checkedAt),()=>{pulseReqAt=0;void refreshPulse(true);}));
       }
-      if(balance){const stale=balance.refreshAt&&balance.refreshAt<=now,used=balance.daily?(balance.daily-balance.remaining)/balance.daily:0;
+      // v1.11.84 Arena 现在的前端已经不读 /api/billing/balance（额度表关掉了）：连续读不到、手上还是 6 小时前的旧数时不再显示
+      if(balance&&!(balanceFail>=2&&now-balance.at>21600000)){const stale=balance.refreshAt&&balance.refreshAt<=now,used=balance.daily?(balance.daily-balance.remaining)/balance.daily:0;
         out.push(item('credits',balance.remaining<=0&&!stale?'low':used>=0.5?'warn':'',[['t','额度 '],['b',balance.remaining.toLocaleString('zh-CN')+(balance.daily!==null?'/'+balance.daily.toLocaleString('zh-CN'):'')],['t',balance.refreshAt&&balance.refreshAt>now?' · '+until(balance.refreshAt,now).trim()+'重置':stale?' · 待刷新':'']],
           'GET /api/billing/balance（credits）· 读取于 '+clock(balance.at)+(balance.refreshAt?'\n重置时间 '+new Date(balance.refreshAt).toLocaleString('zh-CN',{hour12:false}):''),()=>void refreshBalance(true)));
       }
@@ -6779,20 +6786,111 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     return {...trace,events:ev.filter(e=>{const at=toMs(e?.startTime);return at!==null&&owner(at)===r.sid;})};
   }
   function accept(token,sid){
-    let auth;try{auth=authorized(token,sid);}catch(e){log('warn','权限',e.message,null,{sid});return;}
+    // v1.11.84 返回对应的运行（换新令牌后要接着读）；过期令牌（流里重放的旧令牌很常见）只记调试日志
+    let auth;try{auth=authorized(token,sid);}catch(e){log(e.expired?'debug':'warn','权限',e.message,null,{sid});return null;}
     let r=runs.get(auth.runId);
     if(r&&r.sid!==auth.sid){
-      if(r.rejectedToken===token)return;
+      if(r.rejectedToken===token)return null;
       // 同一个运行换了对话：记下分界（服务端时间，不用本机时钟），上一个对话的记录到此冻结，新对话单独记录
       {const L=shareLog.get(auth.runId)||[{sid:r.sid,from:null}];L.push({sid:auth.sid,from:r.newest||null,at:Date.now()});while(L.length>12)L.splice(1,1);shareLog.delete(auth.runId);shareLog.set(auth.runId,L);while(shareLog.size>16)shareLog.delete(shareLog.keys().next().value);}
       log('warn','权限','同一个运行换了对话（'+String(r.sid).slice(0,8)+' → '+String(auth.sid).slice(0,8)+'）：按对话分开记录，互不串台',null,{sid:auth.sid,runId:auth.runId});
       clearTimeout(r.timer);r.abort?.abort();r.token=null;runs.delete(auth.runId);r=null;
     }
-    if(r){if(r.rejectedToken===token)return;if(r.token!==token){r.token=token;r.expires=auth.expires;log('debug','权限','运行令牌已更新',null,r);if(r.phase!=='已读取'){r.tries=0;later(r);}}return;}
+    if(r){if(r.rejectedToken===token)return null;if(r.token!==token){r.token=token;r.expires=auth.expires;log('debug','权限','运行令牌已更新',null,r);if(r.phase!=='已读取'){r.tries=0;later(r);}}return r;}
     const pending=submissions.get(auth.sid)||(pendingNew&&Date.now()-pendingNew.at<15000?pendingNew:null);
     r={...auth,token,revision:pending?.revision||++revision,requestConfigs:pending?.configs||[],prompt:pending?.prompt||null,submittedAt:pending?.at||null,baseline:null,markers:0,seen:new Set(),newest:null,tries:0,finalReads:0,busy:false,timer:null,abort:null,cache:new Map(),rawSpans:new Map(),rawTrace:[],missing:new Map(),probe:null,data:null,credits:costOf(auth.sid).credits,phase:'等待 Trace'};
     runs.set(auth.runId,r);while(runs.size>8){const [id,old]=runs.entries().next().value;clearTimeout(old.timer);old.abort?.abort();old.token=null;runs.delete(id);}
     pendingNew=null;log('detail','权限','检测到运行令牌 · '+r.runId+' · 有效期至 '+new Date(r.expires).toLocaleTimeString('zh-CN'),null,r);later(r,gFast()?500:1600);paint();
+    return r;
+  }
+  // ---------------- v1.11.84 刷新：换新运行令牌 / 计费记录补读 / 多标签页同步 / 手动刷新（左下角 ↻）----------------
+  // Trigger.dev 的运行令牌寿命很短。Arena 页面自己在令牌过期（401）时调 POST /api/chat/trigger-token {sessionId} → {token} 换新，
+  // 所以刷新页面后美金就对了；脚本以前只会拿旧令牌重读（过期就静默失败），↻ 等于没按。这里照页面的做法换新。
+  // 同一个对话 30 秒内最多换一次（手动刷新 10 秒）；换到的令牌照常走 accept（校验会话 / 运行权限）
+  const renewAt=new Map(),renewing=new Map(),tokenLeft=r=>r?.token&&r.expires?r.expires-Date.now():0;
+  function renewToken(sid,why,manual=false){
+    if(!sid||stopped||!enabled||!/^[\w-]{8,128}$/.test(sid))return Promise.resolve(null);
+    if(renewing.has(sid))return renewing.get(sid);
+    if(Date.now()-(renewAt.get(sid)||0)<(manual?10000:30000))return Promise.resolve(null);
+    renewAt.delete(sid);renewAt.set(sid,Date.now());while(renewAt.size>40)renewAt.delete(renewAt.keys().next().value);
+    const job=(async()=>{const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),15000);
+      try{
+        const res=await rawFetch(location.origin+'/api/chat/trigger-token',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({sessionId:sid}),credentials:'same-origin',cache:'no-store',signal:ctrl.signal});
+        if(!res.ok){log('detail','权限','换新运行令牌失败 · HTTP '+res.status+'（'+why+'）',null,{sid});return null;}
+        let j=null;try{j=await res.json();}catch{}
+        const t=typeof j?.token==='string'?j.token:typeof j?.publicAccessToken==='string'?j.publicAccessToken:null;
+        if(!t||t.length>8192){log('detail','权限','换新运行令牌：响应里没有令牌（'+why+'）',null,{sid});return null;}
+        const r=accept(t,sid);if(r)log('detail','权限','已换新运行令牌（'+why+'）· 有效期至 '+new Date(r.expires).toLocaleTimeString('zh-CN'),null,r);
+        return r;
+      }catch(e){log('detail','权限','换新运行令牌失败（'+why+'）',ctrl.signal.aborted?null:e,{sid});return null;}
+      finally{clearTimeout(timer);renewing.delete(sid);}
+    })();
+    renewing.set(sid,job);return job;
+  }
+  // spend.recorded 有时在流结束之后才写进 Trace：结束时的两次读取会错过它，美金就停在上一轮。
+  // 流结束后 25 秒 / 70 秒 / 160 秒再各读一次，读到本对话的新计费记录就停；令牌快过期先换新。抽卡进行中不补读（免得触发 Trigger.dev 限流）
+  const chase=new Map();
+  function usdChase(sid){
+    if(!sid||gFast())return;const prev=chase.get(sid);if(prev)clearTimeout(prev.timer);
+    const since=Math.max(0,...[...runs.values()].filter(r=>r.sid===sid).map(r=>r.submittedAt||0))||Date.now()-600000;
+    const st={since,span:usd?.spanId||null,i:0,timer:0};chase.set(sid,st);while(chase.size>12){const [k,v]=chase.entries().next().value;clearTimeout(v.timer);chase.delete(k);}
+    const got=()=>!!usd&&usd.sid===sid&&usd.spanId!==st.span&&(usd.spanAt||usd.at||0)>=st.since-5000;
+    const step=()=>{const d=[25000,70000,160000][st.i++];if(d===undefined){chase.delete(sid);return;}
+      st.timer=setTimeout(async()=>{
+        if(stopped||!enabled||chase.get(sid)!==st)return;if(got()){chase.delete(sid);return;}
+        let r=[...runs.values()].filter(x=>x.sid===sid).at(-1)||null;
+        if(!r||tokenLeft(r)<20000)r=await renewToken(sid,'补读计费记录')||r;
+        if(chase.get(sid)!==st)return;
+        if(r&&tokenLeft(r)>5000&&Date.now()>=cooldown&&!r.busy){r.finalReads=Math.min(r.finalReads,1);log('debug','Trace','补读计费记录（流结束后第 '+st.i+' 次）',null,r);later(r,0,true);}
+        step();
+      },d);};
+    step();
+  }
+  // 多标签页：计费记录 / Pulse / 额度都存在同一个 localStorage 里；别的标签页读到更新的就换上（以前要刷新页面才看得到）
+  function syncShared(){
+    let hit=false;
+    try{const u=usdShape(load(KEY+'.usd',null));if(u&&(!usd||u.spanId!==usd.spanId&&(u.spanAt||u.at||0)>=(usd.spanAt||usd.at||0))){usd=u;hit=true;}}catch{}
+    try{const q=pulseShape(load(KEY+'.pulse',null));if(q&&(!pulse||(q.checkedAt||0)>(pulse.checkedAt||0))){pulse=q;hit=true;}}catch{}
+    try{const f=load(PULSE_FIT,null);if(f&&typeof f==='object'&&(f.at||0)>(pulseFit?.at||0)){pulseFit=f;hit=true;}}catch{}
+    try{const b=balanceShape(load(KEY+'.balance',null));if(b&&(!balance||b.at>balance.at)){balance=b;hit=true;}}catch{}
+    return hit;
+  }
+  // 手动刷新本对话的 Trace：没有令牌 / 快过期先换新，然后立即重读（正在读就等它读完再读一次）
+  async function traceRefresh(){
+    const sid=sidOf(location.href)||[...runs.values()].at(-1)?.sid||null;if(!sid)return {ok:false,why:'不在对话页'};
+    let r=[...runs.values()].filter(x=>x.sid===sid).at(-1)||null;
+    if(!r||tokenLeft(r)<20000){const n=await renewToken(sid,'手动刷新',true);if(n)r=n;}
+    if(!r||tokenLeft(r)<=5000)return {ok:false,why:r?'读取令牌已过期，换新没成功':'还没有这个对话的读取令牌，获取没成功'};
+    if(Date.now()<cooldown)return {ok:false,why:'Trigger.dev 限流冷却中（'+Math.ceil((cooldown-Date.now())/1000)+' 秒后再读）'};
+    for(let i=0;i<60&&r.busy;i++)await new Promise(res=>setTimeout(res,250));
+    if(r.busy)return {ok:false,why:'上一次读取还没结束'};
+    clearTimeout(r.timer);r.timer=null;r.tries=0;r.finalReads=0;
+    await poll(r,true);
+    return {ok:!['Trace 读取失败','权限失效','令牌过期','限流暂停'].includes(r.phase),why:r.phase||'未知'};
+  }
+  // 左下角 ↻：刷新页面时数据会做的事一次做完——接上别的标签页的新记录 → 同时读 Pulse、额度、本对话 Trace（取最新计费记录）→ 汇总结果
+  let refreshing=null;
+  function refreshAll(){
+    if(refreshing)return refreshing;
+    const b={id:usd?.spanId||null,rem:usd?.balanceRemainingUsd,p:pulse?.status==='ready'?pulse.pulse:null,t0:Date.now()},hm=t=>new Date(t).toLocaleTimeString('zh-CN',{hour12:false});
+    refreshing=(async()=>{
+      if(syncShared())paint();
+      const pulseJob=(async()=>{for(let i=0;i<40&&pulseBusy;i++)await new Promise(res=>setTimeout(res,200));pulseReqAt=0;await refreshPulse(true);})();
+      const jobs=[refreshBalance(true).catch(()=>{}),pulseJob.catch(()=>{}),traceRefresh().catch(e=>({ok:false,why:errorText(e)}))];
+      const all=await Promise.race([Promise.all(jobs),new Promise(res=>setTimeout(()=>res(null),20000))]);
+      const tr=all?.[2]||{ok:false,why:'超时（20 秒）'};syncShared();
+      const u=usd,changed=!!u&&u.spanId!==b.id,pOk=pulse?.status==='ready'&&(pulse.checkedAt||0)>=b.t0,pCh=pOk&&b.p!==null&&pulse.pulse!==b.p,parts=[];
+      if(changed)parts.push('美金记录已更新'+(Number.isFinite(b.rem)?'：$'+b.rem.toFixed(2)+' → $':'：$')+u.balanceRemainingUsd.toFixed(2));
+      else if(tr.ok)parts.push('没有新的计费记录'+(u?'（最近一条 '+hm(u.spanAt||u.at)+'）':''));
+      else parts.push('计费记录没读到：'+tr.why);
+      if(pOk)parts.push('Pulse '+pulse.pulse+'%'+(pCh?'（原 '+b.p+'%）':'（未变）'));
+      else if(pulseLimited())parts.push('Pulse 限流暂停中');
+      else if(pulse&&pulse.status!=='ready')parts.push('Pulse 读取失败（'+pulse.status+'）');
+      const text='刷新于 '+hm(Date.now())+' · '+parts.join(' · ');
+      log(changed||tr.ok?'info':'warn','刷新',text);paint();
+      return {level:changed||pCh?'ok':tr.ok?'same':'fail',text,changed,pulseChanged:pCh,trace:tr};
+    })().finally(()=>{refreshing=null;});
+    return refreshing;
   }
   // 首包提示：在页面发出的用户消息末尾追加一句，让模型先输出“思考中…”，服务端尽早收到首包，避免约 90 秒无首包被改派。
   function warmBody(url,body){
@@ -6841,7 +6939,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     frames++;const sid=ctx.sid||sidOf(location.href);inspect(frame,t=>accept(t,ctx.sid),(type,node)=>{
       // 助手消息的 id / nodeId 出现在 start 与 message-metadata 帧里；费用接口按 nodeId（缺省为消息 id）计
       if(node&&typeof node==='object'){noteTurnId(sid,node.messageId);const meta=node.messageMetadata;if(meta&&typeof meta==='object'){noteTurnId(sid,meta.nodeId);noteTurnId(sid,meta.messageId);}}
-      if(type==='finish'){try{errReload.noteFinish(sid);}catch{}try{pulseTurnEnd(sid,true);}catch{}for(const r of runs.values())if(r.sid===sid)r.huntFinishedAt=Date.now();log('detail','读流','检测到流结束（finish）',null,ctx);for(const r of runs.values())if(r.sid===sid&&r.finalReads<2)later(r,gFast()?400:1200,true);clearTimeout(balanceTimer);balanceTimer=setTimeout(()=>{if(Date.now()-(balance?.at||0)>8000)void refreshBalance(true);},6000);scheduleCost(sid,COST_DELAYS[0],true);}
+      if(type==='finish'){try{errReload.noteFinish(sid);}catch{}try{pulseTurnEnd(sid,true);}catch{}for(const r of runs.values())if(r.sid===sid)r.huntFinishedAt=Date.now();log('detail','读流','检测到流结束（finish）',null,ctx);for(const r of runs.values())if(r.sid===sid&&r.finalReads<2)later(r,gFast()?400:1200,true);clearTimeout(balanceTimer);balanceTimer=setTimeout(()=>{if(Date.now()-(balance?.at||0)>8000)void refreshBalance(true);},6000);scheduleCost(sid,COST_DELAYS[0],true);try{usdChase(sid);}catch{}}
       else if(type==='error'||type==='abort'){log('detail','读流','检测到流事件 '+type,null,ctx);scheduleCost(sid,COST_DELAYS[1],true);}
     });paint();
   }
@@ -6940,7 +7038,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
               if([401,403].includes(err.status)){r.phase='模型已识别 · 详情未提供';log('warn','Span','详情接口 HTTP '+err.status+'；保留模型标签',null,{sid:r.sid,runId:r.runId,spanId:e.id});save(r.data);return;}
               throw err;}
           }
-          const d=r.cache.get(e.id)||{};
+          const d=r.cache.get(e.id)||{};if(e.kind==='cost'){try{noteUsd(r,p);}catch{}}
           log('detail','字段',({stream:'模型调用',usage:'用量记录',cost:'花费记录'}[e.kind]||e.kind)+' '+n+'/'+todo.length+(d.request?' · '+d.request:'')+(d.internal?' · '+d.internal:'')+(d.configs?.find(x=>x.kind==='effort')?' · 显式 '+(d.configs.find(x=>x.kind==='effort').value||'不支持'):'')+(d.output?.[0]?' · 输出 '+d.output[0].value:'')+(d.reasoning?.[0]?' · 推理 '+d.reasoning[0].value:''),null,{sid:r.sid,runId:r.runId,spanId:e.id});
           r.data=snapshot(r,p,r.cache);keepRaw(r);if(n%4===0)save(r.data);paint();await new Promise(resolve=>setTimeout(resolve,300));
         }
@@ -6952,9 +7050,12 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
       if(!kick&&r.data.partial&&r.tries<(gFast()?24:8))later(r,gFast()?Math.min(2500,600+300*r.tries):Math.min(15000,2500*r.tries));
     }catch(e){
       if(!live()||e.name==='AbortError'&&ctrl.signal.aborted)return;
-      r.phase=e.status===429?'限流暂停':[401,403].includes(e.status)?'权限失效':'Trace 读取失败';
-      if([401,403].includes(e.status)){r.rejectedToken=r.token;r.token=null;}
-      log('warn','Trace',r.phase,e,r);
+      const authFail=[401,403].includes(e.status);
+      r.phase=e.status===429?'限流暂停':authFail?'权限失效':e.expired?'令牌过期':'Trace 读取失败';
+      if(authFail){r.rejectedToken=r.token;r.token=null;}
+      log(e.expired?'detail':'warn','Trace',r.phase+(authFail||e.expired?' · 向 Arena 换新令牌后接着读':''),e.expired?null:e,r);
+      // v1.11.84 令牌过期 / 被拒：和 Arena 页面一样调 trigger-token 换新，换到就接着读（同一个对话 30 秒内最多换一次，不会来回重试）
+      if(authFail||e.expired){const fin=final;void renewToken(r.sid,authFail?'HTTP '+e.status:'令牌过期').then(n=>{if(n&&n.token&&runs.get(n.runId)===n&&!n.busy){if(fin)n.finalReads=Math.max(0,n.finalReads-1);later(n,300,fin);}});}
     }finally{if(r.abort===ctrl)r.abort=null;r.busy=false;paint();}
   }
 
@@ -7095,7 +7196,7 @@ svg{width:12px;height:12px;display:block}.pill{display:none;border:1px solid var
     }
     balanceFail++;log('debug','额度','GET '+path+' 暂不可用，已保留上次额度：'+errs.join('；'));
   }
-  window.addEventListener('storage',onStorage);function onStorage(e){if(e.key===KEY+'.quota'){const q=load(KEY+'.quota',{});quota={chat:quotaShape(q?.chat),append:quotaShape(q?.append)};paint();}else if(e.key===KEY+'.balance'){balance=balanceShape(load(KEY+'.balance',null));paint();}else if(e.key==='amp.native.notes.v1'){try{noteReload();}catch{}}}
+  window.addEventListener('storage',onStorage);function onStorage(e){if(e.key===KEY+'.quota'){const q=load(KEY+'.quota',{});quota={chat:quotaShape(q?.chat),append:quotaShape(q?.append)};paint();}else if(e.key===KEY+'.balance'){balance=balanceShape(load(KEY+'.balance',null));paint();}else if(e.key==='amp.native.notes.v1'){try{noteReload();}catch{}}else if(e.key===KEY+'.usd'||e.key===KEY+'.pulse'||e.key===PULSE_FIT){try{if(syncShared())paint();}catch{}}}
   // 4. tee 分流：AbortError 是流取消，不是 JSON 解析失败。
   function captureAllowed(url,ct){
     try{const u=new URL(url,location.href);return [location.origin,'https://api.trigger.dev'].includes(u.origin)&&!/^\/ai-proxy\/api\/v1\/runs\//.test(u.pathname)&&(/event-stream|ndjson|stream\+json/i.test(ct||'')||!!streamSid(url));}catch{return false;}
@@ -9153,7 +9254,7 @@ details.mc-card .section.credits{margin-top:12px}
   try{fastMo.observe(document.documentElement,{childList:true,subtree:true});}catch{}
   // 状态行里的倒计时与“已重置”切换需要定期重绘；回到前台时顺带刷新额度
   const statusTimer=setInterval(()=>{if(!document.hidden&&(prefs.showQuota||prefs.showCredits))paint();},30000);
-  const onVisible=()=>{if(document.hidden)return;paint();if(Date.now()-(balance?.at||0)>BALANCE_INTERVAL)void refreshBalance();};document.addEventListener('visibilitychange',onVisible);
+  const onVisible=()=>{if(document.hidden)return;try{syncShared();}catch{}paint();if(Date.now()-pulseOkAt()>60000){pulseReqAt=0;void refreshPulse(true);}if(Date.now()-(balance?.at||0)>BALANCE_INTERVAL)void refreshBalance();};document.addEventListener('visibilitychange',onVisible);
   const resize=()=>{ui?.attach();paint();};window.addEventListener('resize',resize);
   const flushAll=()=>{for(const r of runs.values())if(r.data)save(r.data);void catalog.flush();};window.addEventListener('pagehide',flushAll);
   function stop(){clearInterval(mon.timer);gacha.stop();gacha.setPaint(null);bar?.destroy();bar=null;legacyDisplay.onchange=null;stopped=true;onLog=null;onSnapshot=null;clearInterval(routeTimer);try{fastMo.disconnect();}catch{}clearInterval(routeWatch);clearTimeout(paintTimer);for(const r of runs.values()){clearTimeout(r.timer);r.abort?.abort();r.token=null;}for(const reader of readers){try{reader.cancel().catch(()=>{});}catch{}}if(window.fetch===wrapped)window.fetch=native;if(XO?.open===xhrOpen)XO.open=oldOpen;if(XO?.send===xhrSend)XO.send=oldSend;if(window.EventSource===eventSource)window.EventSource=ES;window.removeEventListener('resize',resize);window.removeEventListener('pagehide',flushAll);window.removeEventListener('storage',onStorage);document.removeEventListener('visibilitychange',onVisible);clearInterval(statusTimer);clearInterval(noteTimer);clearTimeout(balanceTimer);clearTimeout(balanceResetTimer);for(const c of costState.values())clearTimeout(c.timer);ui?.destroy();catalog.destroy();}
